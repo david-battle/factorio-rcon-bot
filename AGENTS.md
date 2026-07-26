@@ -54,13 +54,12 @@ config framework, or anything not listed here unless explicitly asked.
 - Tail this file for new lines: /mnt/d/factorio-server/server-console.log
 - Log line format (confirmed from live server output):
   `YYYY-MM-DD HH:MM:SS [CHAT] username: message text`
-  Also present: `[JOIN]` and `[LEAVE]` lines — ignore these for now
-  (TODO: react to join messages).
+  Also present: `[JOIN]` PlayerName joined the game and `[LEAVE]`.
 - To extract message text: split on `[CHAT] ` first, then on `: ` (timestamp has colons).
-  The username is also extracted in this step but currently discarded (TODO: use it for
-  personalized replies).
+  The username is also extracted; used for chat history context and known_players tracking.
 - Skip any line where msg starts with "Jimbo says " (bot's own echo).
 - The AI model decides whether the message is addressed to Jimbo.
+- `[JOIN]` lines trigger a model-generated greeting (new vs returning via known_players.txt).
 
 ## Request flow, step by step
 1. Listener sees a new `[CHAT]` line and extracts (username, message text).
@@ -68,7 +67,7 @@ config framework, or anything not listed here unless explicitly asked.
 3. If PLATFORMS or PLANETS, run the corresponding canned `/silent-command` with `rcon.print()` (see below). If a built-in command, run it.
 4. Send the RCON response back to the AI model, ask it to compose a short reply in plain chat-appropriate language.
 5. Send that reply via RCON as a raw command (no `/`) so it appears as `[CHAT] <server>: Jimbo says ...` in the log.
-6. Script also has a keyword fallback: if model says NONE but message mentions ships/platforms/planets, trigger the canned query anyway.
+6. Step 3 also has a "SKIP" output option — model can say SKIP to stay silent during reply generation as a second-pass filter.
 
 ## Useful RCON commands (starting hints — keep this list small)
 - `/players` — list all players who have ever played on this save
@@ -116,6 +115,111 @@ Run long-lived programs in the background so work can continue. Detach all stand
 `nohup python -u program.py </dev/null >program.log 2>&1 & echo $! >program.pid`
 
 Verify with `ps -p "$(cat program.pid)"`; don’t wait for the process to exit.
+
+## Testing approach (offline simulation)
+
+Nobody needs to log into the game to test. The bot tails the server log, so you can
+simulate activity by appending lines to `/mnt/d/factorio-server/server-console.log`:
+
+```bash
+printf '%s [CHAT] dlbattle: Jimbo what is the evolution factor?\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> /mnt/d/factorio-server/server-console.log
+```
+
+The bot will pick up the line, process it through the AI pipeline, and attempt to
+send a reply via RCON. Watch the bot log:
+
+```bash
+tail -f chat_monitor.log
+```
+
+To test JOIN greetings:
+```bash
+printf '%s [JOIN] TestPlayer joined the game\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> /mnt/d/factorio-server/server-console.log
+```
+
+### Cold start caveat
+
+The local model (qwen2.5-32b-ctx32k, 28 GB) takes 30-60 seconds to load into
+GPU memory on first request after idle. Check if the model is loaded from the
+Windows side:
+
+```bash
+ollama.exe ps
+```
+
+If the model isn't listed, expect the first response to take up to a minute.
+Subsequent requests are faster but the model is still slow — budget ~20-45
+seconds per LLM call. Do NOT queue multiple test messages rapidly; the model
+will serialize them and the responses will be delayed and confusing.
+
+### Model memory constraint
+
+The game client and the local model cannot run on the same machine at the same
+time — they don't fit in memory together. The server (Windows native) and the
+model (WSL/Ollama) can coexist because they're on different OS instances.
+
+## Known pitfalls
+
+### Cross-filesystem file handle invalidation
+
+The server log at `/mnt/d/factorio-server/server-console.log` lives on a Windows
+drive mounted in WSL. Writing to the file from the Windows side (e.g., when the
+bot sends an RCON command and the server logs it) can invalidate the WSL file
+descriptor. This crashes `f.tell()` with `ValueError: I/O operation on closed
+file`. The bot handles this by catching OSError on read operations and reopening
+the file.
+
+### RCON multi-line messages
+
+Sending a multi-line string via `client.run(f"Jimbo says {reply}")` only delivers
+the first line. To send multiple lines, split by `\n` and send each as a separate
+RCON command:
+```python
+for line in reply.split("\n"):
+    if line.strip():
+        client.run(f"Jimbo says {line.strip()}")
+```
+
+### Platform/ship name quality
+
+Space platform names on this server include cargo descriptions and signal markup
+(e.g., `[item=space-science-pack]`, `[planet=nauvis][planet=vulcanus]Sausage`).
+The step 3 prompt instructs the model to strip `[item=...]`, `[planet=...]`,
+`[virtual-signal=...]`, `[space-location=...]` brackets but keep the rest. The
+model should list EVERY line from the RCON response when asked, not just the ones
+it thinks look like platform names.
+
+### known_players.txt seeding
+
+Seed from the RCON `/players` command (lists everyone who has ever played this save).
+Do this once on initial setup; the bot appends new players automatically as they join.
+Only reseed if: (1) the save file is replaced/reset, (2) the file is lost, or
+(3) you want to flush test/debris entries accumulated from offline testing:
+```python
+from rcon.source import Client
+with open("rconpw") as f:
+    password = f.read().strip()
+with Client("127.0.0.1", 27015, passwd=password) as client:
+    raw = client.run("/players")
+    with open("known_players.txt", "w") as out:
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line and not line.startswith("Players"):
+                out.write(line + "\n")
+```
+One-off bash version:
+```bash
+python3 -c "
+from rcon.source import Client
+with open('rconpw') as f: pw = f.read().strip()
+with Client('127.0.0.1', 27015, passwd=pw) as c:
+    raw = c.run('/players')
+    with open('known_players.txt', 'w') as out:
+        for line in raw.split('\n'):
+            line = line.strip()
+            if line and not line.startswith('Players'):
+                out.write(line + '\n')
+"
 
 ## Current implementation status
 
