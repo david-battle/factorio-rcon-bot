@@ -89,31 +89,35 @@ config framework, or anything not listed here unless explicitly asked.
 - If you're not sure whether something is still accurate, say so — don't
   present an assumption as a fact.
 
+### Intentional model flexibility
+
+The classifier may return any slash command and the bot will pass it through to
+RCON. This is intentional: flexibility is a goal, and restricting commands to a
+fixed whitelist is a non-goal. Do not add a command whitelist unless explicitly
+asked. Jimbo may also jokingly claim an action is underway when no RCON action
+occurred; this occasional error is considered part of the bot's humor, not a
+problem that needs guardrails.
+
 ## AI Provider
 
-Uses **DeepSeek V4 Flash Free** via OpenCode's OpenAI-compatible API:
+Uses **OpenAI GPT-5.4 Mini** through OpenCode's authenticated OpenAI provider:
 
-- Endpoint: `https://opencode.ai/zen/v1`
-- Model: `deepseek-v4-flash-free`
-- Auth: `~/.local/share/opencode/auth.json` (already configured)
-- Library: `openai` (pip package, see Environment section for venv)
-- Variable: `ai` is an `OpenAI(api_key=..., base_url="https://opencode.ai/zen/v1")` instance
+- Model: `openai/gpt-5.4-mini`
+- Auth: OpenCode's configured `openai` provider in
+  `~/.local/share/opencode/auth.json`; never read or print the token directly.
+- Invocation: `ask_ai()` runs `opencode run --pure --agent jimbo --format json`.
+- An injected OpenCode config gives the model no tools or filesystem access and
+  uses the `minimal` model variant.
+- Run from `/tmp/opencode` with project config and external skills disabled so
+  Jimbo's prompt is not burdened with this repository's agent instructions.
+- `--pure` disables external plugins, but OpenCode's built-in OpenAI auth plugin
+  must remain enabled. Do not set `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`; doing so
+  breaks the authenticated provider.
+- `opencode run --format json` emits JSON Lines events. `ask_ai()` collects text
+  events and treats a nonzero exit or missing text as an error.
 
 ```python
-import json
-from pathlib import Path
-from openai import OpenAI
-
-auth_path = Path.home() / ".local/share/opencode/auth.json"
-with open(auth_path) as f:
-    auth_key = json.load(f)["opencode"]["key"]
-ai = OpenAI(api_key=auth_key, base_url="https://opencode.ai/zen/v1")
-
-response = ai.chat.completions.create(
-    model="deepseek-v4-flash-free",
-    messages=[{"role": "user", "content": prompt}],
-)
-text = response.choices[0].message.content
+text = ask_ai(prompt)
 ```
 
 ### History
@@ -123,6 +127,11 @@ This was switched to DeepSeek V4 Flash Free on 2026-07-26 because the local mode
 (28 GB) and the head-ful Factorio game client cannot fit in GPU memory simultaneously.
 The hosted model is much faster (~15-25s per call vs 30-60s) and eliminates the
 cold-start loading delay.
+
+DeepSeek later exhausted its free quota and returned HTTP 429. Jimbo was switched
+to OpenAI on 2026-07-26. Direct `gpt-4.1-mini` API access had no paid
+quota, so the available lightweight OpenAI-provider equivalent,
+`openai/gpt-5.4-mini`, is used instead.
 
 ### Prompt tuning on 2026-07-26
 
@@ -263,8 +272,8 @@ tuning rather than fundamental rewrites.
 ### Model self-knowledge prompts (2026-07-26)
 
 All prompts that generate replies (step 1 classification, step 3 with/without RCON,
-new player greeting) now include `"You run on the DeepSeek V4 Flash Free model
-via the OpenCode AI API."` so the model can accurately answer questions about what
+new player greeting) now include `"You run on the OpenAI GPT-5.4 Mini model via
+OpenCode."` so the model can accurately answer questions about what
 it is. Without this, the model hallucinates (e.g., "logistic-optimized neural net
 architecture"). Don't add extra qualifiers like "not running on Ollama" — the model
 will incorporate them into its persona description unprompted.
@@ -295,8 +304,21 @@ only fires once per update.
 
 Every 10 minutes the bot checks whether it wants to make a spontaneous comment.
 It's triggered both in the idle loop (when nobody's talking) and after processing
-a message. The model sees the last 40 chat lines as context and can reply with
-a short message or SKIP. Timer is rough — no async, no precision guarantee.
+a message. The model sees log activity since its last successful spontaneous
+comment, including chat and events, and can reply with a short message or SKIP.
+Timer is rough — no async, no precision guarantee. The server owner can trigger
+the same prompt immediately by saying `Jimbo, chime in`; this trigger is
+restricted to username `dlbattle`.
+
+### Deferred TODOs
+
+- Catch `ValueError` as well as `OSError` when the Windows-hosted log invalidates
+  a WSL file handle.
+- Bound spontaneous-comment context if repeated SKIPs or API failures let it grow
+  large enough to threaten the model context window.
+- Clarify that `/time` reports elapsed server/game time, not wall-clock time, if
+  this wording becomes bothersome.
+- Add retry/backoff for transient AI API errors, especially HTTP 429 rate limits.
 
 ## Keep working
 For clear, reversible tasks, act immediately after a brief plan; do not wait for "go ahead." Ask first only when requirements are ambiguous or an action is destructive.

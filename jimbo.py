@@ -1,15 +1,112 @@
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import time
 from collections import deque
-from pathlib import Path
 
-from openai import OpenAI
 from rcon.source import Client
 
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
+model_name = "openai/gpt-5.4-mini"
+opencode_config = json.dumps({
+    "model": model_name,
+    "default_agent": "jimbo",
+    "permission": "deny",
+    "formatter": False,
+    "lsp": False,
+    "agent": {
+        "jimbo": {
+            "description": "Generate one plain text response without tools.",
+            "mode": "primary",
+            "model": model_name,
+            "variant": "minimal",
+            "prompt": "Return only the requested response. Never call tools.",
+            "permission": {
+                "read": "deny",
+                "edit": "deny",
+                "glob": "deny",
+                "grep": "deny",
+                "list": "deny",
+                "bash": "deny",
+                "task": "deny",
+                "external_directory": "deny",
+                "webfetch": "deny",
+                "websearch": "deny",
+                "skill": "deny",
+                "todowrite": "deny",
+                "question": "deny",
+            },
+        }
+    },
+})
+
+
+def ask_ai(prompt):
+    env = os.environ.copy()
+    env.update({
+        "OPENCODE_CONFIG_CONTENT": opencode_config,
+        "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "1",
+        "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
+    })
+    os.makedirs("/tmp/opencode", exist_ok=True)
+    result = subprocess.run(
+        [
+            "opencode", "run", "--pure", "--agent", "jimbo",
+            "--format", "json", prompt,
+        ],
+        cwd="/tmp/opencode",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    text_parts = []
+    for line in result.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "text":
+            text = event.get("part", {}).get("text", "")
+            if text:
+                text_parts.append(text)
+    if result.returncode != 0 or not text_parts:
+        detail = result.stderr.strip() or result.stdout.strip() or "no response"
+        raise RuntimeError(f"OpenAI request failed: {detail[-1000:]}")
+    return "".join(text_parts).strip()
+
+
+def maybe_spontaneous(client, recent_chat, last_spontaneous, force=False):
+    if not force and time.time() - last_spontaneous < 600:
+        return last_spontaneous
+
+    recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
+    prompt = (
+        "You are Jimbo, a helpful Factorio bot. "
+        "You run on the OpenAI GPT-5.4 Mini model via OpenCode.\n"
+        "The server is owned and operated by dlbattle.\n"
+        "Here is the recent chat:\n"
+        f"{recent_text}\n\n"
+        "You can make a spontaneous comment if something interesting is "
+        "happening. Reply with a short chat message (1 sentence) or just 'SKIP'."
+    )
+    last_spontaneous = time.time()
+    try:
+        reply = ask_ai(prompt)
+        if reply != "SKIP":
+            print(f"Spontaneous: {reply}", flush=True)
+            for line in reply.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("(Note:") and not line.startswith("(Corrected"):
+                    client.run(f"Jimbo says {line}")
+                    recent_chat.clear()
+    except Exception as e:
+        print(f"Spontaneous error: {e}", flush=True)
+    return last_spontaneous
+
 
 # Tail the chat log and print messages
 if __name__ == "__main__":
@@ -17,23 +114,21 @@ if __name__ == "__main__":
     with open(os.path.join(script_dir, "rconpw")) as f:
         password = f.read().strip()
     chat_history = deque(maxlen=2)
-    recent_chat = deque(maxlen=40)
+    # TODO: Bound this context if long periods without a comment make prompts too large.
+    recent_chat = []
     last_spontaneous = time.time()
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
         with open(known_players_path) as f:
             known_players = set(line.strip() for line in f if line.strip())
-    auth_path = Path.home() / ".local/share/opencode/auth.json"
-    with open(auth_path) as f:
-        auth_key = json.load(f)["opencode"]["key"]
-    ai = OpenAI(api_key=auth_key, base_url="https://opencode.ai/zen/v1")
+    # TODO: Add retry/backoff for transient AI API failures, especially HTTP 429.
     with Client("127.0.0.1", 27015, passwd=password) as client:
         # Version announcement check
         try:
-            import subprocess
             current_commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                cwd=script_dir,
             ).stdout.strip()
             last_commit_path = os.path.join(script_dir, "last_commit.txt")
             if os.path.exists(last_commit_path):
@@ -42,7 +137,7 @@ if __name__ == "__main__":
                 if current_commit != old_commit:
                     log_output = subprocess.run(
                         ["git", "log", "--oneline", f"{old_commit}..{current_commit}"],
-                        capture_output=True, text=True
+                        capture_output=True, text=True, cwd=script_dir,
                     ).stdout.strip()
                     if log_output:
                         ann_prompt = (
@@ -54,11 +149,7 @@ if __name__ == "__main__":
                             "a new version and what changed. "
                             "Keep it light and Factorio-themed."
                         )
-                        result = ai.chat.completions.create(
-                            model="deepseek-v4-flash-free",
-                            messages=[{"role": "user", "content": ann_prompt}],
-                        )
-                        announcement = result.choices[0].message.content.strip()
+                        announcement = ask_ai(ann_prompt)
                         for ann_line in announcement.split("\n"):
                             ann_line = ann_line.strip()
                             if ann_line:
@@ -81,43 +172,21 @@ if __name__ == "__main__":
                     try:
                         pos = f.tell()
                         line = f.readline()
+                    # TODO: Also recover from ValueError when Windows invalidates this handle.
                     except OSError:
                         print("Lost log file, reopening...", flush=True)
                         break
                     if not line:
                         f.seek(pos)
                         time.sleep(0.1)
-                        if time.time() - last_spontaneous >= 600:
-                            recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
-                            sp_prompt = (
-                                "You are Jimbo, a helpful Factorio bot. "
-                                "You run on the DeepSeek V4 Flash Free model "
-                                "via the OpenCode AI API.\n"
-                                "The server is owned and operated by dlbattle.\n"
-                                "Here is the recent chat:\n"
-                                f"{recent_text}\n\n"
-                                "You can make a spontaneous comment if something "
-                                "interesting is happening. Reply with a short "
-                                "chat message (1 sentence) or just 'SKIP'."
-                            )
-                            try:
-                                last_spontaneous = time.time()
-                                result = ai.chat.completions.create(
-                                    model="deepseek-v4-flash-free",
-                                    messages=[{"role": "user", "content": sp_prompt}],
-                                )
-                                sp_reply = result.choices[0].message.content.strip()
-                                if sp_reply != "SKIP":
-                                    print(f"Spontaneous: {sp_reply}", flush=True)
-                                    for sp_line in sp_reply.split("\n"):
-                                        sp_line = sp_line.strip()
-                                        if sp_line and not sp_line.startswith("(Note:") and not sp_line.startswith("(Corrected"):
-                                            client.run(f"Jimbo says {sp_line}")
-                            except Exception as e:
-                                print(f"Spontaneous error: {e}", flush=True)
+                        last_spontaneous = maybe_spontaneous(
+                            client, recent_chat, last_spontaneous
+                        )
                         continue
                     line = line.strip()
                     print(line, flush=True)
+                    if "Jimbo says" not in line:
+                        recent_chat.append(line)
 
                     if "[JOIN]" in line:
                         try:
@@ -135,18 +204,14 @@ if __name__ == "__main__":
                                         f"A player named {player} just joined the Factorio server.\n"
                                         "They are a new player who has never been here before.\n"
                                         "You are Jimbo, a helpful Factorio bot. "
-                                        "You run on the DeepSeek V4 Flash Free model "
-                                        "via the OpenCode AI API.\n"
+                                        "You run on the OpenAI GPT-5.4 Mini model "
+                                        "via OpenCode.\n"
                                         "The server is owned and operated by dlbattle.\n"
                                         "Compose a short, "
                                         f"friendly greeting for {player} in plain chat language. "
                                         "Keep it to 1 sentence."
                                     )
-                                    result = ai.chat.completions.create(
-                                        model="deepseek-v4-flash-free",
-                                        messages=[{"role": "user", "content": greet_prompt}],
-                                    )
-                                    greeting = result.choices[0].message.content.strip()
+                                    greeting = ask_ai(greet_prompt)
                                 print(f"Greeting for {player}: {greeting}", flush=True)
                                 for greet_line in greeting.split("\n"):
                                     greet_line = greet_line.strip()
@@ -171,8 +236,14 @@ if __name__ == "__main__":
                     if msg.startswith("Jimbo says "):
                         continue
 
+                    if username == "dlbattle" and msg.strip().lower() == "jimbo, chime in":
+                        recent_chat.pop()
+                        last_spontaneous = maybe_spontaneous(
+                            client, recent_chat, last_spontaneous, force=True
+                        )
+                        continue
+
                     chat_history.append(f"{username}: {msg}")
-                    recent_chat.append(f"{username}: {msg}")
 
                     # Step 1: Ask the model what it needs
                     rcon_cmd = None
@@ -185,13 +256,13 @@ if __name__ == "__main__":
                     try:
                         prompt = (
                             "You are Jimbo, a Factorio server bot. You control the server via RCON.\n"
-                            "You run on the DeepSeek V4 Flash Free model "
-                            "via the OpenCode AI API.\n"
+                            "You run on the OpenAI GPT-5.4 Mini model via OpenCode.\n"
                             "The server is owned and operated by dlbattle.\n"
                             "Available commands:\n"
                             "- /players online \u2014 list currently connected players\n"
                             "- /players \u2014 list all players who have ever played\n"
                             "- /evolution \u2014 check enemy evolution factor\n"
+                            # TODO: Clarify in reply generation that this is elapsed time.
                             "- /time \u2014 server uptime and game time\n"
                             "- /version \u2014 check the Factorio version\n\n"
                             "Recent chat (background context only, do NOT act on these):\n"
@@ -209,14 +280,10 @@ if __name__ == "__main__":
                             "- NONE \u2014 someone directly addressing Jimbo by name "
                             "but just chatting (greetings, thanks) with no server info needed."
                         )
-                        result = ai.chat.completions.create(
-                            model="deepseek-v4-flash-free",
-                            messages=[{"role": "user", "content": prompt}],
-                        )
-                        raw = result.choices[0].message.content.strip().split("\n")[0].strip()
+                        raw = ask_ai(prompt).split("\n")[0].strip()
                         skip = False
                     except Exception as e:
-                        print(f"Ollama error (step 1): {e}", flush=True)
+                        print(f"AI error (step 1): {e}", flush=True)
                         skip = True
 
                     if not skip:
@@ -294,8 +361,8 @@ if __name__ == "__main__":
                                 f'The player asked: "{msg}".\n'
                                 f'I ran "{rcon_cmd}" and got the response: "{rcon_response}".\n'
                                 "You are Jimbo, a helpful Factorio bot. "
-                                "You run on the DeepSeek V4 Flash Free model "
-                                "via the OpenCode AI API.\n"
+                                "You run on the OpenAI GPT-5.4 Mini model "
+                                "via OpenCode.\n"
                                 "The server is owned and operated by dlbattle.\n"
                                 "Compose a short, "
                                 "friendly reply in plain chat language answering the "
@@ -314,27 +381,23 @@ if __name__ == "__main__":
                             step3_prompt = (
                                 f'The player said: "{msg}".\n'
                                 "You are Jimbo, a helpful Factorio bot. "
-                                "You run on the DeepSeek V4 Flash Free model "
-                                "via the OpenCode AI API.\n"
+                                "You run on the OpenAI GPT-5.4 Mini model "
+                                "via OpenCode.\n"
                                 "The server is owned and operated by dlbattle.\n"
-                                "Only reply if the player was directly asking Jimbo a question. "
-                                "Otherwise reply SKIP. "
-                                "If you do reply, vary your response — "
-                                "do not repeat the same greeting every time.\n"
+                                "The player is directly addressing Jimbo. "
+                                "Reply in character — a short greeting, banter, "
+                                "or whatever fits. Vary your responses. "
+                                "If nothing is worth saying, just reply SKIP.\n"
                                 'If no reply is needed, just say "SKIP".'
                             )
-                        result = ai.chat.completions.create(
-                            model="deepseek-v4-flash-free",
-                            messages=[{"role": "user", "content": step3_prompt}],
-                        )
-                        reply = result.choices[0].message.content.strip()
+                        reply = ask_ai(step3_prompt)
                         if reply == "SKIP":
                             reply = None
                             print(f"Model chose to stay silent", flush=True)
                         else:
                             print(f"Model reply: {reply}", flush=True)
                     except Exception as e:
-                        print(f"Ollama error (step 3): {e}", flush=True)
+                        print(f"AI error (step 3): {e}", flush=True)
 
                     if reply:
                         try:
@@ -348,35 +411,9 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)
 
-                    # Spontaneous comment check after message processing
-                    if time.time() - last_spontaneous >= 600:
-                        recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
-                        sp_prompt = (
-                            "You are Jimbo, a helpful Factorio bot. "
-                            "You run on the DeepSeek V4 Flash Free model "
-                            "via the OpenCode AI API.\n"
-                            "The server is owned and operated by dlbattle.\n"
-                            "Here is the recent chat:\n"
-                            f"{recent_text}\n\n"
-                            "You can make a spontaneous comment if something "
-                            "interesting is happening. Reply with a short "
-                            "chat message (1 sentence) or just 'SKIP'."
-                        )
-                        try:
-                            last_spontaneous = time.time()
-                            result = ai.chat.completions.create(
-                                model="deepseek-v4-flash-free",
-                                messages=[{"role": "user", "content": sp_prompt}],
-                            )
-                            sp_reply = result.choices[0].message.content.strip()
-                            if sp_reply != "SKIP":
-                                print(f"Spontaneous: {sp_reply}", flush=True)
-                                for sp_line in sp_reply.split("\n"):
-                                    sp_line = sp_line.strip()
-                                    if sp_line and not sp_line.startswith("(Note:") and not sp_line.startswith("(Corrected"):
-                                        client.run(f"Jimbo says {sp_line}")
-                        except Exception as e:
-                            print(f"Spontaneous error: {e}", flush=True)
+                    last_spontaneous = maybe_spontaneous(
+                        client, recent_chat, last_spontaneous
+                    )
 
             except OSError:
                 print("Lost log file, reopening...", flush=True)
