@@ -1,7 +1,7 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
-*.env
+chat_monitor.log
+chat_monitor.pid
 rconpw
-config.local.*
+__pycache__/
+*.old
+*.swp
+*.swo
