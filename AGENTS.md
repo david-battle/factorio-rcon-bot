@@ -54,8 +54,11 @@ config framework, or anything not listed here unless explicitly asked.
 - Tail this file for new lines: /mnt/d/factorio-server/server-console.log
 - Log line format (confirmed from live server output):
   `YYYY-MM-DD HH:MM:SS [CHAT] username: message text`
-  Also present: `[JOIN]` and `[LEAVE]` lines — ignore these for now.
+  Also present: `[JOIN]` and `[LEAVE]` lines — ignore these for now
+  (TODO: react to join messages).
 - To extract message text: split on `[CHAT] ` first, then on `: ` (timestamp has colons).
+  The username is also extracted in this step but currently discarded (TODO: use it for
+  personalized replies).
 - Skip any line where msg starts with "Jimbo says " (bot's own echo).
 - The AI model decides whether the message is addressed to Jimbo.
 
