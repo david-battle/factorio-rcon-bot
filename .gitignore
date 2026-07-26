@@ -1,5 +1,6 @@
-chat_monitor.log
-chat_monitor.pid
+jimbo.log
+jimbo.pid
+last_commit.txt
 rconpw
 __pycache__/
 *.old

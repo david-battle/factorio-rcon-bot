@@ -44,7 +44,7 @@ with Client("127.0.0.1", 27015, passwd=password) as client:
 
 ## Architecture — only 3 moving parts
 1. The server log file (chat input)
-2. The local AI model (decides what to do, composes RCON queries and replies)
+2. The AI model (decides what to do, composes RCON queries and replies)
 3. RCON (send queries/actions, send replies)
 
 Nothing else. Keep it this simple — do not add a database, web server,
@@ -89,18 +89,50 @@ config framework, or anything not listed here unless explicitly asked.
 - If you're not sure whether something is still accurate, say so — don't
   present an assumption as a fact.
 
-## Local AI
+## AI Provider
 
-A local Ollama model is available at `http://127.0.0.1:11434`:
+Uses **DeepSeek V4 Flash Free** via OpenCode's OpenAI-compatible API:
+
+- Endpoint: `https://opencode.ai/zen/v1`
+- Model: `deepseek-v4-flash-free`
+- Auth: `~/.local/share/opencode/auth.json` (already configured)
+- Library: `openai` (pip package, see Environment section for venv)
+- Variable: `ai` is an `OpenAI(api_key=..., base_url="https://opencode.ai/zen/v1")` instance
 
 ```python
-from ollama import Client
-reply = Client(host="http://127.0.0.1:11434").chat(
-    model="qwen2.5-32b-ctx32k",
+import json
+from pathlib import Path
+from openai import OpenAI
+
+auth_path = Path.home() / ".local/share/opencode/auth.json"
+with open(auth_path) as f:
+    auth_key = json.load(f)["opencode"]["key"]
+ai = OpenAI(api_key=auth_key, base_url="https://opencode.ai/zen/v1")
+
+response = ai.chat.completions.create(
+    model="deepseek-v4-flash-free",
     messages=[{"role": "user", "content": prompt}],
 )
-text = reply.message.content
+text = response.choices[0].message.content
 ```
+
+### History
+
+Originally used a local Ollama model (`qwen2.5-32b-ctx32k` at `http://127.0.0.1:11434`).
+This was switched to DeepSeek V4 Flash Free on 2026-07-26 because the local model
+(28 GB) and the head-ful Factorio game client cannot fit in GPU memory simultaneously.
+The hosted model is much faster (~15-25s per call vs 30-60s) and eliminates the
+cold-start loading delay.
+
+### Prompt tuning on 2026-07-26
+
+The step 1 classification prompt was tightened to default to SKIP unless the message
+contains "Jimbo" — fixes the bot butting into player-to-player conversations.
+The step 3 (no-RCON) prompt now instructs the model to vary its responses and
+default to SKIP unless directly asked. Lines starting with `(Note:` or `(Corrected`
+are stripped from replies before sending to prevent model meta-commentary leaking
+into game chat. Returning players get a hardcoded "Welcome back, {player}!" instead
+of an LLM call.
 
 ## Fixing indentation errors in python
 For an unparseable Python file, output and replace the complete enclosing function or file using the Write tool; do not use Edit for whitespace repairs. Then validate with `python -m py_compile`.
@@ -129,7 +161,7 @@ The bot will pick up the line, process it through the AI pipeline, and attempt t
 send a reply via RCON. Watch the bot log:
 
 ```bash
-tail -f chat_monitor.log
+tail -f jimbo.log
 ```
 
 To test JOIN greetings:
@@ -137,9 +169,9 @@ To test JOIN greetings:
 printf '%s [JOIN] TestPlayer joined the game\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> /mnt/d/factorio-server/server-console.log
 ```
 
-### Cold start caveat
+### Cold start caveat (archived — no longer relevant with hosted model)
 
-The local model (qwen2.5-32b-ctx32k, 28 GB) takes 30-60 seconds to load into
+The old local model (qwen2.5-32b-ctx32k, 28 GB) took 30-60 seconds to load into
 GPU memory on first request after idle. Check if the model is loaded from the
 Windows side:
 
@@ -152,7 +184,7 @@ Subsequent requests are faster but the model is still slow — budget ~20-45
 seconds per LLM call. Do NOT queue multiple test messages rapidly; the model
 will serialize them and the responses will be delayed and confusing.
 
-### Model memory constraint
+### Model memory constraint (archived — no longer relevant with hosted model)
 
 The game client and the local model cannot run on the same machine at the same
 time — they don't fit in memory together. The server (Windows native) and the
@@ -223,10 +255,48 @@ with Client('127.0.0.1', 27015, passwd=pw) as c:
 
 ## Current implementation status
 
-All three steps from IMPLEMENTATION.md are present in chat_monitor.py:
+All three steps from IMPLEMENTATION.md are present in jimbo.py:
 the chat listener, the AI decision loop, and the RCON query/send cycle.
 They work end-to-end but can be rough around the edges — expect iterative
 tuning rather than fundamental rewrites.
 
+### Model self-knowledge prompts (2026-07-26)
+
+All prompts that generate replies (step 1 classification, step 3 with/without RCON,
+new player greeting) now include `"You run on the DeepSeek V4 Flash Free model
+via the OpenCode AI API."` so the model can accurately answer questions about what
+it is. Without this, the model hallucinates (e.g., "logistic-optimized neural net
+architecture"). Don't add extra qualifiers like "not running on Ollama" — the model
+will incorporate them into its persona description unprompted.
+
+### `/version` RCON command (2026-07-26)
+
+`/version` works as a direct RCON command — no `/silent-command` Lua needed.
+Returns the Factorio version string (e.g., `2.1.12`). Added to the available
+commands list and classification options alongside `/players`, `/evolution`, etc.
+Do NOT try `game.product_version` or `game.build_version` — neither exists in
+this server's version of the Lua API.
+
+### Server owner (2026-07-26)
+
+Jimbo now knows the server owner: all prompts include `"The server is owned
+and operated by dlbattle."` Hardcoded since there's no game API to retrieve
+this information.
+
+### Version announcement on restart (2026-07-26)
+
+On startup, the bot checks the current git commit hash against `last_commit.txt`.
+If the hash changed, it runs `git log --oneline` between old and new commits,
+asks the model to summarize the changes into a chat-friendly announcement, and
+sends it in-game. The new hash is saved to `last_commit.txt` so the announcement
+only fires once per update.
+
+### Spontaneous comments (2026-07-26)
+
+Every 10 minutes the bot checks whether it wants to make a spontaneous comment.
+It's triggered both in the idle loop (when nobody's talking) and after processing
+a message. The model sees the last 40 chat lines as context and can reply with
+a short message or SKIP. Timer is rough — no async, no precision guarantee.
+
 ## Keep working
-For clear, reversible tasks, act immediately after a brief plan; do not wait for “go ahead.” Ask first only when requirements are ambiguous or an action is destructive.
+For clear, reversible tasks, act immediately after a brief plan; do not wait for "go ahead." Ask first only when requirements are ambiguous or an action is destructive.

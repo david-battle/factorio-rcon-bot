@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import json
 import os
 import time
 from collections import deque
+from pathlib import Path
 
+from openai import OpenAI
 from rcon.source import Client
-from ollama import Client as OllamaClient
 
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
@@ -15,13 +17,57 @@ if __name__ == "__main__":
     with open(os.path.join(script_dir, "rconpw")) as f:
         password = f.read().strip()
     chat_history = deque(maxlen=2)
+    recent_chat = deque(maxlen=40)
+    last_spontaneous = time.time()
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
         with open(known_players_path) as f:
             known_players = set(line.strip() for line in f if line.strip())
+    auth_path = Path.home() / ".local/share/opencode/auth.json"
+    with open(auth_path) as f:
+        auth_key = json.load(f)["opencode"]["key"]
+    ai = OpenAI(api_key=auth_key, base_url="https://opencode.ai/zen/v1")
     with Client("127.0.0.1", 27015, passwd=password) as client:
-        ollama = OllamaClient(host="http://127.0.0.1:11434")
+        # Version announcement check
+        try:
+            import subprocess
+            current_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+            ).stdout.strip()
+            last_commit_path = os.path.join(script_dir, "last_commit.txt")
+            if os.path.exists(last_commit_path):
+                with open(last_commit_path) as lf:
+                    old_commit = lf.read().strip()
+                if current_commit != old_commit:
+                    log_output = subprocess.run(
+                        ["git", "log", "--oneline", f"{old_commit}..{current_commit}"],
+                        capture_output=True, text=True
+                    ).stdout.strip()
+                    if log_output:
+                        ann_prompt = (
+                            "The Factorio bot Jimbo has been updated. "
+                            "These are the recent changes in git commit log format:\n"
+                            f"{log_output}\n\n"
+                            "You are Jimbo. Compose a short, friendly in-game chat "
+                            "announcement (1-2 sentences) summarizing that there's "
+                            "a new version and what changed. "
+                            "Keep it light and Factorio-themed."
+                        )
+                        result = ai.chat.completions.create(
+                            model="deepseek-v4-flash-free",
+                            messages=[{"role": "user", "content": ann_prompt}],
+                        )
+                        announcement = result.choices[0].message.content.strip()
+                        for ann_line in announcement.split("\n"):
+                            ann_line = ann_line.strip()
+                            if ann_line:
+                                client.run(f"Jimbo says {ann_line}")
+            with open(last_commit_path, "w") as lf:
+                lf.write(current_commit)
+        except Exception as e:
+            print(f"Version announcement error: {e}", flush=True)
+
         while True:
             try:
                 f = open(c_log_path, 'r')
@@ -41,6 +87,34 @@ if __name__ == "__main__":
                     if not line:
                         f.seek(pos)
                         time.sleep(0.1)
+                        if time.time() - last_spontaneous >= 600:
+                            recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
+                            sp_prompt = (
+                                "You are Jimbo, a helpful Factorio bot. "
+                                "You run on the DeepSeek V4 Flash Free model "
+                                "via the OpenCode AI API.\n"
+                                "The server is owned and operated by dlbattle.\n"
+                                "Here is the recent chat:\n"
+                                f"{recent_text}\n\n"
+                                "You can make a spontaneous comment if something "
+                                "interesting is happening. Reply with a short "
+                                "chat message (1 sentence) or just 'SKIP'."
+                            )
+                            try:
+                                last_spontaneous = time.time()
+                                result = ai.chat.completions.create(
+                                    model="deepseek-v4-flash-free",
+                                    messages=[{"role": "user", "content": sp_prompt}],
+                                )
+                                sp_reply = result.choices[0].message.content.strip()
+                                if sp_reply != "SKIP":
+                                    print(f"Spontaneous: {sp_reply}", flush=True)
+                                    for sp_line in sp_reply.split("\n"):
+                                        sp_line = sp_line.strip()
+                                        if sp_line and not sp_line.startswith("(Note:") and not sp_line.startswith("(Corrected"):
+                                            client.run(f"Jimbo says {sp_line}")
+                            except Exception as e:
+                                print(f"Spontaneous error: {e}", flush=True)
                         continue
                     line = line.strip()
                     print(line, flush=True)
@@ -54,18 +128,25 @@ if __name__ == "__main__":
                         if player and player != "Jimbo":
                             is_new = player not in known_players
                             try:
-                                greet_prompt = (
-                                    f"A player named {player} just joined the Factorio server.\n"
-                                    f"They are {'a new player who has never been here before' if is_new else 'a returning player'}.\n"
-                                    "You are Jimbo, a helpful Factorio bot. Compose a short, "
-                                    f"friendly greeting for {player} in plain chat language. "
-                                    "Keep it to 1-2 sentences."
-                                )
-                                result = ollama.chat(
-                                    model="qwen2.5-32b-ctx32k",
-                                    messages=[{"role": "user", "content": greet_prompt}],
-                                )
-                                greeting = result.message.content.strip()
+                                if not is_new:
+                                    greeting = f"Welcome back, {player}!"
+                                else:
+                                    greet_prompt = (
+                                        f"A player named {player} just joined the Factorio server.\n"
+                                        "They are a new player who has never been here before.\n"
+                                        "You are Jimbo, a helpful Factorio bot. "
+                                        "You run on the DeepSeek V4 Flash Free model "
+                                        "via the OpenCode AI API.\n"
+                                        "The server is owned and operated by dlbattle.\n"
+                                        "Compose a short, "
+                                        f"friendly greeting for {player} in plain chat language. "
+                                        "Keep it to 1 sentence."
+                                    )
+                                    result = ai.chat.completions.create(
+                                        model="deepseek-v4-flash-free",
+                                        messages=[{"role": "user", "content": greet_prompt}],
+                                    )
+                                    greeting = result.choices[0].message.content.strip()
                                 print(f"Greeting for {player}: {greeting}", flush=True)
                                 for greet_line in greeting.split("\n"):
                                     greet_line = greet_line.strip()
@@ -91,6 +172,7 @@ if __name__ == "__main__":
                         continue
 
                     chat_history.append(f"{username}: {msg}")
+                    recent_chat.append(f"{username}: {msg}")
 
                     # Step 1: Ask the model what it needs
                     rcon_cmd = None
@@ -98,34 +180,40 @@ if __name__ == "__main__":
                     skip = True
                     run_platforms = False
                     run_planets = False
+
                     history_text = "\n".join(chat_history) if chat_history else "(none)"
                     try:
                         prompt = (
                             "You are Jimbo, a Factorio server bot. You control the server via RCON.\n"
+                            "You run on the DeepSeek V4 Flash Free model "
+                            "via the OpenCode AI API.\n"
+                            "The server is owned and operated by dlbattle.\n"
                             "Available commands:\n"
                             "- /players online \u2014 list currently connected players\n"
                             "- /players \u2014 list all players who have ever played\n"
                             "- /evolution \u2014 check enemy evolution factor\n"
-                            "- /time \u2014 server uptime and game time\n\n"
+                            "- /time \u2014 server uptime and game time\n"
+                            "- /version \u2014 check the Factorio version\n\n"
                             "Recent chat (background context only, do NOT act on these):\n"
                             f"{history_text}\n\n"
                             "--- Current message to evaluate ---\n"
                             f'A player said: "{msg}".\n\n'
                             "Reply with exactly one word. Choose the best match:\n"
-                            "- PLATFORMS \u2014 if someone is asking about space platforms or ships.\n"
-                            "- PLANETS \u2014 if someone is asking about planets.\n"
-                            "- /players online, /players, /evolution, /time \u2014 for those specific queries.\n"
-                            "- NONE \u2014 if directly addressing Jimbo but just chatting "
-                            "(greetings, thanks, casual talk) with no server info needed.\n"
-                            "- SKIP \u2014 if this is general conversation between other players, "
-                            "or someone mentions Jimbo in passing without directly asking him "
-                            "a question, giving an instruction, or requesting info."
+                            "- SKIP (default) \u2014 player-to-player chat, "
+                            "casual greetings or comments NOT directed at Jimbo. "
+                            "If the message does not contain the word Jimbo, reply SKIP.\n"
+                            "- PLATFORMS \u2014 someone asking Jimbo about space platforms or ships.\n"
+                        "- PLANETS \u2014 someone asking Jimbo about planets.\n"
+                        "- /players online, /players, /evolution, /time, /version \u2014 "
+                            "for those specific queries directed at Jimbo.\n"
+                            "- NONE \u2014 someone directly addressing Jimbo by name "
+                            "but just chatting (greetings, thanks) with no server info needed."
                         )
-                        result = ollama.chat(
-                            model="qwen2.5-32b-ctx32k",
+                        result = ai.chat.completions.create(
+                            model="deepseek-v4-flash-free",
                             messages=[{"role": "user", "content": prompt}],
                         )
-                        raw = result.message.content.strip().split("\n")[0].strip()
+                        raw = result.choices[0].message.content.strip().split("\n")[0].strip()
                         skip = False
                     except Exception as e:
                         print(f"Ollama error (step 1): {e}", flush=True)
@@ -141,7 +229,7 @@ if __name__ == "__main__":
                         elif raw == "PLANETS":
                             run_planets = True
                             print(f"Model requested PLANETS", flush=True)
-                        elif raw in ("/players online", "/players", "/evolution", "/time") or raw.startswith("/"):
+                        elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
                             rcon_cmd = raw
                             print(f"Model command: {rcon_cmd}", flush=True)
                         elif raw == "NONE":
@@ -205,7 +293,11 @@ if __name__ == "__main__":
                             step3_prompt = (
                                 f'The player asked: "{msg}".\n'
                                 f'I ran "{rcon_cmd}" and got the response: "{rcon_response}".\n'
-                                "You are Jimbo, a helpful Factorio bot. Compose a short, "
+                                "You are Jimbo, a helpful Factorio bot. "
+                                "You run on the DeepSeek V4 Flash Free model "
+                                "via the OpenCode AI API.\n"
+                                "The server is owned and operated by dlbattle.\n"
+                                "Compose a short, "
                                 "friendly reply in plain chat language answering the "
                                 "player's question using this information. "
                                 "If the player explicitly asked for a list, include EVERY "
@@ -221,15 +313,21 @@ if __name__ == "__main__":
                         else:
                             step3_prompt = (
                                 f'The player said: "{msg}".\n'
-                                "You are Jimbo, a helpful Factorio bot. Compose a short, "
-                                "friendly reply in plain chat language.\n"
+                                "You are Jimbo, a helpful Factorio bot. "
+                                "You run on the DeepSeek V4 Flash Free model "
+                                "via the OpenCode AI API.\n"
+                                "The server is owned and operated by dlbattle.\n"
+                                "Only reply if the player was directly asking Jimbo a question. "
+                                "Otherwise reply SKIP. "
+                                "If you do reply, vary your response — "
+                                "do not repeat the same greeting every time.\n"
                                 'If no reply is needed, just say "SKIP".'
                             )
-                        result = ollama.chat(
-                            model="qwen2.5-32b-ctx32k",
+                        result = ai.chat.completions.create(
+                            model="deepseek-v4-flash-free",
                             messages=[{"role": "user", "content": step3_prompt}],
                         )
-                        reply = result.message.content.strip()
+                        reply = result.choices[0].message.content.strip()
                         if reply == "SKIP":
                             reply = None
                             print(f"Model chose to stay silent", flush=True)
@@ -242,10 +340,43 @@ if __name__ == "__main__":
                         try:
                             for reply_line in reply.split("\n"):
                                 reply_line = reply_line.strip()
-                                if reply_line:
-                                    client.run(f"Jimbo says {reply_line}")
+                                if not reply_line:
+                                    continue
+                                if reply_line.startswith("(Note:") or reply_line.startswith("(Corrected"):
+                                    continue
+                                client.run(f"Jimbo says {reply_line}")
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)
+
+                    # Spontaneous comment check after message processing
+                    if time.time() - last_spontaneous >= 600:
+                        recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
+                        sp_prompt = (
+                            "You are Jimbo, a helpful Factorio bot. "
+                            "You run on the DeepSeek V4 Flash Free model "
+                            "via the OpenCode AI API.\n"
+                            "The server is owned and operated by dlbattle.\n"
+                            "Here is the recent chat:\n"
+                            f"{recent_text}\n\n"
+                            "You can make a spontaneous comment if something "
+                            "interesting is happening. Reply with a short "
+                            "chat message (1 sentence) or just 'SKIP'."
+                        )
+                        try:
+                            last_spontaneous = time.time()
+                            result = ai.chat.completions.create(
+                                model="deepseek-v4-flash-free",
+                                messages=[{"role": "user", "content": sp_prompt}],
+                            )
+                            sp_reply = result.choices[0].message.content.strip()
+                            if sp_reply != "SKIP":
+                                print(f"Spontaneous: {sp_reply}", flush=True)
+                                for sp_line in sp_reply.split("\n"):
+                                    sp_line = sp_line.strip()
+                                    if sp_line and not sp_line.startswith("(Note:") and not sp_line.startswith("(Corrected"):
+                                        client.run(f"Jimbo says {sp_line}")
+                        except Exception as e:
+                            print(f"Spontaneous error: {e}", flush=True)
 
             except OSError:
                 print("Lost log file, reopening...", flush=True)
