@@ -4,6 +4,7 @@ last_commit.txt
 last_startup_summary.txt
 known_players.txt
 rconpw
+groq-api-key.txt
 __pycache__/
 *.old
 *.swp

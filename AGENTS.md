@@ -18,6 +18,9 @@ Read `OPERATIONS.md` when a task involves environment setup, RCON connectivity,
 AI provider/model changes, local Ollama fallback, process management, live or
 offline testing, `known_players.txt` seeding, or runtime-pitfall diagnosis.
 
+Read `HANDOFF.md` when resuming work after a `/handoff`. Verify its status claims
+against Git and the current files; `AGENTS.md` remains authoritative.
+
 **If this coding context is running on a local model through Ollama, read
 `OPERATIONS.md` before editing anything.** It contains the local model's memory,
 latency, and coding-workaround constraints plus provider-switch history.
@@ -45,8 +48,8 @@ these project-specific choices in one top-level configuration block:
 - `server_owner` is the only place the owner's username is configured.
 - `ai_profile_name` is the only setting changed to switch the active AI model and
   its associated provider.
-- `ai_profiles` contains the complete predefined `openai`, `deepseek`, and
-  `ollama` model/provider settings recovered from working project history.
+- `ai_profiles` contains the complete predefined `openai`, `deepseek`, `groq`,
+  and `ollama` model/provider settings recovered from working project history.
 
 Do not scatter owner names, model identifiers, provider names, endpoints, or
 model-specific identity text through the code. Prompts and authorization checks

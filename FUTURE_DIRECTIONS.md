@@ -42,6 +42,13 @@ natural interaction, and restrained behavior.
    matching. It should remain lightweight and should not introduce a testing or
    configuration framework larger than the bot itself.
 
+5. **Optional provider fallback.** Jimbo's model profiles are intentionally
+   self-contained so a future explicit fallback order could reuse them without
+   duplicating provider configuration. If pursued, fallback should remain
+   optional, preserve the normal retry behavior, report the model that actually
+   answered, and avoid silently switching models for permanent configuration or
+   authentication errors.
+
 Context and factual knowledge are separate problems. A larger dialogue window
 would not have prevented the incorrect solid-fuel energy answer, and the current
 server log does not expose enough information to answer session death counts.

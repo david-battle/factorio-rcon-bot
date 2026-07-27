@@ -28,6 +28,22 @@ ai_profiles = {
         "base_url": "https://opencode.ai/zen/v1",
         "auth_provider": "opencode",
     },
+    "groq": {
+        "provider": "openai-compatible",
+        "model": "openai/gpt-oss-120b",
+        "identity": "You run as OpenAI GPT-OSS 120B via Groq.",
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key_path": os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "groq-api-key.txt"
+        ),
+        "request_options": {
+            "max_completion_tokens": 256,
+            "extra_body": {
+                "include_reasoning": False,
+                "reasoning_effort": "low",
+            },
+        },
+    },
     "ollama": {
         "provider": "ollama",
         "model": "qwen2.5-32b-ctx32k",
@@ -49,7 +65,7 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "My AI model and provider can now be switched together from one setting."
+    "I can now switch to Groq's GPT-OSS 120B when my owner chooses it."
 )
 
 opencode_config = json.dumps({
@@ -124,19 +140,25 @@ def ask_opencode(prompt, profile):
 def ask_openai_compatible(prompt, profile):
     from openai import OpenAI
 
-    auth_path = os.path.expanduser("~/.local/share/opencode/auth.json")
-    with open(auth_path) as auth_file:
-        api_key = json.load(auth_file)[profile["auth_provider"]]["key"]
+    if "api_key_path" in profile:
+        with open(profile["api_key_path"]) as key_file:
+            api_key = key_file.read().strip()
+    else:
+        auth_path = os.path.expanduser("~/.local/share/opencode/auth.json")
+        with open(auth_path) as auth_file:
+            api_key = json.load(auth_file)[profile["auth_provider"]]["key"]
     client = OpenAI(
         api_key=api_key,
         base_url=profile["base_url"],
         timeout=120,
         max_retries=0,
     )
-    result = client.chat.completions.create(
-        model=profile["model"],
-        messages=[{"role": "user", "content": prompt}],
-    )
+    request = {
+        "model": profile["model"],
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    request.update(profile.get("request_options", {}))
+    result = client.chat.completions.create(**request)
     return result.choices[0].message.content.strip()
 
 

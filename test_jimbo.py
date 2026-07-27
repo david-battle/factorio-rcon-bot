@@ -14,7 +14,9 @@ def log_time(timestamp):
 
 class DialogueTests(unittest.TestCase):
     def test_all_historical_ai_profiles_are_predefined(self):
-        self.assertEqual(set(jimbo.ai_profiles), {"openai", "deepseek", "ollama"})
+        self.assertEqual(
+            set(jimbo.ai_profiles), {"openai", "deepseek", "groq", "ollama"}
+        )
         self.assertEqual(
             jimbo.ai_profiles["openai"]["model"], "openai/gpt-5.4-mini"
         )
@@ -25,6 +27,9 @@ class DialogueTests(unittest.TestCase):
             jimbo.ai_profiles["ollama"]["model"], "qwen2.5-32b-ctx32k"
         )
         self.assertEqual(
+            jimbo.ai_profiles["groq"]["model"], "openai/gpt-oss-120b"
+        )
+        self.assertEqual(
             jimbo.ai_profiles["deepseek"]["provider"], "openai-compatible"
         )
         self.assertEqual(
@@ -32,6 +37,15 @@ class DialogueTests(unittest.TestCase):
             "https://opencode.ai/zen/v1",
         )
         self.assertEqual(jimbo.ai_profiles["deepseek"]["auth_provider"], "opencode")
+        self.assertEqual(jimbo.ai_profiles["groq"]["provider"], "openai-compatible")
+        self.assertEqual(
+            jimbo.ai_profiles["groq"]["base_url"],
+            "https://api.groq.com/openai/v1",
+        )
+        self.assertEqual(
+            os.path.basename(jimbo.ai_profiles["groq"]["api_key_path"]),
+            "groq-api-key.txt",
+        )
         self.assertEqual(jimbo.ai_profiles["ollama"]["provider"], "ollama")
         self.assertEqual(
             jimbo.ai_profiles["ollama"]["host"], "http://127.0.0.1:11434"
@@ -44,6 +58,7 @@ class DialogueTests(unittest.TestCase):
         cases = (
             ("openai", "ask_opencode"),
             ("deepseek", "ask_openai_compatible"),
+            ("groq", "ask_openai_compatible"),
             ("ollama", "ask_ollama"),
         )
         for profile_name, adapter_name in cases:
@@ -78,6 +93,34 @@ class DialogueTests(unittest.TestCase):
         constructor.return_value.chat.completions.create.assert_called_once_with(
             model="deepseek-v4-flash-free",
             messages=[{"role": "user", "content": "prompt"}],
+        )
+
+    def test_groq_adapter_uses_key_file_and_hides_reasoning(self):
+        profile = jimbo.ai_profiles["groq"]
+        result = Mock()
+        result.choices = [Mock(message=Mock(content=" response "))]
+        with patch("builtins.open", mock_open(
+            read_data="groq-secret"
+        )), patch("openai.OpenAI") as constructor:
+            constructor.return_value.chat.completions.create.return_value = result
+
+            response = jimbo.ask_openai_compatible("prompt", profile)
+
+        self.assertEqual(response, "response")
+        constructor.assert_called_once_with(
+            api_key="groq-secret",
+            base_url="https://api.groq.com/openai/v1",
+            timeout=120,
+            max_retries=0,
+        )
+        constructor.return_value.chat.completions.create.assert_called_once_with(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": "prompt"}],
+            max_completion_tokens=256,
+            extra_body={
+                "include_reasoning": False,
+                "reasoning_effort": "low",
+            },
         )
 
     def test_ollama_adapter_uses_historical_host_and_timeout(self):

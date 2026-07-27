@@ -47,6 +47,7 @@ Available profiles:
 | --- | --- | --- | --- |
 | `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
 | `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
+| `groq` | OpenAI-compatible Groq API | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1`, ignored `groq-api-key.txt` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
 The current profile is `openai`:
@@ -80,6 +81,30 @@ instead of 30-60 seconds.
 DeepSeek later exhausted its free quota with HTTP 429 responses. Direct
 `gpt-4.1-mini` API access had no paid quota, so Jimbo moved to the available
 OpenCode OpenAI-provider equivalent, `openai/gpt-5.4-mini`, on 2026-07-26.
+
+### Groq
+
+The optional `groq` profile uses `openai/gpt-oss-120b`. It reuses the
+OpenAI-compatible adapter with a dedicated key in gitignored
+`groq-api-key.txt`, a 256-token completion limit, low reasoning effort, and
+reasoning excluded from the response.
+
+The archived bot recorded 167 successful responses from this model, and both
+its proof of concept and full bot used it live. It was dropped after rate-limit
+and quota exhaustion, not an integration failure. A console-only check on
+2026-07-27 confirmed that the current credential and model returned the exact
+requested text in 9.06 seconds. Account limits remain the main operational risk
+because Jimbo normally makes two model calls per handled chat request.
+
+Mistral was investigated but is not a configured profile. Its archived and
+OpenCode credentials both returned HTTP 401 in manual checks, and the owner
+prefers DeepSeek rather than another model accessed through OpenCode.
+
+Official Groq references:
+
+- Model: `https://console.groq.com/docs/model/openai/gpt-oss-120b`
+- OpenAI compatibility: `https://console.groq.com/docs/openai`
+- Reasoning behavior: `https://console.groq.com/docs/reasoning`
 
 ### Local Ollama Fallback
 
