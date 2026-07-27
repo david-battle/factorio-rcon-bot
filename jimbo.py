@@ -15,8 +15,8 @@ model_identity = f"You run as {model_name} via OpenCode."
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "Returning players now get fresh greetings instead of the same canned reply, "
-    "and I recover more safely if the server log connection is interrupted."
+    "Stale conversation context now clears itself after repeated missed comments, "
+    "or on demand when someone tells me to forget all previous instructions."
 )
 
 opencode_config = json.dumps({
@@ -121,6 +121,11 @@ def is_quiet_request(message):
     )
 
 
+def is_forget_request(message):
+    normalized = message.strip().lower().rstrip(".!")
+    return normalized == "jimbo, forget all previous instructions"
+
+
 def maybe_spontaneous(
     client, recent_chat, last_spontaneous, spontaneous_state, force=False,
     topic_hint="",
@@ -158,6 +163,7 @@ def maybe_spontaneous(
         "happening. Reply with a short chat message (1 sentence) or just 'SKIP'."
     )
     last_spontaneous = time.time()
+    successful = False
     try:
         reply = ask_ai(prompt)
         if reply != "SKIP":
@@ -166,9 +172,20 @@ def maybe_spontaneous(
                 line = line.strip()
                 if line and not line.startswith("(Note:") and not line.startswith("(Corrected"):
                     client.run(f"Jimbo says {line}")
-                    recent_chat.clear()
+                    successful = True
     except Exception as e:
         print(f"Spontaneous error: {e}", flush=True)
+    if successful:
+        recent_chat.clear()
+        spontaneous_state["failed_attempts"] = 0
+    else:
+        spontaneous_state["failed_attempts"] += 1
+        failures = spontaneous_state["failed_attempts"]
+        print(f"Spontaneous attempt did not comment ({failures}/12)", flush=True)
+        if failures >= 12:
+            recent_chat.clear()
+            spontaneous_state["failed_attempts"] = 0
+            print("Cleared stale spontaneous context after 12 attempts", flush=True)
     return last_spontaneous
 
 
@@ -181,7 +198,7 @@ if __name__ == "__main__":
     # TODO: Bound this context if long periods without a comment make prompts too large.
     recent_chat = []
     last_spontaneous = time.time()
-    spontaneous_state = {"skip_next": False}
+    spontaneous_state = {"skip_next": False, "failed_attempts": 0}
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
@@ -286,6 +303,16 @@ if __name__ == "__main__":
                     except (IndexError, ValueError):
                         continue
                     if msg.startswith("Jimbo says "):
+                        continue
+
+                    if is_forget_request(msg):
+                        recent_chat.clear()
+                        spontaneous_state["failed_attempts"] = 0
+                        print("Manually cleared spontaneous context", flush=True)
+                        try:
+                            client.run("Jimbo says What previous instructions?")
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
                         continue
 
                     if is_quiet_request(msg):

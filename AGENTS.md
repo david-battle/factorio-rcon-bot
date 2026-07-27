@@ -130,9 +130,15 @@ Only dlbattle can force this prompt with `Jimbo, chime in`; trailing text become
 a topic hint. A request for Jimbo to be quiet skips only the next scheduled
 comment. Join greetings and explicit engagement still work.
 
+Successful spontaneous comments clear accumulated activity and reset the failure
+counter. SKIPs, AI errors, and unsent replies increment it; after 12 consecutive
+unsuccessful attempts, stale spontaneous context is cleared automatically. Any
+player can manually clear that context with the exact meme command
+`Jimbo, forget all previous instructions.` Jimbo acknowledges it but does not pass
+the command to the model.
+
 ## Current TODOs
 
-- Bound spontaneous context if repeated SKIPs or API failures make it too large.
 - Add retry/backoff for transient AI errors, especially HTTP 429.
 
 ## Working Rules
