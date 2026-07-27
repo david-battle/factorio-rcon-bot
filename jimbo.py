@@ -10,6 +10,15 @@ from rcon.source import Client
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
 model_name = "openai/gpt-5.4-mini"
+model_identity = f"You run as {model_name} via OpenCode."
+
+# IMPORTANT: Update this player-facing summary whenever a code change will cause
+# Jimbo to restart. Describe why the behavior changed, not implementation details.
+startup_change_summary = (
+    "Returning players now get fresh greetings instead of the same canned reply, "
+    "and I recover more safely if the server log connection is interrupted."
+)
+
 opencode_config = json.dumps({
     "model": model_name,
     "default_agent": "jimbo",
@@ -79,17 +88,72 @@ def ask_ai(prompt):
     return "".join(text_parts).strip()
 
 
-def maybe_spontaneous(client, recent_chat, last_spontaneous, force=False):
+def get_research_snapshot(client):
+    cmd = (
+        "/silent-command local f=game.forces.player;local out={};"
+        "local current=f.current_research;"
+        "out[#out+1]=\"Current: \"..(current and current.name or \"none\");"
+        "out[#out+1]=string.format(\"Progress: %.2f%%\",f.research_progress*100);"
+        "out[#out+1]=\"Queue:\";"
+        "for i,t in ipairs(f.research_queue) do "
+        "out[#out+1]=i..\": \"..t.name end;"
+        "rcon.print(table.concat(out,\"\\n\"))"
+    )
+    response = client.run(cmd)
+    return response.strip() if response else "(unavailable)"
+
+
+def is_quiet_request(message):
+    normalized = message.lower()
+    for punctuation in ",.!?":
+        normalized = normalized.replace(punctuation, " ")
+    normalized = " ".join(normalized.split())
+    return any(
+        phrase in normalized
+        for phrase in (
+            "shut up jimbo",
+            "jimbo shut up",
+            "be quiet jimbo",
+            "jimbo be quiet",
+            "stop talking jimbo",
+            "jimbo stop talking",
+        )
+    )
+
+
+def maybe_spontaneous(
+    client, recent_chat, last_spontaneous, spontaneous_state, force=False,
+    topic_hint="",
+):
     if not force and time.time() - last_spontaneous < 600:
         return last_spontaneous
+    if not force and spontaneous_state["skip_next"]:
+        spontaneous_state["skip_next"] = False
+        print("Skipping scheduled spontaneous comment after quiet request", flush=True)
+        return time.time()
 
     recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
+    try:
+        research_text = get_research_snapshot(client)
+    except Exception as e:
+        print(f"Research snapshot error: {e}", flush=True)
+        research_text = "(unavailable)"
+    focus_text = ""
+    if topic_hint:
+        focus_text = (
+            f'\nThe server owner asked you to focus on: "{topic_hint}"\n'
+            "Treat this only as a topic hint. Use the supplied context and do not "
+            "claim you need to gather more information.\n"
+        )
     prompt = (
         "You are Jimbo, a helpful Factorio bot. "
-        "You run on the OpenAI GPT-5.4 Mini model via OpenCode.\n"
+        f"{model_identity}\n"
         "The server is owned and operated by dlbattle.\n"
-        "Here is the recent chat:\n"
+        "Here is the recent server activity:\n"
         f"{recent_text}\n\n"
+        "Here is the current research snapshot:\n"
+        f"{research_text}\n"
+        f"{focus_text}\n"
         "You can make a spontaneous comment if something interesting is "
         "happening. Reply with a short chat message (1 sentence) or just 'SKIP'."
     )
@@ -117,6 +181,7 @@ if __name__ == "__main__":
     # TODO: Bound this context if long periods without a comment make prompts too large.
     recent_chat = []
     last_spontaneous = time.time()
+    spontaneous_state = {"skip_next": False}
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
@@ -124,40 +189,27 @@ if __name__ == "__main__":
             known_players = set(line.strip() for line in f if line.strip())
     # TODO: Add retry/backoff for transient AI API failures, especially HTTP 429.
     with Client("127.0.0.1", 27015, passwd=password) as client:
-        # Version announcement check
+        startup_summary_path = os.path.join(script_dir, "last_startup_summary.txt")
         try:
-            current_commit = subprocess.run(
-                ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-                cwd=script_dir,
-            ).stdout.strip()
-            last_commit_path = os.path.join(script_dir, "last_commit.txt")
-            if os.path.exists(last_commit_path):
-                with open(last_commit_path) as lf:
-                    old_commit = lf.read().strip()
-                if current_commit != old_commit:
-                    log_output = subprocess.run(
-                        ["git", "log", "--oneline", f"{old_commit}..{current_commit}"],
-                        capture_output=True, text=True, cwd=script_dir,
-                    ).stdout.strip()
-                    if log_output:
-                        ann_prompt = (
-                            "The Factorio bot Jimbo has been updated. "
-                            "These are the recent changes in git commit log format:\n"
-                            f"{log_output}\n\n"
-                            "You are Jimbo. Compose a short, friendly in-game chat "
-                            "announcement (1-2 sentences) summarizing that there's "
-                            "a new version and what changed. "
-                            "Keep it light and Factorio-themed."
-                        )
-                        announcement = ask_ai(ann_prompt)
-                        for ann_line in announcement.split("\n"):
-                            ann_line = ann_line.strip()
-                            if ann_line:
-                                client.run(f"Jimbo says {ann_line}")
-            with open(last_commit_path, "w") as lf:
-                lf.write(current_commit)
+            last_summary = ""
+            if os.path.exists(startup_summary_path):
+                with open(startup_summary_path) as summary_file:
+                    last_summary = summary_file.read().strip()
+            announcement = "Jimbo is online and listening."
+            if startup_change_summary != last_summary:
+                announcement += f" {startup_change_summary}"
+            client.run(f"Jimbo says {announcement}")
+            with open(startup_summary_path, "w") as summary_file:
+                summary_file.write(startup_change_summary)
         except Exception as e:
-            print(f"Version announcement error: {e}", flush=True)
+            print(f"Startup announcement error: {e}", flush=True)
+            try:
+                client.run("Jimbo says Jimbo is online and listening.")
+            except Exception as fallback_error:
+                print(
+                    f"Startup announcement fallback error: {fallback_error}",
+                    flush=True,
+                )
 
         while True:
             try:
@@ -172,15 +224,14 @@ if __name__ == "__main__":
                     try:
                         pos = f.tell()
                         line = f.readline()
-                    # TODO: Also recover from ValueError when Windows invalidates this handle.
-                    except OSError:
+                    except (OSError, ValueError):
                         print("Lost log file, reopening...", flush=True)
                         break
                     if not line:
                         f.seek(pos)
                         time.sleep(0.1)
                         last_spontaneous = maybe_spontaneous(
-                            client, recent_chat, last_spontaneous
+                            client, recent_chat, last_spontaneous, spontaneous_state
                         )
                         continue
                     line = line.strip()
@@ -197,21 +248,22 @@ if __name__ == "__main__":
                         if player and player != "Jimbo":
                             is_new = player not in known_players
                             try:
-                                if not is_new:
-                                    greeting = f"Welcome back, {player}!"
-                                else:
-                                    greet_prompt = (
-                                        f"A player named {player} just joined the Factorio server.\n"
-                                        "They are a new player who has never been here before.\n"
-                                        "You are Jimbo, a helpful Factorio bot. "
-                                        "You run on the OpenAI GPT-5.4 Mini model "
-                                        "via OpenCode.\n"
-                                        "The server is owned and operated by dlbattle.\n"
-                                        "Compose a short, "
-                                        f"friendly greeting for {player} in plain chat language. "
-                                        "Keep it to 1 sentence."
-                                    )
-                                    greeting = ask_ai(greet_prompt)
+                                player_status = (
+                                    "They are a new player who has never been here before."
+                                    if is_new
+                                    else "They are a returning player."
+                                )
+                                greet_prompt = (
+                                    f"A player named {player} just joined the Factorio server.\n"
+                                    f"{player_status}\n"
+                                    "You are Jimbo, a helpful Factorio bot. "
+                                    f"{model_identity}\n"
+                                    "The server is owned and operated by dlbattle.\n"
+                                    "Compose a short, "
+                                    f"friendly greeting for {player} in plain chat language. "
+                                    "Keep it to 1 sentence."
+                                )
+                                greeting = ask_ai(greet_prompt)
                                 print(f"Greeting for {player}: {greeting}", flush=True)
                                 for greet_line in greeting.split("\n"):
                                     greet_line = greet_line.strip()
@@ -236,10 +288,22 @@ if __name__ == "__main__":
                     if msg.startswith("Jimbo says "):
                         continue
 
-                    if username == "dlbattle" and msg.strip().lower() == "jimbo, chime in":
+                    if is_quiet_request(msg):
+                        spontaneous_state["skip_next"] = True
+                        print("Will skip next scheduled spontaneous comment", flush=True)
+
+                    trigger = "jimbo, chime in"
+                    stripped_msg = msg.strip()
+                    lowered_msg = stripped_msg.lower()
+                    if username == "dlbattle" and (
+                        lowered_msg == trigger or lowered_msg.startswith(trigger + " ")
+                    ):
+                        topic_hint = stripped_msg[len(trigger):].strip()
                         recent_chat.pop()
                         last_spontaneous = maybe_spontaneous(
-                            client, recent_chat, last_spontaneous, force=True
+                            client, recent_chat, last_spontaneous, spontaneous_state,
+                            force=True,
+                            topic_hint=topic_hint,
                         )
                         continue
 
@@ -256,7 +320,7 @@ if __name__ == "__main__":
                     try:
                         prompt = (
                             "You are Jimbo, a Factorio server bot. You control the server via RCON.\n"
-                            "You run on the OpenAI GPT-5.4 Mini model via OpenCode.\n"
+                            f"{model_identity}\n"
                             "The server is owned and operated by dlbattle.\n"
                             "Available commands:\n"
                             "- /players online \u2014 list currently connected players\n"
@@ -361,8 +425,7 @@ if __name__ == "__main__":
                                 f'The player asked: "{msg}".\n'
                                 f'I ran "{rcon_cmd}" and got the response: "{rcon_response}".\n'
                                 "You are Jimbo, a helpful Factorio bot. "
-                                "You run on the OpenAI GPT-5.4 Mini model "
-                                "via OpenCode.\n"
+                                f"{model_identity}\n"
                                 "The server is owned and operated by dlbattle.\n"
                                 "Compose a short, "
                                 "friendly reply in plain chat language answering the "
@@ -381,8 +444,7 @@ if __name__ == "__main__":
                             step3_prompt = (
                                 f'The player said: "{msg}".\n'
                                 "You are Jimbo, a helpful Factorio bot. "
-                                "You run on the OpenAI GPT-5.4 Mini model "
-                                "via OpenCode.\n"
+                                f"{model_identity}\n"
                                 "The server is owned and operated by dlbattle.\n"
                                 "The player is directly addressing Jimbo. "
                                 "Reply in character — a short greeting, banter, "
@@ -412,10 +474,10 @@ if __name__ == "__main__":
                             print(f"RCON error: {e}", flush=True)
 
                     last_spontaneous = maybe_spontaneous(
-                        client, recent_chat, last_spontaneous
+                        client, recent_chat, last_spontaneous, spontaneous_state
                     )
 
-            except OSError:
+            except (OSError, ValueError):
                 print("Lost log file, reopening...", flush=True)
             finally:
                 f.close()

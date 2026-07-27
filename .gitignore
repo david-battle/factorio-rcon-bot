@@ -1,6 +1,7 @@
 jimbo.log
 jimbo.pid
 last_commit.txt
+last_startup_summary.txt
 known_players.txt
 rconpw
 __pycache__/
