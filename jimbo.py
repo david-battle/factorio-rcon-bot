@@ -218,7 +218,6 @@ if __name__ == "__main__":
     with open(os.path.join(script_dir, "rconpw")) as f:
         password = f.read().strip()
     chat_history = deque(maxlen=2)
-    # TODO: Bound this context if long periods without a comment make prompts too large.
     recent_chat = []
     last_spontaneous = time.time()
     spontaneous_state = {"skip_next": False, "failed_attempts": 0}
