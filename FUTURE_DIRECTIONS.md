@@ -29,6 +29,12 @@ natural interaction, and restrained behavior.
    The difficult design questions are which facts matter, how often to inspect
    them, and what thresholds justify speaking up.
 
+   One observed intent failure is that questions asking what kind of space ship to
+   build are classified as requests to list existing platforms. Jimbo then treats
+   platform names or their item markup as design recommendations. Future intent
+   work should distinguish platform inventory questions from ship-design advice
+   and avoid presenting a platform query as relevant evidence for the latter.
+
 4. **Formal offline scenario harness.** The project already supports manual log
    injection and mocked AI or RCON checks. Formalize that capability into a small,
    deterministic scenario harness for complete flows such as chat classification,

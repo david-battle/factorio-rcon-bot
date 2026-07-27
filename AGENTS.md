@@ -7,6 +7,11 @@ This is a deliberately simple Factorio bot in `~/factorio-rcon-bot` on branch
 queries and chat replies. Do not add unrequested features or infrastructure such
 as databases, web servers, or configuration frameworks.
 
+Keep both the implementation and this always-loaded instruction file minimal.
+Put infrequently needed setup steps, provider history, recovery procedures, and
+other operational detail in `OPERATIONS.md`; keep only rules that future coding
+contexts routinely need in `AGENTS.md`.
+
 ## Conditional Reference
 
 Read `OPERATIONS.md` when a task involves environment setup, RCON connectivity,
