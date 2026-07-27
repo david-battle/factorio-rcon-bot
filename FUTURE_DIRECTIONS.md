@@ -6,11 +6,12 @@ commands. These are ideas to explore, not committed implementation plans. Any
 work should preserve the bot's simple architecture and favor useful context,
 natural interaction, and restrained behavior.
 
-1. **Shared conversational and server context.** Factorio chat is almost always
-   public, so per-player conversational memory would feel artificial and lose
-   useful context. Jimbo's richer spontaneous replies already benefit from seeing
-   a larger shared activity window. Future context work should build on that
-   server-wide view while keeping memory bounded and avoiding stale information.
+1. **Refine shared conversational context.** The first bounded server-wide
+   dialogue is implemented: 12 turns, 15 minutes, about 4,000 characters, Jimbo's
+   delivered replies, relevant RCON facts, and restart hydration. Future work
+   should tune those limits only from observed chat and consider richer context
+   only when a concrete failure remains. See `CONVERSATIONAL_CONTEXT_PLAN.md` for
+   the implemented design and validation criteria.
 
 2. **Event-aware commentary.** Parse meaningful activity into recognizable events
    instead of treating every log line as equivalent raw text. Research
@@ -34,6 +35,13 @@ natural interaction, and restrained behavior.
    follow-up replies, joins, spontaneous comments, failures, and fuzzy trigger
    matching. It should remain lightweight and should not introduce a testing or
    configuration framework larger than the bot itself.
+
+Context and factual knowledge are separate problems. A larger dialogue window
+would not have prevented the incorrect solid-fuel energy answer, and the current
+server log does not expose enough information to answer session death counts.
+Prototype values, technology effects, and similar factual questions should
+eventually use targeted RCON/Lua queries. Death tracking would require explicit
+game instrumentation or another reliable event source rather than model memory.
 
 The strongest product direction is a combination of event-aware context and
 natural situational awareness. A useful first exploration would identify the

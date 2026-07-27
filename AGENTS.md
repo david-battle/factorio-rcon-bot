@@ -32,6 +32,23 @@ replace the complete enclosing function or file with Write, then validate with
 
 Do not substitute another RCON library; this exact connection is verified.
 
+## Central Configuration
+
+**Read this before changing owner, model, or provider behavior.** `jimbo.py` keeps
+these project-specific choices in one top-level configuration block:
+
+- `server_owner` is the only place the owner's username is configured.
+- `ai_profile_name` is the only setting changed to switch the active AI model and
+  its associated provider.
+- `ai_profiles` contains the complete predefined `openai`, `deepseek`, and
+  `ollama` model/provider settings recovered from working project history.
+
+Do not scatter owner names, model identifiers, provider names, endpoints, or
+model-specific identity text through the code. Prompts and authorization checks
+must derive them from the selected configuration. When adding or repairing a
+profile, maintain its provider adapter, tests, and the profile reference in
+`OPERATIONS.md`. Do not introduce a general configuration framework for this.
+
 ## Architecture
 
 Keep three conceptual moving parts:
@@ -62,6 +79,24 @@ Keep three conceptual moving parts:
 The classifier defaults to SKIP unless the current message contains "Jimbo" so
 the bot does not interrupt player-to-player chat. No-RCON replies may also SKIP.
 Strip output lines beginning with `(Note:` or `(Corrected`.
+
+## Shared Dialogue Context
+
+Jimbo keeps one server-wide conversation because Factorio chat is public. It is
+bounded to the newest 12 logical turns, 15 minutes, and roughly 4,000 rendered
+characters. It records player messages, successfully delivered Jimbo replies,
+relevant spontaneous comments, and exact RCON facts associated with replies.
+
+The current message is separate from history in prompts. History is background
+only and must never revive an old request. Startup hydration reads recent player
+and Jimbo chat without responding retroactively, filters startup and greeting
+noise, and resumes tailing from the hydration endpoint so startup-time messages
+are not lost. The forget meme clears both dialogue and spontaneous context.
+
+Join greetings are intentionally excluded from dialogue. Successfully greeting a
+player also resets the spontaneous timer so Jimbo does not welcome them twice.
+Maintain these rules and the deterministic coverage in `test_jimbo.py` when
+changing chat flow.
 
 ### Intentional Flexibility
 
@@ -99,17 +134,18 @@ for. Multi-line replies require one RCON command per line.
 
 ## AI Provider
 
-The current model is `openai/gpt-5.4-mini`, invoked by `ask_ai()` through
-`opencode run --pure --agent jimbo --format json`. The injected agent has no tools
-or filesystem access. It runs from `/tmp/opencode` with project configuration and
-external skills disabled, so in-game Jimbo does not receive this file.
+The current `ai_profile_name` is `openai`, selecting `openai/gpt-5.4-mini` through
+OpenCode. The injected agent has no tools or filesystem access. It runs from
+`/tmp/opencode` with project configuration and external skills disabled, so
+in-game Jimbo does not receive this file.
 
 `ask_ai()` retries transient timeouts, rate limits, and common HTTP 5xx failures
 twice, waiting 2 seconds and then 4 seconds. Permanent failures are not retried.
 
-Reply prompts derive self-identification from `model_name` in `jimbo.py`; update
-that one value when switching models. Prompts identify dlbattle as server owner.
-For provider setup, quota history, and local fallback, read `OPERATIONS.md`.
+Reply prompts derive self-identification from the selected AI profile and identify
+`server_owner` as the owner. Switch profiles only through `ai_profile_name`. For
+provider setup, profile names, quota history, and local fallback, read
+`OPERATIONS.md`.
 
 ## Startup Announcement
 

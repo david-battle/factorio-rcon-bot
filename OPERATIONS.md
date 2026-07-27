@@ -36,7 +36,20 @@ The password is copied from the live server configuration into the gitignored
 
 ## AI Provider
 
-The current provider is OpenAI through OpenCode:
+AI selection is centralized at the top of `jimbo.py`. Change only
+`ai_profile_name` to switch the model and its associated provider. Keep
+`ai_profiles`, its provider adapters, tests, and this reference synchronized; do
+not duplicate model or provider choices elsewhere in application code.
+
+Available profiles:
+
+| Profile | Provider path | Model | Provider-specific setting |
+| --- | --- | --- | --- |
+| `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
+| `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
+| `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
+
+The current profile is `openai`:
 
 - Model: `openai/gpt-5.4-mini`
 - Auth: OpenCode's configured `openai` provider in
@@ -54,8 +67,7 @@ The current provider is OpenAI through OpenCode:
 - Transient timeouts, rate limits, and common HTTP 5xx failures get up to three
   total attempts with 2-second and 4-second backoff. Permanent failures fail on
   the first attempt.
-- Reply prompts derive model identity from `model_name` in `jimbo.py`. Update
-  that one value when switching providers or models.
+- Reply prompts derive model identity from the selected profile.
 
 ### Provider History
 
@@ -115,6 +127,76 @@ Test joins similarly:
 ```bash
 printf '%s [JOIN] TestPlayer joined the game\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> /mnt/d/factorio-server/server-console.log
 ```
+
+## Save Checkpoints
+
+Factorio's dedicated server treats the file passed to `--start-server` as a
+mutable live save. In addition to rotating `_autosaveN.zip` files, it saves back
+to the loaded file when the last player disconnects and on a clean shutdown.
+Therefore, do not treat `New Space Age Server.zip` as a durable restore point.
+
+Use these roles consistently:
+
+- `/mnt/d/factorio-server/saves/New Space Age Server.zip` is the mutable live
+  save from which the server starts.
+- `/mnt/d/factorio-server/saves/_autosaveN.zip` files are Factorio's rotating
+  short-term recovery saves.
+- Timestamped files under `/mnt/d/factorio-server/saves/archive/` are immutable
+  manual checkpoints.
+
+Do not use `server-save <filename>` to create a checkpoint. A relative name is
+resolved under the Factorio installation's write-data directory rather than
+beside the loaded save, and a failed save terminates the multiplayer server.
+
+### Create A Checkpoint
+
+When asked to create a checkpoint:
+
+1. Use the verified `rcon.source.Client` connection described above to run
+   `/server-save`. Wait for the RCON call to complete successfully. This first
+   makes the mutable live save current.
+2. Create the archive directory if it does not exist.
+3. Copy the live save to an archive filename in the form
+   `checkpoint-YYYY-MM-DD_HH-mm-ss.zip`. Never overwrite an existing checkpoint.
+4. Verify that the checkpoint exists, is nonempty, and is a readable ZIP file.
+5. Report the exact checkpoint path. Do not restart Factorio or Jimbo.
+
+The copy, directory creation, and ZIP validation can be performed from WSL. Do
+not print the RCON password. If `/server-save` fails, do not copy the live file
+and do not claim that a checkpoint was created.
+
+### Restore The Last Checkpoint
+
+Restoring replaces the current live world and disconnects players. Treat it as
+destructive and obtain explicit confirmation immediately before stopping the
+server. Then:
+
+1. Select the lexicographically last file matching
+   `/mnt/d/factorio-server/saves/archive/checkpoint-*.zip`. With the timestamp
+   format above, this is the newest checkpoint. Do not select an `_autosaveN.zip`
+   or a `pre-restore-*.zip` file.
+2. Validate that the selected checkpoint is a readable, nonempty ZIP before
+   stopping anything.
+3. Stop Factorio cleanly using the server's existing Windows process-management
+   procedure and verify that the process exited. Do not kill it while it is
+   writing a save. Its final save may overwrite the live file; that is expected.
+4. Preserve that final live file as
+   `archive/pre-restore-YYYY-MM-DD_HH-mm-ss.zip` for emergency recovery.
+5. Copy the selected checkpoint to a temporary file in
+   `/mnt/d/factorio-server/saves/`, validate the temporary ZIP, then replace
+   `New Space Age Server.zip` with it. Keep the selected archive checkpoint
+   unchanged.
+6. Start Factorio with the normal server launcher. Confirm in
+   `/mnt/d/factorio-standalone/current/factorio-current.log` that it loaded
+   `D:\factorio-server\saves\New Space Age Server.zip` successfully, then verify
+   that RCON is available.
+7. Jimbo should reconnect automatically. Restart Jimbo only if its log shows
+   that reconnection continues to fail after Factorio is available.
+
+If no matching checkpoint exists, validation fails, the server's stop/start
+procedure is unclear, or the live save changes unexpectedly during restoration,
+stop and ask rather than guessing. Report the checkpoint restored, the emergency
+pre-restore copy, and the verification result.
 
 ## Runtime Pitfalls
 
