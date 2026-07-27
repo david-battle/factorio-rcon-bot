@@ -82,6 +82,31 @@ DeepSeek later exhausted its free quota with HTTP 429 responses. Direct
 `gpt-4.1-mini` API access had no paid quota, so Jimbo moved to the available
 OpenCode OpenAI-provider equivalent, `openai/gpt-5.4-mini`, on 2026-07-26.
 
+### Gemini and Google Antigravity
+
+The earlier repository at
+`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints/jimbo-local-bot`
+contains direct chat-log evidence that Google Antigravity with Gemini was used
+briefly to continue Jimbo development on 2026-07-22. The owner reported running
+out of free quota within ten minutes and later said Gemini had been used "for a
+while." This indicates development use through Antigravity, not Gemini through
+OpenCode; no surviving OpenCode configuration or session metadata selects a
+Gemini development model.
+
+That repository also implemented `gemini-2.5-flash` as a bot-provider fallback
+in commit `5b79129`, selected when OpenCode authentication was unavailable and a
+local `gemini-api-key.txt` existed. The retained runtime records identify Qwen,
+Groq, OpenCode Zen, and Mistral runs, but no Gemini startup or response. Treat an
+actual Gemini-powered Jimbo run as unproven rather than claiming it occurred.
+
+Antigravity quota exhaustion is normally temporary. As checked against Google's
+Antigravity plans documentation on 2026-07-27, baseline quota for accounts
+without Google AI Pro or Ultra refreshes weekly; paid-plan baseline quota
+refreshes every five hours until its weekly limit is reached. Current status and
+remaining model quota can be refreshed in Antigravity CLI with `/usage` or
+`/quota`. Limits may change, so consult `https://antigravity.google/docs/plans`
+before relying on the recorded schedule.
+
 ### Groq
 
 The optional `groq` profile uses `openai/gpt-oss-120b`. It reuses the

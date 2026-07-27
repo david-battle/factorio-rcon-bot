@@ -1,61 +1,44 @@
 # Handoff
 
-## Status
+## Current State
 
 - Branch: `main`.
-- Jimbo remains deliberately simple: log input, AI decisions/replies, and RCON.
-- The active AI profile remains `openai`, using `openai/gpt-5.4-mini` through
-  OpenCode. No provider fallback behavior is implemented.
-- Available optional profiles are DeepSeek through OpenCode, Groq GPT-OSS 120B,
-  and local Ollama Qwen 2.5 32B. Configuration remains centralized at the top of
-  `jimbo.py`; see `OPERATIONS.md` for endpoints and credential handling.
+- Jimbo remains a deliberately simple server-log, AI, and RCON bot implemented
+  primarily in `jimbo.py`.
+- The active `openai` profile uses `openai/gpt-5.4-mini` through OpenCode.
+  DeepSeek, Groq, and local Ollama remain manually selectable profiles; there is
+  no automatic provider fallback and Mistral is not configured.
+- Owner, provider, model, and endpoint choices remain centralized in the
+  top-level configuration block in `jimbo.py`.
+- No code or active configuration changed in this context, and no service was
+  restarted. The existing `startup_change_summary` remains appropriate for the
+  next Jimbo restart.
 
 ## Completed Work
 
-- Added the optional `groq` profile for `openai/gpt-oss-120b` using the shared
-  OpenAI-compatible adapter, low reasoning effort, hidden reasoning, and a
-  256-token completion limit.
-- Migrated the known working Groq credential to local gitignored
-  `groq-api-key.txt` with mode `600`. The credential is intentionally not
-  tracked.
-- Confirmed the Groq profile through the real adapter with the exact response
-  `JIMBO_GROQ_PROFILE_OK`.
-- Kept Mistral out of the lineup. Archived and OpenCode Mistral credentials both
-  returned HTTP 401, and the owner prefers DeepSeek.
-- Documented optional future Jimbo provider fallback in
-  `FUTURE_DIRECTIONS.md`; it is an idea only, not current behavior.
-- Added `FUTURE_PROJECTS.md` for a separate possible OpenCode model-fallback
-  project. OpenCode has no native ordered fallback configuration.
-- Added the project OpenCode command `.opencode/command/handoff.md`. Future
-  contexts can invoke `/handoff` to review and clean the repository, validate
-  changes, refresh this file, stage appropriate files, and create one commit.
-- Updated `AGENTS.md` and `OPERATIONS.md` for the new profile and handoff flow.
-- Updated `startup_change_summary`; the next Jimbo restart will announce that
-  Groq can be selected. Jimbo was not restarted during this context.
+- Investigated the earlier repository at
+  `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints` for Gemini history.
+- Recorded the verified findings in `OPERATIONS.md`: Gemini was briefly used for
+  development through Google Antigravity; the old bot implemented
+  `gemini-2.5-flash` as a fallback, but retained logs do not prove that a live
+  Jimbo response used it.
+- Documented the current Antigravity quota policy: ordinary free quota refreshes
+  weekly, while paid baseline quota refreshes every five hours until its weekly
+  limit. The policy link and quota-check commands are in `OPERATIONS.md` because
+  limits may change.
 
 ## Validation
 
 - `python -m py_compile jimbo.py test_jimbo.py` passed.
 - `python -m unittest -v test_jimbo` passed all 20 deterministic tests.
 - `git diff --check` passed.
-- `opencode debug config` loaded and resolved the new `handoff` command.
-- A console-only Groq feasibility request returned the required text in 9.06
-  seconds before integration, and the integrated profile check also passed.
+- The live `test_ollama.py` smoke was intentionally not run because it can load
+  the 28 GB local model and conflict with a running Factorio game client.
 
-Do not use unrestricted `python -m unittest` while the Factorio game client is
-running: discovery imports the standalone live `test_ollama.py` smoke script,
-which attempts to load the 28 GB local model and currently fails with GPU
-out-of-memory. Use the deterministic `test_jimbo` target unless live Ollama
-testing is explicitly needed and the game client is closed.
+## Next Action
 
-## Current Direction
-
-- Prefer one model per underlying provider where practical.
-- Keep Groq optional; changing `ai_profile_name` is still the only way to select
-  a different bot model.
-- Do not add Mistral or automatic model fallback without a new explicit request.
-- Keep Jimbo-specific ideas in `FUTURE_DIRECTIONS.md` and separate projects in
-  `FUTURE_PROJECTS.md`.
-
-There are no known pending implementation tasks. The next context should verify
-this note against Git, then proceed from the user's next requested change.
+There are no pending implementation tasks or known blockers. Verify this note
+against Git, read `OPERATIONS.md` for provider and runtime details when relevant,
+and proceed from the user's next request. Preserve one model per underlying
+provider where practical, keep Groq optional, and do not add Mistral or automatic
+fallback without an explicit request.
