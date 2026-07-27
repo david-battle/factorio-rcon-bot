@@ -15,8 +15,8 @@ model_identity = f"You run as {model_name} via OpenCode."
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "Stale conversation context now clears itself after repeated missed comments, "
-    "or on demand when someone tells me to forget all previous instructions."
+    "Temporary AI service errors now get a couple of automatic retries before I "
+    "give up on a response."
 )
 
 opencode_config = json.dumps({
@@ -61,31 +61,54 @@ def ask_ai(prompt):
         "OPENCODE_DISABLE_CLAUDE_CODE_SKILLS": "1",
     })
     os.makedirs("/tmp/opencode", exist_ok=True)
-    result = subprocess.run(
-        [
-            "opencode", "run", "--pure", "--agent", "jimbo",
-            "--format", "json", prompt,
-        ],
-        cwd="/tmp/opencode",
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    text_parts = []
-    for line in result.stdout.splitlines():
+    for attempt in range(3):
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            result = subprocess.run(
+                [
+                    "opencode", "run", "--pure", "--agent", "jimbo",
+                    "--format", "json", prompt,
+                ],
+                cwd="/tmp/opencode",
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            if attempt == 2:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"AI request timed out; retrying in {delay}s", flush=True)
+            time.sleep(delay)
             continue
-        if event.get("type") == "text":
-            text = event.get("part", {}).get("text", "")
-            if text:
-                text_parts.append(text)
-    if result.returncode != 0 or not text_parts:
+
+        text_parts = []
+        for line in result.stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "text":
+                text = event.get("part", {}).get("text", "")
+                if text:
+                    text_parts.append(text)
+        if result.returncode == 0 and text_parts:
+            return "".join(text_parts).strip()
+
         detail = result.stderr.strip() or result.stdout.strip() or "no response"
-        raise RuntimeError(f"OpenAI request failed: {detail[-1000:]}")
-    return "".join(text_parts).strip()
+        lowered_detail = detail.lower()
+        transient = any(marker in lowered_detail for marker in (
+            "429", "rate limit", "too many requests", "timed out", "timeout",
+            "500 internal server error", "502 bad gateway",
+            "503 service unavailable", "504 gateway timeout",
+        ))
+        if not transient or attempt == 2:
+            raise RuntimeError(f"OpenAI request failed: {detail[-1000:]}")
+        delay = 2 ** (attempt + 1)
+        print(f"Temporary AI error; retrying in {delay}s", flush=True)
+        time.sleep(delay)
+
+    raise RuntimeError("OpenAI request failed after retries")
 
 
 def get_research_snapshot(client):
@@ -204,7 +227,6 @@ if __name__ == "__main__":
     if os.path.exists(known_players_path):
         with open(known_players_path) as f:
             known_players = set(line.strip() for line in f if line.strip())
-    # TODO: Add retry/backoff for transient AI API failures, especially HTTP 429.
     with Client("127.0.0.1", 27015, passwd=password) as client:
         startup_summary_path = os.path.join(script_dir, "last_startup_summary.txt")
         try:

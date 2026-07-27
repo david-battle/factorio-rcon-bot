@@ -51,6 +51,9 @@ The current provider is OpenAI through OpenCode:
   must remain enabled. Do not set `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`.
 - JSON Lines text events are collected as the response. A nonzero exit or no
   text is treated as an error.
+- Transient timeouts, rate limits, and common HTTP 5xx failures get up to three
+  total attempts with 2-second and 4-second backoff. Permanent failures fail on
+  the first attempt.
 - Reply prompts derive model identity from `model_name` in `jimbo.py`. Update
   that one value when switching providers or models.
 

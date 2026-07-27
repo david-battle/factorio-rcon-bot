@@ -104,6 +104,9 @@ The current model is `openai/gpt-5.4-mini`, invoked by `ask_ai()` through
 or filesystem access. It runs from `/tmp/opencode` with project configuration and
 external skills disabled, so in-game Jimbo does not receive this file.
 
+`ask_ai()` retries transient timeouts, rate limits, and common HTTP 5xx failures
+twice, waiting 2 seconds and then 4 seconds. Permanent failures are not retried.
+
 Reply prompts derive self-identification from `model_name` in `jimbo.py`; update
 that one value when switching models. Prompts identify dlbattle as server owner.
 For provider setup, quota history, and local fallback, read `OPERATIONS.md`.
@@ -139,7 +142,7 @@ the command to the model.
 
 ## Current TODOs
 
-- Add retry/backoff for transient AI errors, especially HTTP 429.
+- None currently.
 
 ## Working Rules
 
