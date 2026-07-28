@@ -35,14 +35,24 @@ natural interaction, and restrained behavior.
    work should distinguish platform inventory questions from ship-design advice
    and avoid presenting a platform query as relevant evidence for the latter.
 
-4. **Formal offline scenario harness.** The project already supports manual log
+4. **Grounded GPS and construction actions.** A bare message such as
+   `Jimbo [gps=362.1,-503.6]` is currently treated as conversation, so Jimbo may
+   claim it is traveling there without inspecting anything. Recognize GPS-only
+   engagement as an area-inspection request or ask what the player wants checked;
+   never imply movement or observation without RCON evidence. Verified RCON
+   techniques can inspect and clone entity ghosts with their inventory/equipment
+   plans, ping exact locations, toggle circuit-controlled research, and create
+   compact powered logistic production cells. See `OPERATIONS.md` for the tested
+   APIs and safety constraints before turning any of them into Jimbo features.
+
+5. **Formal offline scenario harness.** The project already supports manual log
    injection and mocked AI or RCON checks. Formalize that capability into a small,
    deterministic scenario harness for complete flows such as chat classification,
    follow-up replies, joins, spontaneous comments, failures, and fuzzy trigger
    matching. It should remain lightweight and should not introduce a testing or
    configuration framework larger than the bot itself.
 
-5. **Optional provider fallback.** Jimbo's model profiles are intentionally
+6. **Optional provider fallback.** Jimbo's model profiles are intentionally
    self-contained so a future explicit fallback order could reuse them without
    duplicating provider configuration. If pursued, fallback should remain
    optional, preserve the normal retry behavior, report the model that actually

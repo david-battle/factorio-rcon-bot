@@ -2,6 +2,7 @@ jimbo.log
 jimbo.pid
 last_commit.txt
 last_startup_summary.txt
+last_chat_review.txt
 known_players.txt
 rconpw
 groq-api-key.txt

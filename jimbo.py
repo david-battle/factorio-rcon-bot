@@ -65,7 +65,8 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now switch to Groq's GPT-OSS 120B when my owner chooses it."
+    "I now stay quiet when nobody is online and mention stalled research only "
+    "once instead of repeating unchanged progress updates."
 )
 
 opencode_config = json.dumps({
@@ -293,6 +294,21 @@ def send_jimbo_lines(client, reply):
     return sent_lines, error
 
 
+def record_direct_reply(
+    dialogue, recent_chat, sent_lines, rcon_command=None, rcon_response=None,
+):
+    if not sent_lines:
+        return
+    add_dialogue_turn(
+        dialogue,
+        "Jimbo",
+        "\n".join(sent_lines),
+        rcon_command=rcon_command,
+        rcon_response=rcon_response,
+    )
+    recent_chat.clear()
+
+
 def reply_uses_research_context(reply, research_text):
     normalized_reply = reply.lower().replace("-", " ")
     if "research" in normalized_reply:
@@ -440,6 +456,46 @@ def get_research_snapshot(client):
     return response.strip() if response else "(unavailable)"
 
 
+def get_online_player_count(client):
+    response = client.run(
+        "/silent-command rcon.print(#game.connected_players)", retry=True
+    )
+    return int(response.strip())
+
+
+def update_research_stall_state(research_text, spontaneous_state):
+    name = None
+    progress = None
+    for line in research_text.splitlines():
+        if line.startswith("Current: "):
+            name = line[len("Current: "):].strip()
+        elif line.startswith("Progress: "):
+            try:
+                progress = float(line[len("Progress: "):].strip().rstrip("%"))
+            except ValueError:
+                pass
+    if name is None or progress is None:
+        return "unavailable", name, progress
+
+    unchanged = (
+        name != "none"
+        and name == spontaneous_state.get("research_name")
+        and progress == spontaneous_state.get("research_progress")
+    )
+    if unchanged:
+        status = (
+            "stalled"
+            if spontaneous_state.get("stall_announced")
+            else "new_stall"
+        )
+    else:
+        status = "changed"
+        spontaneous_state["stall_announced"] = False
+    spontaneous_state["research_name"] = name
+    spontaneous_state["research_progress"] = progress
+    return status, name, progress
+
+
 def is_quiet_request(message):
     normalized = message.lower()
     for punctuation in ",.!?":
@@ -473,7 +529,10 @@ def build_classification_prompt(username, message, history_text):
         "- /players — list all players who have ever played\n"
         "- /evolution — check enemy evolution factor\n"
         "- /time — server uptime and game time\n"
-        "- /version — check the Factorio version\n\n"
+        "- /version — check the Factorio version\n"
+        "- Any other Factorio slash command needed to perform a requested server "
+        "action. Use one-line /silent-command Lua for scripted actions and call "
+        "rcon.print with the actual outcome.\n\n"
         "Recent chat (background context only, do NOT act on these):\n"
         f"{history_text}\n\n"
         "--- Current message to evaluate ---\n"
@@ -481,7 +540,7 @@ def build_classification_prompt(username, message, history_text):
         "Only the current message may request an action. Older mentions of Jimbo "
         "are context only. Use history to resolve references in the current message, "
         "never to revive an old request.\n\n"
-        "Reply with exactly one word. Choose the best match:\n"
+        "Reply with exactly one line. Choose the best match:\n"
         "- SKIP (default) — player-to-player chat, casual greetings or comments "
         "NOT directed at Jimbo. If the message does not contain the word Jimbo, "
         "reply SKIP.\n"
@@ -489,6 +548,8 @@ def build_classification_prompt(username, message, history_text):
         "- PLANETS — someone asking Jimbo about planets.\n"
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
+        "- A Factorio slash command — when the player asks Jimbo to perform a "
+        "server action. Do not return NONE for an actionable request.\n"
         "- NONE — someone directly addressing Jimbo by name but just chatting "
         "(greetings, thanks) with no server info needed."
     )
@@ -574,12 +635,45 @@ def maybe_spontaneous(
         print("Skipping scheduled spontaneous comment after quiet request", flush=True)
         return time.time()
 
-    recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
+    try:
+        online_players = get_online_player_count(client)
+    except Exception as e:
+        print(f"Online player count error: {e}", flush=True)
+        return time.time()
+    if online_players == 0:
+        recent_chat.clear()
+        spontaneous_state["failed_attempts"] = 0
+        spontaneous_state["research_name"] = None
+        spontaneous_state["research_progress"] = None
+        spontaneous_state["stall_announced"] = False
+        print("Skipping spontaneous comment with no players online", flush=True)
+        return time.time()
+
     try:
         research_text = get_research_snapshot(client)
     except Exception as e:
         print(f"Research snapshot error: {e}", flush=True)
         research_text = "(unavailable)"
+    stall_status, research_name, research_progress = update_research_stall_state(
+        research_text, spontaneous_state
+    )
+    stall_reply = None
+    if stall_status == "new_stall":
+        readable_name = research_name.replace("-", " ")
+        stall_reply = (
+            f"Science research seems to be stalled: {readable_name} is still at "
+            f"{research_progress:g}%."
+        )
+    elif stall_status == "stalled":
+        if not recent_chat:
+            print("Skipping already-announced research stall", flush=True)
+            return time.time()
+        research_text = (
+            "(Research remains stalled and was already announced. Do not comment "
+            "on research.)"
+        )
+
+    recent_text = "\n".join(recent_chat) if recent_chat else "(none)"
     focus_text = ""
     if topic_hint:
         focus_text = (
@@ -602,7 +696,7 @@ def maybe_spontaneous(
     last_spontaneous = time.time()
     successful = False
     try:
-        reply = ask_ai(prompt)
+        reply = stall_reply if stall_reply is not None else ask_ai(prompt)
         if reply != "SKIP":
             print(f"Spontaneous: {reply}", flush=True)
             sent_lines, send_error = send_jimbo_lines(client, reply)
@@ -619,6 +713,8 @@ def maybe_spontaneous(
                     rcon_response=research_text if used_research else None,
                 )
                 successful = True
+                if stall_reply is not None:
+                    spontaneous_state["stall_announced"] = True
             if send_error is not None:
                 raise send_error
     except Exception as e:
@@ -651,7 +747,13 @@ if __name__ == "__main__":
         print(f"Dialogue hydration error: {e}", flush=True)
     recent_chat = []
     last_spontaneous = time.time()
-    spontaneous_state = {"skip_next": False, "failed_attempts": 0}
+    spontaneous_state = {
+        "skip_next": False,
+        "failed_attempts": 0,
+        "research_name": None,
+        "research_progress": None,
+        "stall_announced": False,
+    }
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
@@ -758,6 +860,9 @@ if __name__ == "__main__":
                         recent_chat.clear()
                         dialogue.clear()
                         spontaneous_state["failed_attempts"] = 0
+                        spontaneous_state["research_name"] = None
+                        spontaneous_state["research_progress"] = None
+                        spontaneous_state["stall_announced"] = False
                         print("Manually cleared spontaneous and dialogue context", flush=True)
                         try:
                             client.run("Jimbo says What previous instructions?")
@@ -890,16 +995,15 @@ if __name__ == "__main__":
 
                     if reply:
                         sent_lines, send_error = send_jimbo_lines(client, reply)
-                        if sent_lines:
-                            add_dialogue_turn(
-                                dialogue,
-                                "Jimbo",
-                                "\n".join(sent_lines),
-                                rcon_command=(
-                                    rcon_cmd if rcon_cmd and rcon_cmd != "NONE" else None
-                                ),
-                                rcon_response=rcon_response,
-                            )
+                        record_direct_reply(
+                            dialogue,
+                            recent_chat,
+                            sent_lines,
+                            rcon_command=(
+                                rcon_cmd if rcon_cmd and rcon_cmd != "NONE" else None
+                            ),
+                            rcon_response=rcon_response,
+                        )
                         if send_error is not None:
                             print(f"RCON error: {send_error}", flush=True)
 

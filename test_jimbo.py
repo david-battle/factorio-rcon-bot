@@ -230,6 +230,33 @@ class DialogueTests(unittest.TestCase):
         self.assertIsNone(error)
         client.run.assert_called_once_with("Jimbo says hello")
 
+    def test_direct_reply_clears_spontaneous_backlog_after_delivery(self):
+        dialogue = deque()
+        recent_chat = ["older activity", "current direct question"]
+
+        jimbo.record_direct_reply(
+            dialogue,
+            recent_chat,
+            ["first line", "second line"],
+            rcon_command="/players online",
+            rcon_response="Alice",
+        )
+
+        self.assertEqual(recent_chat, [])
+        self.assertEqual(len(dialogue), 1)
+        self.assertEqual(dialogue[0]["text"], "first line\nsecond line")
+        self.assertEqual(dialogue[0]["rcon_command"], "/players online")
+        self.assertEqual(dialogue[0]["rcon_response"], "Alice")
+
+    def test_undelivered_direct_reply_preserves_spontaneous_backlog(self):
+        dialogue = deque()
+        recent_chat = ["activity still needing attention"]
+
+        jimbo.record_direct_reply(dialogue, recent_chat, [])
+
+        self.assertEqual(recent_chat, ["activity still needing attention"])
+        self.assertEqual(len(dialogue), 0)
+
     def test_research_context_is_attached_only_when_reply_uses_it(self):
         snapshot = "Current: mining-productivity-2\nProgress: 43.00%"
 
@@ -241,6 +268,95 @@ class DialogueTests(unittest.TestCase):
         self.assertFalse(
             jimbo.reply_uses_research_context("Welcome back, engineer!", snapshot)
         )
+
+    def test_spontaneous_stays_quiet_and_resets_context_without_players(self):
+        client = Mock()
+        client.run.return_value = "0"
+        recent_chat = ["stale activity"]
+        state = {
+            "skip_next": False,
+            "failed_attempts": 3,
+            "research_name": "mining-productivity-3",
+            "research_progress": 52.3,
+            "stall_announced": True,
+        }
+
+        with patch.object(jimbo.time, "time", return_value=1000), patch.object(
+            jimbo, "ask_ai"
+        ) as ask_ai:
+            last_spontaneous = jimbo.maybe_spontaneous(
+                client, recent_chat, deque(), 0, state
+            )
+
+        self.assertEqual(last_spontaneous, 1000)
+        self.assertEqual(recent_chat, [])
+        self.assertEqual(state["failed_attempts"], 0)
+        self.assertIsNone(state["research_name"])
+        self.assertIsNone(state["research_progress"])
+        self.assertFalse(state["stall_announced"])
+        ask_ai.assert_not_called()
+        self.assertIn("#game.connected_players", client.run.call_args.args[0])
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+
+    def test_spontaneous_announces_a_research_stall_only_once(self):
+        snapshot = {
+            "text": "Current: mining-productivity-3\nProgress: 52.30%\nQueue:"
+        }
+        sent_commands = []
+
+        def run(command, retry=False):
+            if "#game.connected_players" in command:
+                return "1"
+            if "current=f.current_research" in command:
+                return snapshot["text"]
+            sent_commands.append(command)
+            return ""
+
+        client = Mock()
+        client.run.side_effect = run
+        state = {
+            "skip_next": False,
+            "failed_attempts": 0,
+            "research_name": None,
+            "research_progress": None,
+            "stall_announced": False,
+        }
+        dialogue = deque()
+
+        with patch.object(jimbo, "ask_ai", return_value="SKIP") as ask_ai:
+            with patch.object(jimbo.time, "time", return_value=1000):
+                last_spontaneous = jimbo.maybe_spontaneous(
+                    client, [], dialogue, 0, state
+                )
+            with patch.object(jimbo.time, "time", return_value=1600):
+                last_spontaneous = jimbo.maybe_spontaneous(
+                    client, [], dialogue, last_spontaneous, state
+                )
+            with patch.object(jimbo.time, "time", return_value=2200):
+                jimbo.maybe_spontaneous(
+                    client, [], dialogue, last_spontaneous, state
+                )
+
+        stall_messages = [
+            command for command in sent_commands
+            if "Science research seems to be stalled" in command
+        ]
+        self.assertEqual(len(stall_messages), 1)
+        self.assertIn("mining productivity 3 is still at 52.3%", stall_messages[0])
+        self.assertTrue(state["stall_announced"])
+        self.assertEqual(ask_ai.call_count, 1)
+        self.assertEqual(len(dialogue), 1)
+
+        snapshot["text"] = (
+            "Current: mining-productivity-3\nProgress: 52.31%\nQueue:"
+        )
+        with patch.object(jimbo, "ask_ai", return_value="SKIP"), patch.object(
+            jimbo.time, "time", return_value=2800
+        ):
+            jimbo.maybe_spontaneous(client, [], dialogue, 1600, state)
+
+        self.assertFalse(state["stall_announced"])
+        self.assertEqual(state["research_progress"], 52.31)
 
     def test_prompts_share_history_without_duplicating_current_message(self):
         history = (
@@ -271,6 +387,18 @@ class DialogueTests(unittest.TestCase):
         self.assertIn(
             "If the message does not contain the word Jimbo, reply SKIP", prompt
         )
+
+    def test_classifier_requests_executable_commands_for_server_actions(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo place an assembler ghost north of me",
+            "(none)",
+        )
+
+        self.assertIn("Any other Factorio slash command", prompt)
+        self.assertIn("Use one-line /silent-command Lua", prompt)
+        self.assertIn("Do not return NONE for an actionable request", prompt)
+        self.assertIn("rcon.print with the actual outcome", prompt)
 
     def test_owner_greeting_uses_configured_owner(self):
         owner_prompt = jimbo.build_greeting_prompt(jimbo.server_owner, is_new=False)

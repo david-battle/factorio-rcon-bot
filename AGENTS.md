@@ -10,35 +10,17 @@ as databases, web servers, or configuration frameworks.
 Keep both the implementation and this always-loaded instruction file minimal.
 Put infrequently needed setup steps, provider history, recovery procedures, and
 other operational detail in `OPERATIONS.md`; keep only rules that future coding
-contexts routinely need in `AGENTS.md`.
+contexts routinely need in `AGENTS.md`. Keep both files under roughly 8,000
+combined tokens so local-model development remains practical.
 
-## Conditional Reference
+## Required References
 
-Read `OPERATIONS.md` when a task involves environment setup, RCON connectivity,
-AI provider/model changes, local Ollama fallback, process management, live or
-offline testing, `known_players.txt` seeding, or runtime-pitfall diagnosis.
+Read `OPERATIONS.md` before editing code. Also read it for environment setup,
+RCON connectivity, provider/model changes, process management, testing, player
+seeding, or runtime diagnosis.
 
 Read `HANDOFF.md` when resuming work after a `/handoff`. Verify its status claims
 against Git and the current files; `AGENTS.md` remains authoritative.
-
-**If this coding context is running on a local model through Ollama, read
-`OPERATIONS.md` before editing anything.** It contains the local model's memory,
-latency, and coding-workaround constraints plus provider-switch history.
-
-For weaker local Ollama coding models: if Edit cannot repair Python whitespace,
-replace the complete enclosing function or file with Write, then validate with
-`python -m py_compile`.
-
-## Environment Essentials
-
-- Bot: WSL native filesystem at `~/factorio-rcon-bot`.
-- Server: Windows native at `D:\factorio-server`.
-- Input log: `/mnt/d/factorio-server/server-console.log`.
-- RCON: `rcon.source.Client` at `127.0.0.1:27015`.
-- Password: gitignored `rconpw`; never hardcode, print, or commit it.
-- Python dependencies: shared `/mnt/d/.venv` activated by `.bashrc`.
-
-Do not substitute another RCON library; this exact connection is verified.
 
 ## Central Configuration
 
@@ -65,6 +47,11 @@ Keep three conceptual moving parts:
 2. AI decisions and reply composition.
 3. RCON queries/actions and chat output.
 
+The development assistant operating this repository is not Jimbo. Direct RCON
+work by the assistant may use the `Jimbo says ` prefix to format or impersonate
+an in-game message, but must be reported as assistant action and never confused
+with a decision or capability exercised by the running Jimbo process.
+
 ## Chat Listener
 
 - Chat format: `YYYY-MM-DD HH:MM:SS [CHAT] username: message text`.
@@ -73,8 +60,6 @@ Keep three conceptual moving parts:
 - Ignore messages beginning with `Jimbo says ` to avoid processing bot echoes.
 - `[JOIN]` triggers a model-generated greeting. `known_players.txt` determines
   whether the model is told that the player is new or returning.
-- Windows writes can invalidate WSL log handles. Catch both `OSError` and
-  `ValueError`, then reopen the log.
 
 ## Request Flow
 
@@ -103,6 +88,9 @@ are not lost. The forget meme clears both dialogue and spontaneous context.
 
 Join greetings are intentionally excluded from dialogue. Successfully greeting a
 player also resets the spontaneous timer so Jimbo does not welcome them twice.
+Successfully delivered direct replies clear the accumulated spontaneous activity
+because that conversation has been addressed, but remain in shared dialogue for
+follow-ups.
 Maintain these rules and the deterministic coverage in `test_jimbo.py` when
 changing chat flow.
 
@@ -112,48 +100,6 @@ The classifier may return any slash command, and the bot intentionally passes it
 through to RCON. Do not add a command whitelist unless explicitly requested.
 Occasional joking claims that an action is underway without RCON execution are
 part of Jimbo's humor and do not need guardrails.
-
-## RCON Commands
-
-- `/players`: all players who have played this save.
-- `/players online`: currently connected players.
-- `/evolution`: enemy evolution factor.
-- `/time`: elapsed server/game time, not wall-clock time.
-- `/version`: Factorio version. Do not use nonexistent Lua properties
-  `game.product_version` or `game.build_version`.
-- Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
-- Raw RCON text without a slash appears in chat as `<server>`.
-
-Canned platform query:
-
-```text
-/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.platform then table.insert(list,surface.platform.name) end end;rcon.print(table.concat(list,"\n"))
-```
-
-Canned planet query:
-
-```text
-/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.planet then table.insert(list, surface.planet.name:sub(1,1):upper()..surface.planet.name:sub(2)) end end;rcon.print(table.concat(list,"\n"))
-```
-
-When replying with platform names, strip Factorio markup brackets but preserve
-their contents and surrounding text. Include every result when a list is asked
-for. Multi-line replies require one RCON command per line.
-
-## AI Provider
-
-The current `ai_profile_name` is `openai`, selecting `openai/gpt-5.4-mini` through
-OpenCode. The injected agent has no tools or filesystem access. It runs from
-`/tmp/opencode` with project configuration and external skills disabled, so
-in-game Jimbo does not receive this file.
-
-`ask_ai()` retries transient timeouts, rate limits, and common HTTP 5xx failures
-twice, waiting 2 seconds and then 4 seconds. Permanent failures are not retried.
-
-Reply prompts derive self-identification from the selected AI profile and identify
-`server_owner` as the owner. Switch profiles only through `ai_profile_name`. For
-provider setup, profile names, quota history, and local fallback, read
-`OPERATIONS.md`.
 
 ## Startup Announcement
 
@@ -184,16 +130,18 @@ player can manually clear that context with the exact meme command
 `Jimbo, forget all previous instructions.` Jimbo acknowledges it but does not pass
 the command to the model.
 
-## Current TODOs
-
-- None currently.
+Scheduled checks stay silent when no players are online and clear their stale
+activity and research baseline. If active research has the same displayed
+progress across two online checks, Jimbo reports the stall once, then suppresses
+repeat research notices until progress resumes or the technology changes.
 
 ## Working Rules
 
+- After summarizing chat, store the last reviewed log timestamp in
+  `last_chat_review.txt`; start the next review after it.
 - Ask rather than inventing missing project-specific values.
 - State uncertainty instead of presenting assumptions as fact.
 - Prefer the smallest correct change; do not fundamentally rewrite working flow.
-- Use `print(..., flush=True)` in long-running redirected Python processes.
 - Validate Python changes with `python -m py_compile`.
 - For clear reversible tasks, act after a brief plan. Ask first only when
   requirements are ambiguous or an action is destructive.

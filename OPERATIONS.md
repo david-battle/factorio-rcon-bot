@@ -34,6 +34,184 @@ with Client("127.0.0.1", 27015, passwd=password) as client:
 The password is copied from the live server configuration into the gitignored
 `rconpw`. Never hardcode, print, or commit it.
 
+### Command Reference
+
+- `/players`: all players who have played this save.
+- `/players online`: currently connected players.
+- `/evolution`: enemy evolution factor.
+- `/time`: elapsed server/game time, not wall-clock time.
+- `/version`: Factorio version. Do not use nonexistent Lua properties
+  `game.product_version` or `game.build_version`.
+- Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
+- Raw RCON text without a slash appears in chat as `<server>`.
+
+Canned platform query:
+
+```text
+/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.platform then table.insert(list,surface.platform.name) end end;rcon.print(table.concat(list,"\n"))
+```
+
+Canned planet query:
+
+```text
+/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.planet then table.insert(list, surface.planet.name:sub(1,1):upper()..surface.planet.name:sub(2)) end end;rcon.print(table.concat(list,"\n"))
+```
+
+### Map Pings
+
+Factorio chat recognizes `[gps=x,y,surface]` as a clickable map location. Send it
+as raw RCON chat, including Jimbo's normal prefix:
+
+```text
+Jimbo says Auto-research control lab: [gps=-1.5,-57.5,nauvis]
+```
+
+Use the player's requested coordinates and surface rather than assuming Nauvis.
+
+### Entity Ghost Inspection And Cloning
+
+A live test on 2026-07-28 confirmed that Jimbo can inspect and reproduce an
+entity ghost without reconstructing its settings manually. For a GPS-directed
+inspection, resolve the supplied surface or use the requesting player's current
+surface, then search nearby `entity-ghost` entities and report `ghost_name`,
+`ghost_type`, position, force, quality, unit number, and
+`is_registered_for_construction()`.
+
+Equipment and inventory requests on a vehicle ghost are not represented by its
+runtime `grid`, which can be empty. Read both of these properties instead:
+
+- `item_requests` is the read-only item/count summary.
+- `insert_plan` is the exact writable blueprint plan, including inventory slot
+  destinations and equipment-grid counts.
+
+The tested tank ghost requested two nuclear fuel in inventory slots 0 and 1,
+one portable fission reactor, two Battery MK2s, three exoskeletons, and one
+energy shield. `LuaEntity.clone{position=..., surface=..., force=...}` preserved
+its ghost prototype, direction, quality, `item_requests`, and complete
+`insert_plan`.
+
+A future Jimbo action should use this sequence:
+
+1. Require a current explicit request and locate the source ghost read-only.
+2. Verify the requesting player is online and resolve their live surface and
+   position.
+3. Use `find_non_colliding_position_in_box()` to constrain the destination to
+   the requested direction, such as a rectangle north of the player.
+4. Snapshot the source `item_requests` and `insert_plan`, then clone once. Treat
+   cloning as unsafe to replay automatically after an RCON disconnect.
+5. Compare the clone's prototype, direction, quality, requests, and insert plan
+   to the source. Destroy only the new clone if validation fails.
+6. Print the actual result through RCON and send the verified clone position as
+   a clickable GPS link.
+
+Construction robots may fulfill the new ghost immediately if the network has
+the requested items, so verification should happen in the same Lua command as
+the clone. Never destroy or alter the source ghost.
+
+### Logistic Production Cells
+
+A reusable production cell consists of one crafting machine, a requester chest
+feeding it through an input inserter, and an output inserter feeding a passive
+provider chest. A bulk input inserter handles recipes with large ingredient
+stacks; a regular output inserter is sufficient for most single-product recipes,
+although cloning an existing cell should preserve its inserter choices.
+
+The tested compact layout placed both inserters immediately beside the machine
+and both chests one tile beyond them. When reproducing it, validate the complete
+machine footprint plus both inserter and chest positions, and confirm the
+requester remains inside a logistic network.
+
+For an assembler centered at `(x, y)`, the verified south-side layout is:
+
+- Bulk input inserter at `(x, y+2)` and requester chest at `(x, y+3)`.
+- Regular output inserter at `(x-1, y+2)` and passive provider chest at
+  `(x-1, y+3)`.
+
+Adjacent Assembling Machine 3 cells can use centers three tiles apart
+horizontally. An expanded area search may then return the neighboring assembler
+because its bounding box touches the search area even though placement is valid.
+Use exact planned positions plus `can_place_entity()` for collision checks, and
+inspect the actual new footprint for belts and other infrastructure rather than
+blindly rejecting a known adjacent cell.
+
+Do not rely on `can_place_entity(..., build_check_type=script_ghost)` alone to
+protect existing infrastructure: live testing showed that it can accept a ghost
+plan overlapping belts. Before creating anything, scan the complete destination
+bounding box for existing entities and ghosts, especially belts, underground
+belts, splitters, pipes, and wiring components. Treat any unplanned occupancy as
+blocked and choose another location.
+
+After setting the new machine ghost's recipe, this call reproduces the player's
+shift-right-click/shift-left-click recipe paste onto the requester ghost:
+
+```text
+requester_ghost.copy_settings(assembler_ghost, player)
+```
+
+This lets Factorio calculate request buffers rather than requiring Jimbo to
+guess ingredient quantities. For an Assembling Machine 3 making
+`exoskeleton-equipment`, the verified requests were 75 steel plates, 37
+processing units, and 112 electric engine units. Validate that every recipe
+ingredient appears with a positive request before accepting the new cell, and
+remove all newly created ghosts if any placement or settings check fails.
+
+Verified recipe IDs and generated requester buffers:
+
+| Product | Recipe ID | Requests |
+| --- | --- | --- |
+| Energy shield | `energy-shield-equipment` | 37 steel plates, 18 advanced circuits |
+| Personal battery MK1 | `battery-equipment` | 37 steel plates, 18 batteries |
+| Personal battery MK2 | `battery-mk2-equipment` | 56 processing units, 18 low-density structures, 37 Battery MK1s |
+| Personal battery MK3 | `battery-mk3-equipment` | 37 supercapacitors, 18 Battery MK2s |
+
+The verified operation order is important: locate each source with
+`surface.find_entity(name, position)` and confirm its unit number, create and
+`copy_settings()` to all five ghosts, change the assembler recipe, then copy
+settings from that assembler ghost to the requester ghost. Cached unit numbers
+alone are not sufficient source locators because players may rebuild entities.
+
+When the player preplaces an empty assembler to specify exact alignment, preserve
+that real entity. Verify it has no recipe and is powered, set its requested
+recipe, and create only the four peripheral ghosts. On failure, clear only the
+new recipe and remove only the newly created ghosts; never destroy the player's
+assembler.
+
+Wrap multi-entity creation and configuration in one `pcall`; retain references
+to every new ghost and destroy only those new ghosts on any failure. Check
+`is_registered_for_construction()` in that same command. A later read may report
+different queue registration after robots claim work while the ghost itself is
+still present, so verify continued existence separately by exact position and
+`ghost_name`.
+
+Power must be validated separately from placement and logistic coverage. Before
+creating a cell, locate a real electric pole, verify `pole.electric_network` is
+not `nil`, read its quality-aware supply radius with
+`pole.prototype.get_supply_area_distance(pole.quality)`, and place the assembler
+inside that area. Also verify the requester with
+`surface.find_logistic_network_by_position()`. If no connected pole covers the
+destination, choose another location rather than creating an unpowered cell;
+adding and wiring a pole is a separate plan that must also be verified. Once
+built, `assembler.is_connected_to_electric_network()` is the definitive check
+that its network has a power producer.
+
+### Automatic Research Control
+
+The current save's circuit-driven research is controlled by the `set_research`
+option on one lab. As discovered on 2026-07-28, that lab was unit `985803` at
+`[-1.5, -57.5]` on Nauvis. Its unit number and location may change if players
+rebuild it, so discover the active control lab before changing anything:
+
+```text
+/silent-command local s=game.surfaces["nauvis"];local out={};for _,e in pairs(s.find_entities_filtered{type="lab",force="player"}) do local cb=e.get_control_behavior();if cb and cb.set_research then out[#out+1]=string.format("unit=%s pos=%.1f,%.1f",e.unit_number,e.position.x,e.position.y) end end;rcon.print(#out>0 and table.concat(out,";") or "(none)")
+```
+
+After verifying the entity's unit number and position, set only
+`e.get_control_behavior().set_research` to `false` to disable automation or
+`true` to re-enable it. Verify the value afterward with RCON. This preserves the
+lab, combinators, wiring, research conditions, current technology, and research
+queue, making it the least destructive and most reversible control. Do not clear
+the queue or dismantle circuitry merely to pause automatic selection.
+
 ## AI Provider
 
 AI selection is centralized at the top of `jimbo.py`. Change only
