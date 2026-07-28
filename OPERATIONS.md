@@ -56,18 +56,8 @@ The password is copied from the live server configuration into the gitignored
   `game.product_version` or `game.build_version`.
 - Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
 - Raw RCON text without a slash appears in chat as `<server>`.
-
-Canned platform query:
-
-```text
-/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.platform then table.insert(list,surface.platform.name) end end;rcon.print(table.concat(list,"\n"))
-```
-
-Canned planet query:
-
-```text
-/silent-command local list={};for _,surface in pairs(game.surfaces) do if surface.planet then table.insert(list, surface.planet.name:sub(1,1):upper()..surface.planet.name:sub(2)) end end;rcon.print(table.concat(list,"\n"))
-```
+- Jimbo's built-in platform and planet queries are in `jimbo.py`; keep that
+  executable implementation authoritative rather than copying the Lua here.
 
 ### Map Pings
 
@@ -75,7 +65,7 @@ Factorio chat recognizes `[gps=x,y,surface]` as a clickable map location. Send i
 as raw RCON chat, including Jimbo's normal prefix:
 
 ```text
-Jimbo says Auto-research control lab: [gps=-1.5,-57.5,nauvis]
+Jimbo says Requested location: [gps=128,64,nauvis]
 ```
 
 Use the player's requested coordinates and surface rather than assuming Nauvis.
@@ -90,51 +80,32 @@ builds across chunk boundaries. Decode the blueprint positions and apply one
 explicit world offset. Preflight every resulting entity center with
 `can_place_entity()` and abort before placement if any position is blocked.
 
-A settings-preserving staging workflow was verified with a 223-entity,
-absolutely snapped 32 x 32 blueprint:
+A settings-preserving workflow is:
 
 1. Import the blueprint into a temporary inventory and require import status 0.
-2. Build it on a temporary generated surface and verify every prototype and
-   local center against `get_blueprint_entities()`.
-3. Use `clone_area()` with explicit source and destination rectangles to copy
-   only entities onto the already-preflighted live chunk.
-4. In the same command, verify every destination prototype, exact center,
-   direction, mirroring, recipe, recipe quality, and construction registration.
-5. Roll back only matching destination ghosts on failure, then delete the
-   temporary surface and inventory. On success, delete the staging objects after
-   validation.
+2. Build on a temporary generated surface and verify every prototype and local
+   center against `get_blueprint_entities()`.
+3. Use `clone_area()` with explicit rectangles to copy only entities onto the
+   already-preflighted live area.
+4. In the same command, verify destination prototypes, exact centers, direction,
+   mirroring, recipes and qualities, and construction registration.
+5. On failure, remove only matching destination ghosts. Delete temporary
+   surfaces and inventories after either successful validation or rollback.
 
-This preserved recipes, recipe qualities, module insert plans, circuit wiring,
-and explicit copper wiring. Explicit internal copper graphs do not necessarily
-auto-connect to nearby external poles. After construction, compare electric
-networks and explicitly bridge a reachable internal pole to a live external pole
-when needed; verify all consumers with `is_connected_to_electric_network()`.
-
-Blueprint module requests on built machines appear as `item-request-proxy`
-entities. To substitute an available module, preserve each proxy's
-`insert_plan.items.in_inventory` destinations, replace only the requested item
-ID and quality, assign the complete plan back, and validate `item_requests`.
-Inventory qualities returned by `LuaLogisticNetwork.get_contents()` are strings,
-not objects with a `.name` member. Inspect every unique surface logistic network
-before choosing the strongest available stock. The live QUP substitution used
-32 normal Quality Module 2s across seven AM3s and one recycler. A recycler's
-runtime entity type is `furnace`, so an `assembling-machine`-only scan omits it.
-
-Passive-provider reserve chests remain available to the surrounding logistic
-network. A distant buffer chest with a large matching request can therefore
-drain a quality reserve continuously and divert products that would otherwise
-continue to recycling. Trace requests across the complete connected network when
-this occurs. For a chest inventory, `set_bar(2)` leaves one usable slot because
-the bar is the first blocked slot; existing contents beyond a newly lowered bar
-remain, but additional deliveries stop once the available space is full.
+The staging workflow preserves recipes, module insert plans, and circuit and
+copper wiring. Still verify the finished electric networks and bridge an internal
+pole to a reachable live pole when necessary. Module requests appear as
+`item-request-proxy` entities; substitutions must preserve each proxy's inventory
+destinations, replace only item and quality, assign the complete plan back, and
+validate `item_requests`. Inventory qualities from
+`LuaLogisticNetwork.get_contents()` are strings. Inspect every connected
+logistic network before selecting stock.
 
 ### Entity Ghost Inspection And Cloning
 
-A live test on 2026-07-28 confirmed that Jimbo can inspect and reproduce an
-entity ghost without reconstructing its settings manually. For a GPS-directed
-inspection, resolve the supplied surface or use the requesting player's current
-surface, then search nearby `entity-ghost` entities and report `ghost_name`,
-`ghost_type`, position, force, quality, unit number, and
+For a GPS-directed inspection, resolve the supplied surface or use the requesting
+player's current surface. Search nearby `entity-ghost` entities and report
+`ghost_name`, `ghost_type`, position, force, quality, unit number, and
 `is_registered_for_construction()`.
 
 Equipment and inventory requests on a vehicle ghost are not represented by its
@@ -144,21 +115,16 @@ runtime `grid`, which can be empty. Read both of these properties instead:
 - `insert_plan` is the exact writable blueprint plan, including inventory slot
   destinations and equipment-grid counts.
 
-The tested tank ghost requested two nuclear fuel in inventory slots 0 and 1,
-one portable fission reactor, two Battery MK2s, three exoskeletons, and one
-energy shield. `LuaEntity.clone{position=..., surface=..., force=...}` preserved
-its ghost prototype, direction, quality, `item_requests`, and complete
-`insert_plan`.
-
-A future Jimbo action should use this sequence:
+`LuaEntity.clone{position=..., surface=..., force=...}` preserves the ghost
+prototype, direction, quality, `item_requests`, and complete `insert_plan`. Use
+this sequence:
 
 1. Require a current explicit request and locate the source ghost read-only.
 2. Verify the requesting player is online and resolve their live surface and
    position.
-3. Use `find_non_colliding_position_in_box()` to constrain the destination to
-   the requested direction, such as a rectangle north of the player.
-4. Snapshot the source `item_requests` and `insert_plan`, then clone once. Treat
-   cloning as unsafe to replay automatically after an RCON disconnect.
+3. Constrain `find_non_colliding_position_in_box()` to the requested destination.
+4. Snapshot requests and the insert plan, then clone once. Treat cloning as
+   unsafe to replay automatically after an RCON disconnect.
 5. Compare the clone's prototype, direction, quality, requests, and insert plan
    to the source. Destroy only the new clone if validation fails.
 6. Print the actual result through RCON and send the verified clone position as
@@ -170,29 +136,12 @@ the clone. Never destroy or alter the source ghost.
 
 ### Logistic Production Cells
 
-A reusable production cell consists of one crafting machine, a requester chest
-feeding it through an input inserter, and an output inserter feeding a passive
-provider chest. A bulk input inserter handles recipes with large ingredient
-stacks; a regular output inserter is sufficient for most single-product recipes,
-although cloning an existing cell should preserve its inserter choices.
-
-The tested compact layout placed both inserters immediately beside the machine
-and both chests one tile beyond them. When reproducing it, validate the complete
-machine footprint plus both inserter and chest positions, and confirm the
-requester remains inside a logistic network.
-
-For an assembler centered at `(x, y)`, the verified south-side layout is:
-
-- Bulk input inserter at `(x, y+2)` and requester chest at `(x, y+3)`.
-- Regular output inserter at `(x-1, y+2)` and passive provider chest at
-  `(x-1, y+3)`.
-
-Adjacent Assembling Machine 3 cells can use centers three tiles apart
-horizontally. An expanded area search may then return the neighboring assembler
-because its bounding box touches the search area even though placement is valid.
-Use exact planned positions plus `can_place_entity()` for collision checks, and
-inspect the actual new footprint for belts and other infrastructure rather than
-blindly rejecting a known adjacent cell.
+A reusable production cell consists of a crafting machine, a requester chest and
+input inserter, and an output inserter and passive provider chest. Prefer cloning
+a working cell so inserter choices, directions, and chest limits are preserved.
+Validate each exact planned position with `can_place_entity()` and inspect the
+complete new footprint rather than relying on an expanded search that may include
+valid neighboring machines.
 
 Do not rely on `can_place_entity(..., build_check_type=script_ghost)` alone to
 protect existing infrastructure: live testing showed that it can accept a ghost
@@ -201,67 +150,24 @@ bounding box for existing entities and ghosts, especially belts, underground
 belts, splitters, pipes, and wiring components. Treat any unplanned occupancy as
 blocked and choose another location.
 
-After setting the new machine ghost's recipe, this call reproduces the player's
-shift-right-click/shift-left-click recipe paste onto the requester ghost:
+After setting the machine ghost's recipe, reproduce the player's recipe paste
+onto the requester ghost with:
 
 ```text
 requester_ghost.copy_settings(assembler_ghost, player)
 ```
 
-This lets Factorio calculate request buffers rather than requiring Jimbo to
-guess ingredient quantities. For an Assembling Machine 3 making
-`exoskeleton-equipment`, the verified requests were 75 steel plates, 37
-processing units, and 112 electric engine units. Validate that every recipe
-ingredient appears with a positive request before accepting the new cell, and
-remove all newly created ghosts if any placement or settings check fails.
+This lets Factorio calculate request buffers. Validate through
+`requester_ghost.get_logistic_sections().sections` that every recipe ingredient
+appears as `filter.value.name` with a positive `filter.min`; do not estimate
+quantities from chest contents. Locate source entities by name and position and
+confirm their unit numbers because players may rebuild them.
 
-Verified recipe IDs and generated requester buffers:
-
-| Product | Recipe ID | Requests |
-| --- | --- | --- |
-| Energy shield | `energy-shield-equipment` | 37 steel plates, 18 advanced circuits |
-| Personal battery MK1 | `battery-equipment` | 37 steel plates, 18 batteries |
-| Personal battery MK2 | `battery-mk2-equipment` | 56 processing units, 18 low-density structures, 37 Battery MK1s |
-| Personal battery MK3 | `battery-mk3-equipment` | 37 supercapacitors, 18 Battery MK2s |
-| Power Armor MK2 | `power-armor-mk2` | 60 processing units, 40 electric engine units, 30 low-density structures, 100 speed modules, 100 efficiency modules |
-
-The verified operation order is important: locate each source with
-`surface.find_entity(name, position)` and confirm its unit number, create and
-`copy_settings()` to all five ghosts, change the assembler recipe, then copy
-settings from that assembler ghost to the requester ghost. Cached unit numbers
-alone are not sufficient source locators because players may rebuild entities.
-
-When the player preplaces an empty assembler to specify exact alignment, preserve
-that real entity. Verify it has no recipe and is powered, set its requested
-recipe, and create only the four peripheral ghosts. On failure, clear only the
-new recipe and remove only the newly created ghosts; never destroy the player's
-assembler.
-
-Copying settings from a real configured peripheral onto its corresponding ghost
-preserves inserter direction and provider-chest limits. The tested source
-provider used inventory bar `3`, leaving two output slots available, and
-`provider_ghost.get_inventory_bar(defines.inventory.chest)` verified that limit
-before accepting the cell.
-
-Copying a real preplaced assembler's recipe settings onto a requester-chest ghost
-also works. Validate the generated requests through
-`requester_ghost.get_logistic_sections().sections`: each recipe ingredient must
-appear as `filter.value.name` with a positive `filter.min`. This is more reliable
-than estimating request quantities or inspecting chest contents.
-
-A single protected operation successfully configured seven adjacent preplaced
-assemblers and created 28 peripheral ghosts. Preflight every cell before changing
-the first recipe, retain all changed assemblers and created ghosts for rollback,
-and verify every ghost is registered for construction in the same command. In
-the live test, robots built all 28 peripherals before the next RCON query, which
-reinforces that same-command validation is required.
-
-Wrap multi-entity creation and configuration in one `pcall`; retain references
-to every new ghost and destroy only those new ghosts on any failure. Check
-`is_registered_for_construction()` in that same command. A later read may report
-different queue registration after robots claim work while the ghost itself is
-still present, so verify continued existence separately by exact position and
-`ghost_name`.
+Preserve a player-preplaced assembler: verify its state, set only the requested
+recipe, and create only peripheral ghosts. Wrap multi-cell work in one `pcall`,
+preflight every cell before the first change, and retain changed entities and new
+ghosts for precise rollback. Verify settings and construction registration in
+the same command because robots may fulfill ghosts before the next RCON query.
 
 Power must be validated separately from placement and logistic coverage. Before
 creating a cell, locate a real electric pole, verify `pole.electric_network` is
@@ -270,28 +176,16 @@ not `nil`, read its quality-aware supply radius with
 inside that area. Also verify the requester with
 `surface.find_logistic_network_by_position()`.
 
-If the requested compact destination lacks coverage, extending power is standard
-practice instead of creating an unpowered cell or immediately moving it. Treat
-the extension as a separately validated subplan in the same `pcall`: choose the
-smallest adequate pole at a collision-free position in construction coverage,
-verify its quality-aware supply area covers the assembler, and connect its copper
-wire connector to a live pole whose electric network is not `nil`. Require
-`can_wire_reach()` and verify `connect_to()` or `is_connected_to()` using
-`defines.wire_connector_id.pole_copper`; include the new pole ghost in rollback.
-Once built, `assembler.is_connected_to_electric_network()` is the definitive
-check that its network has a power producer.
-
-In the verified close-spacing test, the Power Armor MK2 assembler at
-`(-0.5, -15.5)` was half a tile beyond the existing substation's supply area. A
-substation ghost at `(-5, -9)`, explicitly wired to the connected substation at
-`(9, -9)`, covered the assembler while preserving three-tile cell spacing.
+If the destination lacks coverage, treat a power extension as a separately
+validated subplan in the same `pcall`. Choose a collision-free pole in
+construction coverage, verify its quality-aware supply area, require copper-wire
+reach to a live network, and include its ghost in rollback. Once built,
+`assembler.is_connected_to_electric_network()` is the definitive power check.
 
 ### Automatic Research Control
 
 The current save's circuit-driven research is controlled by the `set_research`
-option on one lab. As discovered on 2026-07-28, that lab was unit `985803` at
-`[-1.5, -57.5]` on Nauvis. Its unit number and location may change if players
-rebuild it, so discover the active control lab before changing anything:
+option on one lab. Discover the active control lab before changing anything:
 
 ```text
 /silent-command local s=game.surfaces["nauvis"];local out={};for _,e in pairs(s.find_entities_filtered{type="lab",force="player"}) do local cb=e.get_control_behavior();if cb and cb.set_research then out[#out+1]=string.format("unit=%s pos=%.1f,%.1f",e.unit_number,e.position.x,e.position.y) end end;rcon.print(#out>0 and table.concat(out,";") or "(none)")
@@ -320,86 +214,29 @@ Available profiles:
 | `groq` | OpenAI-compatible Groq API | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1`, ignored `groq-api-key.txt` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `openai`:
-
-- Model: `openai/gpt-5.4-mini`
-- Auth: OpenCode's configured `openai` provider in
-  `~/.local/share/opencode/auth.json`; never read or print the token directly.
-- Invocation: `ask_ai()` runs
-  `opencode run --pure --agent jimbo --format json`.
-- An injected OpenCode config denies tools and filesystem access and uses the
-  `minimal` model variant.
-- The command runs from `/tmp/opencode` with project config and external skills
-  disabled so Jimbo does not receive this repository's agent instructions.
-- `--pure` disables external plugins, but OpenCode's built-in OpenAI auth plugin
-  must remain enabled. Do not set `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`.
-- JSON Lines text events are collected as the response. A nonzero exit or no
-  text is treated as an error.
-- Transient timeouts, rate limits, and common HTTP 5xx failures get up to three
-  total attempts with 2-second and 4-second backoff. Permanent failures fail on
-  the first attempt.
-- Reply prompts derive model identity from the selected profile.
+The current profile is `openai`. It uses OpenCode's configured `openai` auth from
+`~/.local/share/opencode/auth.json`; never read or print the token. `ask_ai()`
+runs an isolated, tool-denied `opencode run --pure --agent jimbo --format json`
+from `/tmp/opencode`, with project configuration and external skills disabled.
+The built-in OpenAI auth plugin must remain enabled, so do not set
+`OPENCODE_DISABLE_DEFAULT_PLUGINS=1`. Transient timeouts, rate limits, and common
+HTTP 5xx failures get three total attempts; permanent failures fail immediately.
+Model identity is derived from the selected profile.
 
 ### Provider History
 
-Jimbo originally used local Ollama model `qwen2.5-32b-ctx32k` at
-`http://127.0.0.1:11434`. It moved to DeepSeek V4 Flash Free on 2026-07-26
-because the 28 GB local model and headful Factorio client cannot fit in GPU
-memory simultaneously. Hosted inference was also faster, around 15-25 seconds
-instead of 30-60 seconds.
-
-DeepSeek later exhausted its free quota with HTTP 429 responses. Direct
-`gpt-4.1-mini` API access had no paid quota, so Jimbo moved to the available
-OpenCode OpenAI-provider equivalent, `openai/gpt-5.4-mini`, on 2026-07-26.
-
-### Gemini and Google Antigravity
-
-The earlier repository at
-`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints/jimbo-local-bot`
-contains direct chat-log evidence that Google Antigravity with Gemini was used
-briefly to continue Jimbo development on 2026-07-22. The owner reported running
-out of free quota within ten minutes and later said Gemini had been used "for a
-while." This indicates development use through Antigravity, not Gemini through
-OpenCode; no surviving OpenCode configuration or session metadata selects a
-Gemini development model.
-
-That repository also implemented `gemini-2.5-flash` as a bot-provider fallback
-in commit `5b79129`, selected when OpenCode authentication was unavailable and a
-local `gemini-api-key.txt` existed. The retained runtime records identify Qwen,
-Groq, OpenCode Zen, and Mistral runs, but no Gemini startup or response. Treat an
-actual Gemini-powered Jimbo run as unproven rather than claiming it occurred.
-
-Antigravity quota exhaustion is normally temporary. As checked against Google's
-Antigravity plans documentation on 2026-07-27, baseline quota for accounts
-without Google AI Pro or Ultra refreshes weekly; paid-plan baseline quota
-refreshes every five hours until its weekly limit is reached. Current status and
-remaining model quota can be refreshed in Antigravity CLI with `/usage` or
-`/quota`. Limits may change, so consult `https://antigravity.google/docs/plans`
-before relying on the recorded schedule.
+Jimbo began on local Ollama, moved to hosted DeepSeek because the local model
+competed with the Factorio client for GPU memory, and moved to OpenAI after the
+free DeepSeek quota was exhausted. The predefined profiles retain these working
+paths for manual selection; there is no automatic fallback.
 
 ### Groq
 
-The optional `groq` profile uses `openai/gpt-oss-120b`. It reuses the
-OpenAI-compatible adapter with a dedicated key in gitignored
-`groq-api-key.txt`, a 256-token completion limit, low reasoning effort, and
-reasoning excluded from the response.
-
-The archived bot recorded 167 successful responses from this model, and both
-its proof of concept and full bot used it live. It was dropped after rate-limit
-and quota exhaustion, not an integration failure. A console-only check on
-2026-07-27 confirmed that the current credential and model returned the exact
-requested text in 9.06 seconds. Account limits remain the main operational risk
-because Jimbo normally makes two model calls per handled chat request.
-
-Mistral was investigated but is not a configured profile. Its archived and
-OpenCode credentials both returned HTTP 401 in manual checks, and the owner
-prefers DeepSeek rather than another model accessed through OpenCode.
-
-Official Groq references:
-
-- Model: `https://console.groq.com/docs/model/openai/gpt-oss-120b`
-- OpenAI compatibility: `https://console.groq.com/docs/openai`
-- Reasoning behavior: `https://console.groq.com/docs/reasoning`
+The optional `groq` profile uses `openai/gpt-oss-120b` through the
+OpenAI-compatible adapter and gitignored `groq-api-key.txt`. It limits replies to
+256 tokens, requests low reasoning effort, and excludes reasoning from the
+response. Rate and account quotas are its main operational risk because Jimbo
+normally makes two model calls per handled request.
 
 ### Local Ollama Fallback
 
@@ -450,12 +287,8 @@ printf '%s [JOIN] TestPlayer joined the game\n' "$(date '+%Y-%m-%d %H:%M:%S')" >
 
 ## Save Checkpoints
 
-Factorio's dedicated server treats the file passed to `--start-server` as a
-mutable live save. In addition to rotating `_autosaveN.zip` files, it saves back
-to the loaded file when the last player disconnects and on a clean shutdown.
-Therefore, do not treat `New Space Age Server.zip` as a durable restore point.
-
-Use these roles consistently:
+Factorio saves back to the file passed to `--start-server`, including when the
+last player disconnects and on clean shutdown. Use these roles consistently:
 
 - `/mnt/d/factorio-server/saves/New Space Age Server.zip` is the mutable live
   save from which the server starts.
@@ -464,59 +297,40 @@ Use these roles consistently:
 - Timestamped files under `/mnt/d/factorio-server/saves/archive/` are immutable
   manual checkpoints.
 
-Do not use `server-save <filename>` to create a checkpoint. A relative name is
-resolved under the Factorio installation's write-data directory rather than
-beside the loaded save, and a failed save terminates the multiplayer server.
+Do not use `server-save <filename>`: it resolves under Factorio's write-data
+directory, and a failed save terminates the multiplayer server.
 
 ### Create A Checkpoint
 
 When asked to create a checkpoint:
 
-1. Use the verified `rcon.source.Client` connection described above to run
-   `/server-save`. Wait for the RCON call to complete successfully. This first
-   makes the mutable live save current.
-2. Create the archive directory if it does not exist.
-3. Copy the live save to an archive filename in the form
+1. Run `/server-save` through the verified RCON connection and require success.
+2. Create the archive directory if needed, then copy the live save to
    `checkpoint-YYYY-MM-DD_HH-mm-ss.zip`. Never overwrite an existing checkpoint.
-4. Verify that the checkpoint exists, is nonempty, and is a readable ZIP file.
-5. Report the exact checkpoint path. Do not restart Factorio or Jimbo.
-
-The copy, directory creation, and ZIP validation can be performed from WSL. Do
-not print the RCON password. If `/server-save` fails, do not copy the live file
-and do not claim that a checkpoint was created.
+3. Verify that it exists, is nonempty, and is a readable ZIP; report its exact
+   path. Do not restart services or expose the RCON password. If saving fails, do
+   not copy or claim a checkpoint.
 
 ### Restore The Last Checkpoint
 
-Restoring replaces the current live world and disconnects players. Treat it as
-destructive and obtain explicit confirmation immediately before stopping the
-server. Then:
+Restoring replaces the live world and disconnects players. Obtain explicit
+confirmation immediately before stopping the server, then:
 
-1. Select the lexicographically last file matching
-   `/mnt/d/factorio-server/saves/archive/checkpoint-*.zip`. With the timestamp
-   format above, this is the newest checkpoint. Do not select an `_autosaveN.zip`
-   or a `pre-restore-*.zip` file.
-2. Validate that the selected checkpoint is a readable, nonempty ZIP before
-   stopping anything.
-3. Stop Factorio cleanly using the server's existing Windows process-management
-   procedure and verify that the process exited. Do not kill it while it is
-   writing a save. Its final save may overwrite the live file; that is expected.
-4. Preserve that final live file as
+1. Select the lexicographically last `archive/checkpoint-*.zip`; exclude autosaves
+   and `pre-restore-*`, and validate the selected ZIP before stopping anything.
+2. Stop Factorio cleanly with its existing Windows procedure and verify exit. Its
+   final save may overwrite the live file; do not kill it while it writes.
+3. Preserve the final live file as
    `archive/pre-restore-YYYY-MM-DD_HH-mm-ss.zip` for emergency recovery.
-5. Copy the selected checkpoint to a temporary file in
-   `/mnt/d/factorio-server/saves/`, validate the temporary ZIP, then replace
-   `New Space Age Server.zip` with it. Keep the selected archive checkpoint
-   unchanged.
-6. Start Factorio with the normal server launcher. Confirm in
+4. Copy the checkpoint to a temporary save-directory file, validate it, then
+   replace `New Space Age Server.zip`; leave the archive unchanged.
+5. Start Factorio normally. Confirm in
    `/mnt/d/factorio-standalone/current/factorio-current.log` that it loaded
-   `D:\factorio-server\saves\New Space Age Server.zip` successfully, then verify
-   that RCON is available.
-7. Jimbo should reconnect automatically. Restart Jimbo only if its log shows
-   that reconnection continues to fail after Factorio is available.
+   the expected save, then verify RCON. Restart Jimbo only if reconnection keeps
+   failing after Factorio is available.
 
-If no matching checkpoint exists, validation fails, the server's stop/start
-procedure is unclear, or the live save changes unexpectedly during restoration,
-stop and ask rather than guessing. Report the checkpoint restored, the emergency
-pre-restore copy, and the verification result.
+Stop and ask if no checkpoint exists, validation fails, stop/start is unclear, or
+the live save changes unexpectedly. Report both archive paths and verification.
 
 ## Runtime Pitfalls
 
@@ -528,23 +342,13 @@ file`. Jimbo catches both `OSError` and `ValueError` and reopens the file.
 
 ### RCON Multi-line Messages
 
-RCON only delivers the first line of a multi-line chat command. Send each line
-separately:
-
-```python
-for line in reply.split("\n"):
-    if line.strip():
-        client.run(f"Jimbo says {line.strip()}")
-```
+RCON only delivers the first line of a multi-line command. Jimbo must continue
+sending filtered reply lines separately through `send_jimbo_lines()`.
 
 ### Platform Names
 
-Platform names may contain cargo descriptions and signal markup such as
-`[item=space-science-pack]` or
-`[planet=nauvis][planet=vulcanus]Sausage`. Reply generation must strip
-`[item=...]`, `[planet=...]`, `[virtual-signal=...]`, and
-`[space-location=...]` brackets while retaining surrounding text. When a list is
-requested, include every RCON response line without inventing names.
+Platform-name markup cleanup and complete-list behavior are encoded in Jimbo's
+reply prompts; keep the executable implementation authoritative.
 
 ## known_players.txt Seeding
 

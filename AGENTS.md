@@ -22,6 +22,8 @@ seeding, or runtime diagnosis.
 Read `HANDOFF.md` when resuming work after a `/handoff`. Verify its status claims
 against Git and the current files; `AGENTS.md` remains authoritative.
 
+When asked to prepare or perform a handoff, follow `HANDOFF_PROCEDURE.md`.
+
 ## Central Configuration
 
 **Read this before changing owner, model, or provider behavior.** `jimbo.py` keeps
