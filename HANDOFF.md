@@ -13,18 +13,13 @@
 
 ## Completed Work
 
-- Successful direct replies now consume the spontaneous activity backlog while
-  remaining available in bounded shared dialogue.
-- The classifier prompt can return arbitrary Factorio slash commands for
-  explicit actions and requires custom Lua actions to print their actual result.
-- Scheduled commentary stays silent with no connected players. Active research
-  that remains unchanged across online checks gets one deterministic stall
-  notice, then no repeated research notices until it changes.
-- Added tests for backlog consumption, custom action prompting, empty-server
-  silence, one-time stall notices, and resumed research.
-- Moved recurring assistant-versus-Jimbo identity guidance into `AGENTS.md`,
-  added the local chat-review marker to `.gitignore`, and documented verified
-  RCON techniques and future grounded GPS/action work in the appropriate files.
+- No Jimbo code changed in this context, so no restart summary was needed.
+- `OPERATIONS.md` now records the verified Power Armor MK2 recipe requests and
+  makes validated power extension standard practice for compact production cells
+  that fall outside existing electric coverage.
+- The power-extension procedure requires collision and construction-network
+  checks, quality-aware supply coverage, explicit copper wiring to a live pole,
+  connection verification, and rollback of the new pole with the cell ghosts.
 
 ## Validation
 
@@ -40,14 +35,13 @@
   movement claims. The natural next feature is grounded GPS inspection, using
   the verified techniques referenced in `FUTURE_DIRECTIONS.md` and
   `OPERATIONS.md`.
-- The expanded custom slash-command prompt has deterministic prompt coverage but
-  has not yet been exercised by a new live actionable request through the running
-  Jimbo process.
+- The current production-cell guidance is operational documentation, not an
+  automated Jimbo feature. Do not add generalized building automation without a
+  new explicit request.
 
 ## Operational Caveats
 
-- Jimbo was restarted during this context and the current startup summary has
-  already been announced. Do not restart any service merely to resume work.
+- Do not restart Jimbo, Factorio, or another service merely to resume work.
 - Credentials, runtime logs, PID/state files, player data, caches, and the chat
   review marker remain ignored and must not be committed.
 - Read `OPERATIONS.md` for provider setup, process management, testing, save

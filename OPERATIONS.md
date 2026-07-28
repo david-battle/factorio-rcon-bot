@@ -163,6 +163,7 @@ Verified recipe IDs and generated requester buffers:
 | Personal battery MK1 | `battery-equipment` | 37 steel plates, 18 batteries |
 | Personal battery MK2 | `battery-mk2-equipment` | 56 processing units, 18 low-density structures, 37 Battery MK1s |
 | Personal battery MK3 | `battery-mk3-equipment` | 37 supercapacitors, 18 Battery MK2s |
+| Power Armor MK2 | `power-armor-mk2` | 60 processing units, 40 electric engine units, 30 low-density structures, 100 speed modules, 100 efficiency modules |
 
 The verified operation order is important: locate each source with
 `surface.find_entity(name, position)` and confirm its unit number, create and
@@ -188,11 +189,23 @@ creating a cell, locate a real electric pole, verify `pole.electric_network` is
 not `nil`, read its quality-aware supply radius with
 `pole.prototype.get_supply_area_distance(pole.quality)`, and place the assembler
 inside that area. Also verify the requester with
-`surface.find_logistic_network_by_position()`. If no connected pole covers the
-destination, choose another location rather than creating an unpowered cell;
-adding and wiring a pole is a separate plan that must also be verified. Once
-built, `assembler.is_connected_to_electric_network()` is the definitive check
-that its network has a power producer.
+`surface.find_logistic_network_by_position()`.
+
+If the requested compact destination lacks coverage, extending power is standard
+practice instead of creating an unpowered cell or immediately moving it. Treat
+the extension as a separately validated subplan in the same `pcall`: choose the
+smallest adequate pole at a collision-free position in construction coverage,
+verify its quality-aware supply area covers the assembler, and connect its copper
+wire connector to a live pole whose electric network is not `nil`. Require
+`can_wire_reach()` and verify `connect_to()` or `is_connected_to()` using
+`defines.wire_connector_id.pole_copper`; include the new pole ghost in rollback.
+Once built, `assembler.is_connected_to_electric_network()` is the definitive
+check that its network has a power producer.
+
+In the verified close-spacing test, the Power Armor MK2 assembler at
+`(-0.5, -15.5)` was half a tile beyond the existing substation's supply area. A
+substation ghost at `(-5, -9)`, explicitly wired to the connected substation at
+`(9, -9)`, covered the assembler while preserving three-tile cell spacing.
 
 ### Automatic Research Control
 
