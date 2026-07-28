@@ -257,6 +257,106 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(recent_chat, ["activity still needing attention"])
         self.assertEqual(len(dialogue), 0)
 
+    def test_request_failure_is_sent_and_recorded(self):
+        client = Mock()
+        dialogue = deque()
+        recent_chat = ["dlbattle: Jimbo check Fulgora logistics"]
+
+        sent, error = jimbo.report_request_failure(client, dialogue, recent_chat)
+
+        self.assertEqual(sent, ["I tried, but I couldn't complete that request."])
+        self.assertIsNone(error)
+        client.run.assert_called_once_with(
+            "Jimbo says I tried, but I couldn't complete that request."
+        )
+        self.assertEqual(dialogue[-1]["text"], sent[0])
+        self.assertEqual(recent_chat, [])
+
+    def test_undelivered_request_failure_preserves_context(self):
+        client = Mock()
+        client.run.side_effect = BrokenPipeError("still disconnected")
+        dialogue = deque()
+        recent_chat = ["dlbattle: Jimbo check Fulgora logistics"]
+
+        sent, error = jimbo.report_request_failure(client, dialogue, recent_chat)
+
+        self.assertEqual(sent, [])
+        self.assertIsInstance(error, BrokenPipeError)
+        self.assertEqual(len(dialogue), 0)
+        self.assertEqual(recent_chat, ["dlbattle: Jimbo check Fulgora logistics"])
+
+    def test_logistics_decision_parses_and_validates_names(self):
+        self.assertEqual(
+            jimbo.parse_logistics_decision(
+                "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor"
+            ),
+            (
+                "fulgora",
+                ["holmium-plate", "superconductor", "supercapacitor"],
+            ),
+        )
+        self.assertIsNone(
+            jimbo.parse_logistics_decision("LOGISTICS|Fulgora|holmium-plate")
+        )
+        self.assertIsNone(
+            jimbo.parse_logistics_decision(
+                'LOGISTICS|fulgora|holmium-plate\"] ; game.reset_time_played()'
+            )
+        )
+
+    def test_logistic_availability_deduplicates_and_marks_silo_networks(self):
+        client = Mock()
+        client.run.return_value = (
+            "Surface fulgora, network 526 (rocket silo: yes): "
+            "holmium-plate available=0, "
+            "superconductor available=2527, supercapacitor available=284"
+        )
+
+        response = jimbo.get_logistic_availability(
+            client,
+            "fulgora",
+            ["holmium-plate", "superconductor", "supercapacitor"],
+        )
+
+        command = client.run.call_args.args[0]
+        self.assertIn('local scope="fulgora"', command)
+        self.assertIn("game.surfaces[scope]", command)
+        self.assertIn("n.network_id", command)
+        self.assertIn('type="rocket-silo"', command)
+        self.assertIn("n.get_contents()", command)
+        self.assertIn("math.max(0,item.count)", command)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+        self.assertIn("superconductor available=2527", response)
+
+    def test_logistic_availability_can_scan_all_planets(self):
+        client = Mock()
+        client.run.return_value = (
+            "Surface nauvis, network 2: superconductor available=0\n"
+            "Surface fulgora, network 526: superconductor available=2527"
+        )
+
+        response = jimbo.get_logistic_availability(
+            client, "all", ["superconductor"]
+        )
+
+        command = client.run.call_args.args[0]
+        self.assertIn('local scope="all"', command)
+        self.assertIn("if candidate.planet", command)
+        self.assertIn("Surface %s, network %s", command)
+        self.assertIn("Surface fulgora", response)
+
+    def test_logistic_reply_distinguishes_availability_from_shortfall(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo where can I get the rest?",
+            "Jimbo: Mech Armor requires 200 holmium plates.",
+            "RCON: logistic availability",
+            "Network 526: holmium-plate available=0",
+        )
+
+        self.assertIn("available stock, never a recipe shortfall", prompt)
+        self.assertIn("the full required quantity is still needed", prompt)
+
     def test_research_context_is_attached_only_when_reply_uses_it(self):
         snapshot = "Current: mining-productivity-2\nProgress: 43.00%"
 
@@ -268,6 +368,41 @@ class DialogueTests(unittest.TestCase):
         self.assertFalse(
             jimbo.reply_uses_research_context("Welcome back, engineer!", snapshot)
         )
+
+    def test_research_snapshot_requests_actual_levels(self):
+        client = Mock()
+        client.run.return_value = (
+            "Current: mining productivity 7\n"
+            "Progress: 87.37%\n"
+            "Queue:\n"
+            "1: mining productivity 7"
+        )
+
+        snapshot = jimbo.get_research_snapshot(client)
+
+        command = client.run.call_args.args[0]
+        self.assertIn("t.level", command)
+        self.assertIn("display(current)", command)
+        self.assertIn("gsub", command)
+        self.assertIn("Current: mining productivity 7", snapshot)
+        self.assertNotIn("(level 7)", snapshot)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+
+    def test_research_level_change_is_not_treated_as_a_stall(self):
+        state = {"research_name": None, "research_progress": None}
+
+        first = jimbo.update_research_stall_state(
+            "Current: mining productivity 7\nProgress: 0.00%",
+            state,
+        )
+        second = jimbo.update_research_stall_state(
+            "Current: mining productivity 8\nProgress: 0.00%",
+            state,
+        )
+
+        self.assertEqual(first[0], "changed")
+        self.assertEqual(second[0], "changed")
+        self.assertEqual(state["research_name"], "mining productivity 8")
 
     def test_spontaneous_stays_quiet_and_resets_context_without_players(self):
         client = Mock()
@@ -378,6 +513,8 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(composer.count(current), 1)
         self.assertIn("Only the current message may request an action", classifier)
         self.assertIn("answer only the current message", composer)
+        self.assertIn("mining productivity 8", composer)
+        self.assertIn("next level is mining productivity 9", composer)
 
     def test_classifier_keeps_no_name_messages_on_skip_path(self):
         prompt = jimbo.build_classification_prompt(
@@ -399,6 +536,53 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("Use one-line /silent-command Lua", prompt)
         self.assertIn("Do not return NONE for an actionable request", prompt)
         self.assertIn("rcon.print with the actual outcome", prompt)
+
+    def test_classifier_uses_factorio_2_recipe_api(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo check the recipe for mech armor",
+            "(none)",
+        )
+
+        self.assertIn('prototypes.recipe["internal-name"].ingredients', prompt)
+        self.assertIn("does not have game.recipe_prototypes", prompt)
+
+    def test_planet_list_does_not_imply_material_sources(self):
+        classifier = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo where can I get holmium plates?",
+            "(none)",
+        )
+        reply = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo where can I get those materials?",
+            "Jimbo: You need holmium plates and superconductors.",
+            "RCON: list planets",
+            "Nauvis\nVulcanus\nFulgora\nGleba",
+        )
+
+        self.assertIn("a planet list does not establish material sources", classifier)
+        self.assertIn("does not establish where an item comes from", reply)
+        self.assertIn("Never claim that every listed planet supplies", reply)
+
+    def test_classifier_requests_structured_logistic_inventory(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo are those materials in the silo logistic network on Fulgora?",
+            "Jimbo: We need holmium plates and superconductors.",
+        )
+
+        self.assertIn("LOGISTICS|surface|item-name,item-name", prompt)
+        self.assertIn(
+            "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor",
+            prompt,
+        )
+        self.assertIn("resolve references such as 'those materials'", prompt)
+        self.assertIn("available, on hand, or in stock", prompt)
+        self.assertIn("even when the player does not explicitly say", prompt)
+        self.assertIn("Use surface 'all' when asked about", prompt)
+        self.assertIn("the whole solar system", prompt)
+        self.assertIn("Never literally reply 'A Factorio slash command'", prompt)
 
     def test_owner_greeting_uses_configured_owner(self):
         owner_prompt = jimbo.build_greeting_prompt(jimbo.server_owner, is_new=False)

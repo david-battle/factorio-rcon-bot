@@ -134,6 +134,76 @@ Construction robots may fulfill the new ghost immediately if the network has
 the requested items, so verification should happen in the same Lua command as
 the clone. Never destroy or alter the source ghost.
 
+### Logistic Availability Queries
+
+Jimbo's structured availability decision is
+`LOGISTICS|surface|item-name,item-name`. The surface and item fields use
+lowercase internal names and are validated before Lua construction. The special
+surface `all` means every surface with `LuaSurface.planet`; do not use
+`LuaForce.logistic_networks` as a solar-system inventory because it previously
+missed remote planetary networks.
+
+On each surface, discover player networks through roboports and deduplicate them
+by `LuaLogisticNetwork.network_id`. Keep disconnected networks separate. Locate
+rocket silos with `find_entities_filtered()` and associate them through
+`find_logistic_network_by_position()` so replies identify networks suitable for
+shipping.
+
+Use `LuaLogisticNetwork.get_contents()` for requested items. It returns
+quality-aware entries with `name`, string `quality`, and `count`. Counts can be
+negative when demand or reservations exceed stock. Sum `max(0, count)` across
+qualities so player-facing availability is never negative. This number is stock,
+not a recipe shortfall: compare it with exact recipe quantities retained in
+dialogue. Zero available means the full required quantity is still needed.
+
+Recipe prototypes are under `prototypes.recipe`, not the removed
+`game.recipe_prototypes`. A bare planet list proves only which planets exist; it
+does not establish material origins. Preserve the structured classifier examples,
+input validation, deterministic tests, and failure acknowledgment when changing
+this flow.
+
+### Logistic Group Mutation
+
+Named groups belong to a force. Use `LuaForce.create_logistic_group()`,
+`get_logistic_group()`, and `delete_logistic_group()` with the intended
+`defines.logistic_group_type`; the default `with_trash` type supports request and
+auto-trash limits. `get_logistic_group()` returns group information, not a
+directly writable group object. Write filters through a manual member
+`LuaLogisticSection.filters` or `set_slot()`.
+
+To create a populated but unattached group safely:
+
+1. Abort if the exact group name already exists.
+2. Create a disposable entity and manual section without raising build events.
+3. Set and validate the manual filters, create the force group, then assign the
+   section's `group` name.
+4. Verify the shared group's complete filter set before detaching the section.
+5. Clear the section's group, remove it, destroy the disposable entity, and
+   verify that the populated group persists with zero members.
+6. Wrap the operation in `pcall`; on failure destroy only temporary state and
+   delete only the newly created group.
+
+Existing populated groups can be edited through any valid manual member section.
+Snapshot the old filters, assign the complete replacement array once, verify the
+shared group and all requested limits, and restore the snapshot on failure. Never
+replay a mutation automatically after an uncertain RCON disconnect.
+
+`LogisticFilter.min=0,max=0` requests nothing and retains nothing. A nonzero
+minimum requires an exact quality and `=` comparator; it cannot use an any-quality
+range. To request one quality while preserving zero limits for the others, split
+the item into one filter per quality. In the current unmodded quality set these
+are normal, uncommon, rare, epic, and legendary.
+
+Derive GUI-tab membership from prototypes instead of a hand-maintained list. For
+example, the current `intermediate-products` item group contains 85 item
+prototypes and no fluid prototypes. Verify the live count before mutation because
+mods or game updates can change it.
+
+A bare `/silent-command` executes no mutation and normally returns empty. Empty
+RCON output is never proof of success. Every mutating command must print its
+verified result, and important changes should receive an independent read-only
+verification before a success message is sent.
+
 ### Logistic Production Cells
 
 A reusable production cell consists of a crafting machine, a requester chest and

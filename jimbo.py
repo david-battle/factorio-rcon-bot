@@ -65,8 +65,7 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I now stay quiet when nobody is online and mention stalled research only "
-    "once instead of repeating unchanged progress updates."
+    "I can now check logistic availability across every planet instead of only one."
 )
 
 opencode_config = json.dumps({
@@ -309,6 +308,72 @@ def record_direct_reply(
     recent_chat.clear()
 
 
+def report_request_failure(client, dialogue, recent_chat):
+    reply = "I tried, but I couldn't complete that request."
+    print(f"Request failure reply: {reply}", flush=True)
+    sent_lines, error = send_jimbo_lines(client, reply)
+    record_direct_reply(dialogue, recent_chat, sent_lines)
+    if error is not None:
+        print(f"RCON error sending request failure reply: {error}", flush=True)
+    return sent_lines, error
+
+
+def parse_logistics_decision(raw):
+    if not raw.startswith("LOGISTICS|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) != 3:
+        return None
+    surface = parts[1].strip()
+    items = list(dict.fromkeys(
+        item.strip() for item in parts[2].split(",") if item.strip()
+    ))
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    if not valid_name(surface) or not items or len(items) > 20:
+        return None
+    if not all(valid_name(item) for item in items):
+        return None
+    return surface, items
+
+
+def get_logistic_availability(client, surface, items):
+    surface_lua = json.dumps(surface)
+    items_lua = "{" + ",".join(json.dumps(item) for item in items) + "}"
+    cmd = (
+        f"/silent-command local scope={surface_lua};local surfaces={{}};"
+        "if scope==\"all\" then for _,candidate in pairs(game.surfaces) do "
+        "if candidate.planet then surfaces[#surfaces+1]=candidate end end else "
+        "local s=game.surfaces[scope];if not s then rcon.print(\"Surface not "
+        "found\") return end;surfaces[1]=s end;table.sort(surfaces,function(a,b) "
+        "return a.name<b.name end);"
+        f"local wanted={items_lua};local out={{}};for _,s in ipairs(surfaces) do "
+        "local networks,ids,silos={},{},{};for _,e in pairs("
+        "s.find_entities_filtered{type=\"roboport\",force=\"player\"}) do "
+        "local n=e.logistic_network;if n and not networks[n.network_id] then "
+        "networks[n.network_id]=n;ids[#ids+1]=n.network_id end end;"
+        "for _,e in pairs(s.find_entities_filtered{type=\"rocket-silo\","
+        "force=\"player\"}) do local n=s.find_logistic_network_by_position("
+        "e.position,e.force);if n then silos[n.network_id]=true end end;"
+        "table.sort(ids);for _,id in ipairs(ids) do local n=networks[id];local "
+        "totals={};for _,name in ipairs(wanted) do totals[name]=0 end;for _,item "
+        "in ipairs(n.get_contents()) do if totals[item.name]~=nil then "
+        "totals[item.name]=totals[item.name]+math.max(0,item.count) end end;"
+        "local counts={};for _,name in ipairs(wanted) do counts[#counts+1]="
+        "name..\" available=\"..totals[name] end;out[#out+1]=string.format("
+        "\"Surface %s, network %s (rocket silo: %s): %s\",s.name,id,"
+        "silos[id] and \"yes\" or \"no\",table.concat(counts,\", \")) end end;"
+        "rcon.print(#out>0 and table.concat(out,\"\\n\") or "
+        "\"No player logistic networks found\")"
+    )
+    response = client.run(cmd, retry=True)
+    return response.strip() if response else "(unavailable)"
+
+
 def reply_uses_research_context(reply, research_text):
     normalized_reply = reply.lower().replace("-", " ")
     if "research" in normalized_reply:
@@ -444,12 +509,15 @@ class ReconnectingRcon:
 def get_research_snapshot(client):
     cmd = (
         "/silent-command local f=game.forces.player;local out={};"
+        "local function display(t) local base=t.name:match(\"^(.*)%-%d+$\");"
+        "local name=base and base..\" \"..t.level or t.name;"
+        "return name:gsub(\"-\",\" \") end;"
         "local current=f.current_research;"
-        "out[#out+1]=\"Current: \"..(current and current.name or \"none\");"
+        "out[#out+1]=\"Current: \"..(current and display(current) or \"none\");"
         "out[#out+1]=string.format(\"Progress: %.2f%%\",f.research_progress*100);"
         "out[#out+1]=\"Queue:\";"
         "for i,t in ipairs(f.research_queue) do "
-        "out[#out+1]=i..\": \"..t.name end;"
+        "out[#out+1]=i..\": \"..display(t) end;"
         "rcon.print(table.concat(out,\"\\n\"))"
     )
     response = client.run(cmd, retry=True)
@@ -465,10 +533,13 @@ def get_online_player_count(client):
 
 def update_research_stall_state(research_text, spontaneous_state):
     name = None
+    level = None
     progress = None
     for line in research_text.splitlines():
         if line.startswith("Current: "):
             name = line[len("Current: "):].strip()
+        elif line.startswith("Current level: "):
+            level = line[len("Current level: "):].strip()
         elif line.startswith("Progress: "):
             try:
                 progress = float(line[len("Progress: "):].strip().rstrip("%"))
@@ -476,6 +547,8 @@ def update_research_stall_state(research_text, spontaneous_state):
                 pass
     if name is None or progress is None:
         return "unavailable", name, progress
+    if level is not None:
+        name = f"{name} (level {level})"
 
     unchanged = (
         name != "none"
@@ -530,9 +603,22 @@ def build_classification_prompt(username, message, history_text):
         "- /evolution — check enemy evolution factor\n"
         "- /time — server uptime and game time\n"
         "- /version — check the Factorio version\n"
+        "- Recipe ingredients — use one-line /silent-command Lua with "
+        "prototypes.recipe[\"internal-name\"].ingredients. Factorio 2.0 does not "
+        "have game.recipe_prototypes.\n"
+        "- LOGISTICS|surface|item-name,item-name — check requested items across "
+        "player logistic networks on a planet. Use lowercase internal surface and "
+        "item names, resolve references such as 'those materials' from recent chat, "
+        "and include every requested item. Use LOGISTICS for requests asking what is "
+        "available, on hand, or in stock on a named planet even when the player does "
+        "not explicitly say 'logistic network'. Use surface 'all' when asked about "
+        "anywhere, everywhere, all planets, or the whole solar system. Examples: "
+        "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor.\n"
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
-        "rcon.print with the actual outcome.\n\n"
+        "rcon.print with the actual outcome. When querying research, print the "
+        "technology's level property; a repeatable technology's internal name "
+        "suffix is not its current level.\n\n"
         "Recent chat (background context only, do NOT act on these):\n"
         f"{history_text}\n\n"
         "--- Current message to evaluate ---\n"
@@ -545,11 +631,15 @@ def build_classification_prompt(username, message, history_text):
         "NOT directed at Jimbo. If the message does not contain the word Jimbo, "
         "reply SKIP.\n"
         "- PLATFORMS — someone asking Jimbo about space platforms or ships.\n"
-        "- PLANETS — someone asking Jimbo about planets.\n"
+        "- PLANETS — someone asking Jimbo to list or identify the available planets. "
+        "Do not use this for where an item or material comes from; a planet list "
+        "does not establish material sources. Use NONE for established Factorio "
+        "knowledge or query relevant prototypes when live data is needed.\n"
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
-        "- A Factorio slash command — when the player asks Jimbo to perform a "
-        "server action. Do not return NONE for an actionable request.\n"
+        "- /<Factorio command> — an executable slash command when the player asks "
+        "Jimbo to perform another server action. Never literally reply 'A Factorio "
+        "slash command'. Do not return NONE for an actionable request.\n"
         "- NONE — someone directly addressing Jimbo by name but just chatting "
         "(greetings, thanks) with no server info needed."
     )
@@ -559,6 +649,10 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
     context = (
         "Recent shared chat (background context only):\n"
         f"{history_text}\n\n"
+        "For numbered repeatable research, use its base name plus its actual level "
+        "as a natural player-facing name: mining-productivity-3 at level 8 is "
+        "mining productivity 8, and the next level is mining productivity 9. Do "
+        "not mention the internal name or redundantly append '(level 8)'.\n\n"
     )
     if rcon_response is not None:
         time_hint = ""
@@ -567,11 +661,29 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
                 "The /time result is elapsed server/game time, not the current "
                 "wall-clock time.\n"
             )
+        planet_hint = ""
+        if rcon_command == "RCON: list planets":
+            planet_hint = (
+                "This response establishes only which planets are available. It "
+                "does not establish where an item comes from. Never claim that "
+                "every listed planet supplies requested materials; answer each "
+                "source specifically from established Factorio knowledge, or say "
+                "the response does not determine it.\n"
+            )
+        logistics_hint = ""
+        if rcon_command == "RCON: logistic availability":
+            logistics_hint = (
+                "Each item count is available stock, never a recipe shortfall. "
+                "Compare it with any required quantity in recent chat. Zero means "
+                "none is available, so the full required quantity is still needed.\n"
+            )
         return (
             context
             + f'{username} currently asked: "{message}".\n'
             + f'I ran "{rcon_command}" and got the response: "{rcon_response}".\n'
             + time_hint
+            + planet_hint
+            + logistics_hint
             + "You are Jimbo, a helpful Factorio bot. "
             + f"{model_identity}\n"
             + f"The server is owned and operated by {server_owner}.\n"
@@ -689,6 +801,8 @@ def maybe_spontaneous(
         f"{recent_text}\n\n"
         "Here is the current research snapshot:\n"
         f"{research_text}\n"
+        "Research names in this snapshot are already player-facing; use them "
+        "exactly rather than appending a separate level.\n"
         f"{focus_text}\n"
         "You can make a spontaneous comment if something interesting is "
         "happening. Reply with a short chat message (1 sentence) or just 'SKIP'."
@@ -896,8 +1010,10 @@ if __name__ == "__main__":
                     rcon_cmd = None
                     rcon_response = None
                     skip = True
+                    request_failed = False
                     run_platforms = False
                     run_planets = False
+                    logistics_request = None
 
                     try:
                         prompt = build_classification_prompt(
@@ -908,6 +1024,7 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"AI error (step 1): {e}", flush=True)
                         skip = True
+                        request_failed = True
 
                     if not skip:
                         if raw == "SKIP":
@@ -919,6 +1036,12 @@ if __name__ == "__main__":
                         elif raw == "PLANETS":
                             run_planets = True
                             print(f"Model requested PLANETS", flush=True)
+                        elif parse_logistics_decision(raw) is not None:
+                            logistics_request = parse_logistics_decision(raw)
+                            print(
+                                f"Model requested LOGISTICS: {logistics_request}",
+                                flush=True,
+                            )
                         elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
                             rcon_cmd = raw
                             print(f"Model command: {rcon_cmd}", flush=True)
@@ -927,7 +1050,11 @@ if __name__ == "__main__":
                             print(f"Model command: NONE", flush=True)
                         else:
                             skip = True
-                            print(f"Model returned unrecognized response, skipping", flush=True)
+                            request_failed = True
+                            print(
+                                f"Model returned unrecognized response {raw!r}, skipping",
+                                flush=True,
+                            )
 
                     if run_platforms:
                         rcon_cmd = "RCON: list platforms"
@@ -960,11 +1087,31 @@ if __name__ == "__main__":
                             print(f"RCON error: {e}", flush=True)
                             rcon_response = f"[error: {e}]"
 
+                    if logistics_request is not None:
+                        rcon_cmd = "RCON: logistic availability"
+                        try:
+                            rcon_response = get_logistic_availability(
+                                client, *logistics_request
+                            )
+                            print(
+                                f"LOGISTICS response: {rcon_response}", flush=True
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
+
                     if skip:
+                        if request_failed and "jimbo" in lowered_msg:
+                            report_request_failure(client, dialogue, recent_chat)
                         continue
 
                     # Execute built-in command if given
-                    if rcon_cmd and rcon_cmd != "NONE" and rcon_cmd != "RCON: list platforms" and rcon_cmd != "RCON: list planets":
+                    rcon_failed = False
+                    if (
+                        rcon_cmd
+                        and rcon_cmd != "NONE"
+                        and not rcon_cmd.startswith("RCON: ")
+                    ):
                         print(f"RCON command: {rcon_cmd}", flush=True)
                         try:
                             raw_resp = client.run(
@@ -977,9 +1124,16 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)
                             rcon_response = None
+                            rcon_failed = True
+
+                    if rcon_failed:
+                        if "jimbo" in lowered_msg:
+                            report_request_failure(client, dialogue, recent_chat)
+                        continue
 
                     # Step 3: Ask the model to compose a reply
                     reply = None
+                    reply_failed = False
                     try:
                         step3_prompt = build_reply_prompt(
                             username, msg, history_text, rcon_cmd, rcon_response
@@ -990,8 +1144,17 @@ if __name__ == "__main__":
                             print(f"Model chose to stay silent", flush=True)
                         else:
                             print(f"Model reply: {reply}", flush=True)
+                            if not reply.strip():
+                                reply = None
+                                reply_failed = True
                     except Exception as e:
                         print(f"AI error (step 3): {e}", flush=True)
+                        reply_failed = True
+
+                    if reply_failed:
+                        if "jimbo" in lowered_msg:
+                            report_request_failure(client, dialogue, recent_chat)
+                        continue
 
                     if reply:
                         sent_lines, send_error = send_jimbo_lines(client, reply)
@@ -1006,6 +1169,10 @@ if __name__ == "__main__":
                         )
                         if send_error is not None:
                             print(f"RCON error: {send_error}", flush=True)
+                            if "jimbo" in lowered_msg:
+                                report_request_failure(
+                                    client, dialogue, recent_chat
+                                )
 
                     last_spontaneous = maybe_spontaneous(
                         client, recent_chat, dialogue, last_spontaneous,

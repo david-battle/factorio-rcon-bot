@@ -7,6 +7,40 @@ not part of Jimbo's runtime instructions.
 
 `jq` 1.8.1 was installed and verified available in WSL on 2026-07-28.
 
+### Codex CLI
+
+Codex CLI was installed and authenticated in WSL on 2026-07-28. The active
+`codex` command is standalone version `0.145.0` at `~/.local/bin/codex`, which is
+a symlink into `~/.codex/packages/standalone/`. Configuration, authentication,
+sessions, and other private state are under `~/.codex`; do not commit or expose
+them.
+
+Windows also has the separate global npm package `@openai/codex@0.144.6`. WSL
+currently resolves the standalone Linux installation, not that Windows npm
+package.
+
+### Antigravity CLI
+
+Google Antigravity CLI (`agy`) was installed and authenticated in WSL on
+2026-07-28. The active command is version `1.1.8` at `~/.local/bin/agy`. Its
+private CLI state is under `~/.gemini/antigravity-cli`, with shared Antigravity
+configuration under `~/.gemini/config`; do not commit or expose authentication
+state.
+
+The installer added `~/.local/bin` to both `~/.bashrc` and `~/.profile`. Both
+`codex` and `agy` were verified by asking them for a short summary of this
+repository.
+
+### GitHub CLI
+
+GitHub CLI `2.96.0` was installed in WSL on 2026-07-28 from GitHub's official
+Linux amd64 release archive. Its published checksum was verified before the
+binary was installed at `~/.local/bin/gh`. It is authenticated as `david-battle`
+using HTTPS. Authentication state is under `~/.config/gh`; do not record or
+expose its credentials. The token
+was granted substantially broader scopes than this repository work requires and
+should eventually be replaced with a least-privilege token.
+
 ## OpenClaw Removal
 
 OpenClaw was removed completely on 2026-07-28 after its gateway became stuck in
