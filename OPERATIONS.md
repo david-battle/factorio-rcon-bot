@@ -15,6 +15,13 @@ seeding, or one of the documented runtime pitfalls.
   `/mnt/d/factorio-server/server-console.log`.
 - Python dependencies use the shared `/mnt/d/.venv`, auto-activated by `.bashrc`.
 
+When the user says the "old repository," they mean
+`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`. It contains historical
+blueprint generators, tests, design notes, and an obsolete larger Jimbo project.
+Read its `AGENTS.md` before consulting it, but treat this repository's current
+instructions and operational findings as authoritative. Use old files as
+evidence or source material rather than modifying or importing them wholesale.
+
 ## RCON Connection
 
 Use the `rcon` package's `rcon.source` module. This exact library and connection
@@ -30,6 +37,11 @@ with Client("127.0.0.1", 27015, passwd=password) as client:
     response = client.run("/players")
     print(response)
 ```
+
+Factorio supports concurrent RCON connections. The `Client` context manager
+authenticates automatically, but a manually managed client must call
+`client.connect(login=True)`. Calling `connect()` without `login=True` opens TCP
+without authenticating, after which commands appear to hang until timeout.
 
 The password is copied from the live server configuration into the gitignored
 `rconpw`. Never hardcode, print, or commit it.
@@ -67,6 +79,54 @@ Jimbo says Auto-research control lab: [gps=-1.5,-57.5,nauvis]
 ```
 
 Use the player's requested coordinates and surface rather than assuming Nauvis.
+Factorio world chunks are 32 x 32 tiles, with boundaries and corners at
+coordinates divisible by 32.
+
+### Exact Blueprint Deployment
+
+For precise remote deployment, do not call `LuaItemStack.build_blueprint()`
+directly on the live surface: its cursor-position transform previously shifted
+builds across chunk boundaries. Decode the blueprint positions and apply one
+explicit world offset. Preflight every resulting entity center with
+`can_place_entity()` and abort before placement if any position is blocked.
+
+A settings-preserving staging workflow was verified with a 223-entity,
+absolutely snapped 32 x 32 blueprint:
+
+1. Import the blueprint into a temporary inventory and require import status 0.
+2. Build it on a temporary generated surface and verify every prototype and
+   local center against `get_blueprint_entities()`.
+3. Use `clone_area()` with explicit source and destination rectangles to copy
+   only entities onto the already-preflighted live chunk.
+4. In the same command, verify every destination prototype, exact center,
+   direction, mirroring, recipe, recipe quality, and construction registration.
+5. Roll back only matching destination ghosts on failure, then delete the
+   temporary surface and inventory. On success, delete the staging objects after
+   validation.
+
+This preserved recipes, recipe qualities, module insert plans, circuit wiring,
+and explicit copper wiring. Explicit internal copper graphs do not necessarily
+auto-connect to nearby external poles. After construction, compare electric
+networks and explicitly bridge a reachable internal pole to a live external pole
+when needed; verify all consumers with `is_connected_to_electric_network()`.
+
+Blueprint module requests on built machines appear as `item-request-proxy`
+entities. To substitute an available module, preserve each proxy's
+`insert_plan.items.in_inventory` destinations, replace only the requested item
+ID and quality, assign the complete plan back, and validate `item_requests`.
+Inventory qualities returned by `LuaLogisticNetwork.get_contents()` are strings,
+not objects with a `.name` member. Inspect every unique surface logistic network
+before choosing the strongest available stock. The live QUP substitution used
+32 normal Quality Module 2s across seven AM3s and one recycler. A recycler's
+runtime entity type is `furnace`, so an `assembling-machine`-only scan omits it.
+
+Passive-provider reserve chests remain available to the surrounding logistic
+network. A distant buffer chest with a large matching request can therefore
+drain a quality reserve continuously and divert products that would otherwise
+continue to recycling. Trace requests across the complete connected network when
+this occurs. For a chest inventory, `set_bar(2)` leaves one usable slot because
+the bar is the first blocked slot; existing contents beyond a newly lowered bar
+remain, but additional deliveries stop once the available space is full.
 
 ### Entity Ghost Inspection And Cloning
 
@@ -176,6 +236,25 @@ that real entity. Verify it has no recipe and is powered, set its requested
 recipe, and create only the four peripheral ghosts. On failure, clear only the
 new recipe and remove only the newly created ghosts; never destroy the player's
 assembler.
+
+Copying settings from a real configured peripheral onto its corresponding ghost
+preserves inserter direction and provider-chest limits. The tested source
+provider used inventory bar `3`, leaving two output slots available, and
+`provider_ghost.get_inventory_bar(defines.inventory.chest)` verified that limit
+before accepting the cell.
+
+Copying a real preplaced assembler's recipe settings onto a requester-chest ghost
+also works. Validate the generated requests through
+`requester_ghost.get_logistic_sections().sections`: each recipe ingredient must
+appear as `filter.value.name` with a positive `filter.min`. This is more reliable
+than estimating request quantities or inspecting chest contents.
+
+A single protected operation successfully configured seven adjacent preplaced
+assemblers and created 28 peripheral ghosts. Preflight every cell before changing
+the first recipe, retain all changed assemblers and created ghosts for rollback,
+and verify every ghost is registered for construction in the same command. In
+the live test, robots built all 28 peripherals before the next RCON query, which
+reinforces that same-command validation is required.
 
 Wrap multi-entity creation and configuration in one `pcall`; retain references
 to every new ghost and destroy only those new ghosts on any failure. Check

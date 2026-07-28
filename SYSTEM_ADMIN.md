@@ -3,6 +3,10 @@
 This file is a manually loaded record of host-level administration work. It is
 not part of Jimbo's runtime instructions.
 
+## Local Tooling
+
+`jq` 1.8.1 was installed and verified available in WSL on 2026-07-28.
+
 ## OpenClaw Removal
 
 OpenClaw was removed completely on 2026-07-28 after its gateway became stuck in

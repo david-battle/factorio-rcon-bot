@@ -59,6 +59,24 @@ natural interaction, and restrained behavior.
    answered, and avoid silently switching models for permanent configuration or
    authentication errors.
 
+7. **Bounded one-chunk blueprint design.** The old repository contains useful
+   standard-library patterns for strict blueprint encoding/decoding, exact
+   doubled-coordinate geometry, nominal footprint validation, and deterministic
+   encode/decode artifact tests. A future first implementation should extract
+   only a small codec and 32 x 32 validator with explicit limits, exceptions,
+   versioned live-verified prototype footprints, and one known test fixture. The
+   model should propose bounded structured entities; local code, not the model,
+   should create the opaque exchange string.
+
+   Keep artifact generation separate from deployment. Prove the offline codec
+   and validator first, then choose a reliable in-game delivery path, verify
+   import through Factorio, and only later consider optional live placement using
+   the preflight, staging, clone, audit, and rollback procedure in
+   `OPERATIONS.md`. Do not import the old full-bot architecture, RCON wrappers,
+   complete solar/QUP generators, optimizer assumptions, or Factorio 2.1.11
+   prototype tables. Those are design references, not a general current runtime
+   framework.
+
 Context and factual knowledge are separate problems. A larger dialogue window
 would not have prevented the incorrect solid-fuel energy answer, and the current
 server log does not expose enough information to answer session death counts.

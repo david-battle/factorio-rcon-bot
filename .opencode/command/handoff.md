@@ -22,6 +22,8 @@ conflict with concurrent changes requires one short question.
    make the handoff look complete. Preserve unrelated or concurrent work rather
    than reverting it.
 4. Keep durable documentation in the right place:
+   - Save any recent reusable learnings from the current context in the
+     appropriate Markdown file before writing `HANDOFF.md`.
    - `AGENTS.md` contains only rules future coding contexts routinely need.
    - `OPERATIONS.md` contains setup, provider history, recovery, process, and
      other infrequently needed operational detail.
