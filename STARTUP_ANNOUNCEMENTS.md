@@ -99,3 +99,4 @@ listed as announcements.
 - **15:54:03:** I can now bridge short power gaps for production cells with up to two fully checked extension poles, rolling back the whole plan if any ghost fails.
 - **16:10:20:** I can now find nearby clear locations for production cells from your current view, your physical position, a named direction, or the planet spawn while keeping every existing placement check.
 - **16:32:46:** I can now place production cells on Aquilo when every freezable component is beside a live heat source, and I recheck that heat immediately before placing anything.
+- **16:51:00:** I can now fit Aquilo production cells inside compact heated rings, using the surrounding roboport and existing electric coverage instead of forcing my standard pole layout.

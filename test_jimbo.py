@@ -1090,7 +1090,9 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("passive-provider-chest", phase2)
         self.assertIn("inserter", phase2)
         self.assertIn("medium-electric-pole", phase2)
-        self.assertEqual(phase2.count("direction=defines.direction.west"), 4)
+        self.assertEqual(phase2.count("direction=defines.direction.west"), 2)
+        self.assertIn("direction=plans[4].direction", phase2)
+        self.assertIn("direction=plans[5].direction", phase2)
         self.assertNotIn("defines.direction.right", phase2)
         self.assertNotIn("defines.direction.left", phase2)
         self.assertIn("pcall", phase2)
@@ -1305,6 +1307,9 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("position={cx,cy}", phase2)
         self.assertIn("position={x-1.5,row}", phase2)
         self.assertIn("position={x+w+1.5,row}", phase2)
+        self.assertIn("position=plans[1].position", phase2)
+        self.assertIn("position=plans[2].position", phase2)
+        self.assertIn("position=plans[3].position", phase2)
         self.assertIn("pole_pos={x+math.floor(w/2)+0.5,y-0.5}", phase2)
 
     def test_place_cell_rejects_fluid_recipes_before_location_checks(self):
@@ -1382,6 +1387,66 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("error('no heat coverage for '..plan.name)", phase2)
         self.assertEqual(result, "ERROR: no heat coverage for inserter")
         self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+
+    def test_place_cell_uses_compact_aquilo_ring_layout(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:-21,-8,3,3,assembling-machine-3,,aquilo,aquilo-compact",
+            "SUCCESS: compact cell placed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "aquilo", "pumpjack", "[gps=-21,-8,aquilo]", "dlbattle"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("if requires_heat then step_x=1;step_y=1 end", phase1)
+        self.assertIn("local compact_area={{ax,ay},{ax+w,ay+h+2}}", phase1)
+        self.assertIn("position={ax+0.5,ay+h+1.5}", phase1)
+        self.assertIn("position={ax+1.5,ay+h+1.5}", phase1)
+        self.assertIn("position={ax+0.5,ay+h+0.5}", phase1)
+        self.assertIn("position={ax+1.5,ay+h+0.5}", phase1)
+        self.assertIn("direction=defines.direction.south", phase1)
+        self.assertIn("direction=defines.direction.north", phase1)
+        self.assertIn("plan_has_live_power(compact_plans[1])", phase1)
+        self.assertIn("plan_has_live_power(compact_plans[4])", phase1)
+        self.assertIn("plan_has_live_power(compact_plans[5])", phase1)
+        self.assertIn("aquilo-compact", phase1)
+        self.assertIn('local layout="aquilo-compact"', phase2)
+        self.assertIn("area={{x,y},{x+w,y+h+2}}", phase2)
+        self.assertIn("position={x+0.5,y+h+1.5}", phase2)
+        self.assertIn("position={x+1.5,y+h+1.5}", phase2)
+        self.assertIn("position={x+0.5,y+h+0.5}", phase2)
+        self.assertIn("position={x+1.5,y+h+0.5}", phase2)
+        self.assertIn("compact layout cannot use extension poles", phase2)
+        self.assertIn("no existing power coverage for compact cell", phase2)
+        self.assertIn("using existing power", phase2)
+        self.assertEqual(result, "SUCCESS: compact cell placed")
+        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+
+    def test_place_cell_rejects_invalid_compact_layout_response(self):
+        invalid_responses = (
+            "ANCHOR:10,20,3,3,assembling-machine-3,,aquilo,unknown",
+            "ANCHOR:10,20,3,3,assembling-machine-3,,nauvis,aquilo-compact",
+            (
+                "ANCHOR:10,20,3,3,assembling-machine-3,"
+                "15.5:19.5,aquilo,aquilo-compact"
+            ),
+        )
+
+        for response in invalid_responses:
+            with self.subTest(response=response):
+                client = Mock()
+                client.run.return_value = response
+
+                result = jimbo.place_production_cell(
+                    client, "aquilo", "pumpjack", "[gps=10,20,aquilo]",
+                    "dlbattle",
+                )
+
+                self.assertEqual(result, "ERROR: Invalid location response")
+                self.assertEqual(client.run.call_count, 1)
 
     def test_place_cell_rechecks_occupancy_before_mutation(self):
         client = Mock()

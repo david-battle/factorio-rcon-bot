@@ -365,6 +365,11 @@ nonzero `heating_energy` must have any part of its collision box within the
 source's live `heating_radius`, and the source must be at least 30°C. Recheck
 this immediately before mutation. Existing heat sources may occupy unused space
 inside the outer cell rectangle, but must not overlap an exact planned component.
+For compact heated rings, put the machine on the north side, the requester and
+provider chests on the southwest and south-center tiles, and their inserters
+directly between the chests and machine. Reuse existing electric supply instead
+of adding a cell pole, and verify the machine and both inserters are inside a
+live pole's quality-aware supply area.
 
 In Factorio 2.1, use every entry in `LuaRecipePrototype.categories` and the
 `crafting-category` entity-prototype filter to discover compatible crafting

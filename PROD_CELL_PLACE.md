@@ -1,11 +1,11 @@
 # Production Cell Placement
 
 Place a compact crafting cell (building, requester chest, provider chest, two
-inserters, power pole) at a verified location so construction bots can build
-it. The model specifies what to make; local code handles geometry, preflight,
-placement, and verification. Compatible crafting machines and their dimensions
-are resolved from live Factorio 2.1 prototypes rather than a hardcoded
-recipe-category table.
+inserters, and either a new or existing power supply) at a verified location so
+construction bots can build it. The model specifies what to make; local code
+handles geometry, preflight, placement, and verification. Compatible crafting
+machines and their dimensions are resolved from live Factorio 2.1 prototypes
+rather than a hardcoded recipe-category table.
 
 ## Current Implementation Status
 
@@ -28,14 +28,17 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
   logistic and construction coverage, verifies that the planned pole can power
   the building, and searches up to two fully preflighted extension poles when
   the cell pole cannot reach live power directly;
-- searches deterministic footprint-sized expanding rings, bounded to 128 tiles
-  and 256 anchors per compatible machine, and applies the requested directional
-  sector before running the same placement checks;
+- searches deterministic expanding rings, using footprint-sized steps normally
+  and tile-sized steps on Aquilo, bounded to 128 tiles and 256 anchors per
+  compatible machine, and applies the requested directional sector before
+  running the same placement checks;
 - on Aquilo, requires each freezable planned component to touch an existing
   heat pipe, reactor, or heat interface at 30°C or warmer, while allowing
-  non-overlapping heat infrastructure to remain inside the outer cell rectangle;
+  non-overlapping heat infrastructure to remain inside the outer cell rectangle,
+  and first tries a five-entity heated-ring layout powered by existing poles;
 - repeats every component preflight immediately before mutation;
-- creates the six base ghosts plus any extension poles without mutation retry,
+- creates the selected five- or six-ghost layout plus any extension poles
+  without mutation retry,
   copies the machine recipe settings to the requester chest through the
   requesting player, verifies every ingredient request, the assigned recipe,
   and construction registration, and destroys and checks all newly created
@@ -74,6 +77,20 @@ Both inserters use `defines.direction.west`: Factorio inserters pick up behind
 and drop in front, so this moves material west-to-east through the cell.
 Half-tile coordinates keep odd-width entities centered on tiles and even-width
 entities centered on tile borders.
+
+On Aquilo, Jimbo first tries this heated-ring layout with no new pole:
+
+```
+[ Building w×h at the north/top ]
+[ In] [Out]  between chests and building
+[Req] [Prov] at the south/bottom
+```
+
+The requester and provider are at `(x+0.5, y+h+1.5)` and
+`(x+1.5, y+h+1.5)`. Their inserters are immediately north at
+`(x+0.5, y+h+0.5)` facing south and `(x+1.5, y+h+0.5)` facing north.
+The machine and both inserters must already be covered by a powered electric
+pole. If this compact plan does not fit, the standard layout is still checked.
 
 Every position is preflighted with `can_place_entity()` before any ghost is
 created. The full bounding box is a union of all component rectangles.
@@ -158,8 +175,9 @@ The first Lua command validates bounded candidates without changing the world:
    position for `standing`, or the force's actual spawn on a named surface when
    an omitted location cannot use the player's view. For each compatible
    machine, read `tile_width` and `tile_height`; generate deterministic expanding
-   square rings in full-footprint steps, filter to a named directional sector
-   when requested, and stop at 128 tiles or 256 anchors.
+   square rings in full-footprint steps normally and one-tile steps on Aquilo,
+   filter to a named directional sector when requested, and stop at 128 tiles or
+   256 anchors.
 4. Compute the complete cell bounding box:
    - Left boundary: `anchor_x - 2`.
    - Right boundary: `anchor_x + w + 2`.
@@ -181,10 +199,12 @@ The first Lua command validates bounded candidates without changing the world:
       and poles with zero heating demand need no heat; the building and each
       inserter independently need any part of their collision box adjacent,
       including diagonally, to a heat source whose live temperature is at least
-      30°C. The whole building footprint does not need to touch heat.
+      30°C. The whole building footprint does not need to touch heat. Try the
+      five-entity heated-ring layout first and require existing powered-pole
+      supply at its building and both inserters.
 6. Return the first suitable anchor, dimensions, building prototype, exact
-   extension-pole positions, and resolved real surface, or the last grounded
-   failure.
+   extension-pole positions, resolved real surface, and selected layout, or the
+   last grounded failure.
 
 The product item is never treated as the crafting machine merely because it has
 a placeable entity prototype.
@@ -194,13 +214,14 @@ a placeable entity prototype.
 A second Lua command repeats the mutable assumptions and then creates all ghosts
 in one `pcall`:
 
-1. Re-resolve the surface, player, recipe, building, and pole prototypes and
-   require the building dimensions to still match Phase 1.
+1. Re-resolve the surface, player, recipe, building, and needed pole prototypes
+   and require the building dimensions to still match Phase 1.
 2. Repeat the complete bounding-box occupancy scan, every per-entity
    `can_place_entity()` check, logistic and construction coverage checks, and
-   planned-pole supply checks. On Aquilo, recheck every freezable component's
-   live heat adjacency and ensure retained heat sources overlap no exact planned
-   component. Recheck each extension position for occupancy, placement,
+   selected-layout power checks. On Aquilo, recheck every freezable component's
+   live heat adjacency, existing power for the compact machine and inserters,
+   and ensure retained heat sources overlap no exact planned component. For the
+   standard layout, recheck each extension position for occupancy, placement,
    construction coverage, pairwise wire reach, and a final live powered-pole
    connection.
 3. Create the building at `(x+w/2, y+h/2)`, the requester and provider at
@@ -208,6 +229,8 @@ in one `pcall`:
    `(x-0.5, row)` and `(x+w+0.5, row)`, and the pole at
    `(x+floor(w/2)+0.5, y-0.5)`, where
    `row = y+floor(h/2)+0.5`, followed by the exact preflighted extension poles.
+   For `aquilo-compact`, instead create the serialized five-entity ring geometry
+   and no pole.
 4. Verify that the building ghost retained the requested recipe.
 5. Call `requester_ghost.copy_settings(building_ghost, player)` and verify that
    every recipe ingredient appears in its logistic sections with a positive
@@ -290,7 +313,8 @@ controller position and surface. Named directions search their sector from the
 current view. An omitted hint uses the online player's matching view, otherwise
 the requested surface's force spawn. The deterministic expanding-ring search
 uses full-cell footprint steps and is bounded to 128 tiles and 256 anchors per
-compatible machine.
+compatible machine. Aquilo uses one-tile steps so a prebuilt heat ring is not
+skipped by the coarser standard grid.
 
 ### Aquilo heat refinement
 
@@ -300,7 +324,10 @@ Phase 2 use live prototype collision boxes, `heating_energy`, source
 one adjacent building cell is sufficient; inserters are checked independently,
 while zero-demand chests and poles are exempt. Heat sources may remain in unused
 space inside the outer cell rectangle, but exact component overlap is still
-rejected before `can_place_entity()`.
+rejected before `can_place_entity()`. Jimbo first tries a compact ring layout
+with the machine at the north/top, two chests along the south/bottom, and their
+inserters between them. It adds no pole there; the machine and both inserters
+must already have live electric coverage.
 
 ### Step 6: Prototype resolution caching and refinement
 
@@ -318,7 +345,7 @@ restart because mods or game updates may change the prototypes.
   placement checks alone can accept some infrastructure overlaps.
 - Logistic coverage is required at the requester, and construction coverage is
   required at every planned entity.
-- Fluid recipes are rejected because the six-entity layout has no pipe
+- Fluid recipes are rejected because neither current layout has pipe
   connections.
 - On Aquilo, every component with nonzero prototype `heating_energy` must touch
   an existing heat source at 30°C or warmer in both phases. Heat sources may
