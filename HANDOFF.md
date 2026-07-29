@@ -2,13 +2,15 @@
 
 ## Verified State
 
-- Branch: `main`. The parent before this handoff work was `675be7b`
-  (`Implement production cell placement steps 1 and 2`); use `git log -1` for
-  the handoff commit created by the procedure.
-- Jimbo is running the updated code as PID `211363`, detached in its own session,
-  with the `openai/gpt-5.4-mini` profile. It restarted successfully at
-  2026-07-29 14:17 local time and hydrated recent dialogue.
-- Production-cell Steps 1 and 2 are loaded but still unreachable from player
+- Branch: `main`. HEAD before this post-handoff documentation work was `f6aeca7`
+  (`Harden production cells and contain OpenCode temp files`); use `git log -1`
+  for the new handoff commit created by the procedure.
+- Jimbo restarted successfully as PID `211363` at 2026-07-29 14:17 local time
+  with the `openai/gpt-5.4-mini` profile, but a post-handoff audit at 14:51 found
+  that PID gone and no replacement Jimbo process. `jimbo.log` ends at 14:48:50
+  without a traceback. The cause has not been diagnosed; do not describe Jimbo
+  as running or restart it without current verification and user direction.
+- Production-cell Steps 1 and 2 are committed but still unreachable from player
   chat: the classifier, dispatch, and reply integration in Step 3 are not wired.
 - `AGENTS.md` is authoritative. Read `OPERATIONS.md` for runtime/provider
   procedures, `PROD_CELL_PLACE.md` for the production-cell contract, and
@@ -68,14 +70,32 @@ error. No production-cell ghosts or entities were created.
 - `AGENTS.md` now requires the exact new `startup_change_summary` text to be
   appended to that history in the same edit. Generic restarts are excluded.
 
+### Post-handoff landfill dotboard experiment
+
+- Morgan3rd requested a repeating sparse landfill board for Spidertron travel.
+  A direct Codex RCON experiment delivered and verified a tile-only blueprint
+  with 16 single landfill dots on a five-tile square lattice in a 20 x 20
+  relative snap cell. Morgan reported that it looked repeatable; actual
+  Spidertron traversal remains untested.
+- `FUTURE_DIRECTIONS.md` records the feature request, reference and prototype
+  geometry, safe creation and rollback requirements, and opaque chat-link
+  behavior. `OPERATIONS.md` records that remote-view players can require access
+  through their physical character inventory.
+
 ## Validation
+
+Prior code validation for `f6aeca7`:
 
 - `python -m py_compile jimbo.py test_jimbo.py`
 - `python -m unittest test_jimbo` — 67 deterministic tests pass.
-- `git diff --check`
 - Live Factorio version: `2.1.12`.
 - Runtime containment verified after real post-restart model calls; `/tmp` had no
   matching leaked artifacts or abandoned `jimbo-opencode-*` directories.
+
+Current documentation-only handoff:
+
+- `git diff --check`
+- No Python code changed, so the code test suite was not rerun.
 
 ## Remaining Work
 
@@ -99,8 +119,8 @@ failure acknowledgments and never replay Phase 2.
 Fluid-capable layouts, Aquilo heat infrastructure, and an independent read-only
 post-mutation success check also remain deliberately unimplemented.
 
-The user previously required Step 3 to wait for confirmation and has not yet
-given that confirmation. Ask before beginning it.
+The user explicitly wants a fresh context before any more production-cell work.
+Do not begin Step 3 without renewed confirmation in that fresh context.
 
 ### Alert awareness
 
@@ -109,8 +129,9 @@ production-cell work.
 
 ## Operational Caveats
 
-- Do not restart Jimbo or Factorio merely to resume work. Jimbo PID `211363` is
-  healthy; verify runtime claims rather than trusting the PID indefinitely.
+- Do not restart Jimbo or Factorio merely to resume work. PID `211363` is stale;
+  diagnose the unexplained stop or obtain user direction before starting a new
+  Jimbo process.
 - Use the detached launch procedure in `OPERATIONS.md` and verify the new PID
   from a separate command session.
 - Do not delete hidden `/tmp` libraries without first fingerprinting exact
@@ -121,7 +142,9 @@ production-cell work.
 
 ## Natural Next Action
 
-Ask the user whether to proceed with Step 3. Once confirmed, wire the existing
-parser and placement helper into classification, dispatch, and reply composition
-exactly as constrained by `PROD_CELL_PLACE.md`, then test the full chat flow
-without broadening into Steps 4–6.
+In the fresh context, first verify the stopped Jimbo runtime separately and ask
+whether the user wants it diagnosed or restarted. Then ask whether to proceed
+with Step 3. Once confirmed, wire the existing parser and placement helper into
+classification, dispatch, and reply composition exactly as constrained by
+`PROD_CELL_PLACE.md`, then test the full chat flow without broadening into
+Steps 4–6.

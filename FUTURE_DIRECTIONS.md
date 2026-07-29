@@ -87,6 +87,36 @@ natural interaction, and restrained behavior.
    prototype tables. Those are design references, not a general current runtime
    framework.
 
+9. **Player-delivered utility blueprints.** A concrete player request from
+   2026-07-29 was for a grid-snapped "sandfill dotboard" blueprint delivered to
+   the player's inventory. The example the player subsequently linked confirms
+   that "sandfill" meant the vanilla landfill tile and that "dotboard" meant a
+   sparse repeating board of isolated tile dots for Spidertron travel, not a
+   solid landfill chunk. The linked tile-only example contains ten landfill
+   tiles in a relative 20 x 20 snap cell, at `(0,0)`, `(14,2)`, `(8,4)`,
+   `(2,6)`, `(16,8)`, `(10,10)`, `(4,12)`, `(18,14)`, `(12,16)`, and `(6,18)`.
+   Because the player described it as "something like this," treat that geometry
+   as a concrete reference pattern rather than assuming exact reproduction is
+   required.
+
+   The player expressed no preference between a 20 x 20 or 32 x 32 repeat cell
+   and expected a regular rather than offset grid. Blueprint snap dimensions are
+   independent of Factorio's 32 x 32 world chunks, so "snaps to grid" alone does
+   not imply a chunk-sized or absolute grid. A direct live prototype used a
+   20 x 20 relative snap cell with a 4 x 4 square lattice of single landfill
+   tiles spaced five tiles apart. Its 16 tiles, empty entity list, label, and
+   snapping metadata were verified after delivery. The player reported that it
+   looked as though it would work and repeat properly. Treat this as a
+   provisional useful design until an actual Spidertron traversal confirms it.
+
+   Jimbo's first improvised command would only have inserted an empty labeled
+   blueprint with snapping metadata, and both it and the first direct retry
+   failed to find a player-level inventory because the player was in remote
+   view. A future implementation should use bounded local pattern generation and
+   the verified physical-character delivery procedure below. It does not need
+   the entity-layout codec or deployment pipeline from direction 8 merely to
+   create a tile-only inventory blueprint.
+
 Context and factual knowledge are separate problems. A larger dialogue window
 would not have prevented the incorrect solid-fuel energy answer, and the current
 server log does not expose enough information to answer session death counts.
@@ -105,6 +135,39 @@ mention them unprompted.
 
 These findings came from successful live experiments. They constrain future
 features but do not mean Jimbo currently exposes the actions automatically.
+
+### Chat-Linked Blueprint Inspection
+
+The server log represented each player-linked blueprint only as an opaque token
+such as `[special-item=internal_12]`; it did not contain the blueprint exchange
+string, tiles, or snapping data. The numeric suffix did not match
+`LuaItemCommon.item_number`: the player's reference appeared as `internal_12`
+while the inspected item number was `23984495`, and the newly delivered item
+number `25063642` was linked back as `internal_13`.
+
+Read-only inspection found the first example because it was the player's only
+inventory blueprint. Do not assume that association when multiple candidates
+exist, and do not treat the token suffix as an API identifier. A future
+linked-blueprint workflow needs an unambiguous supported reference, or should
+ask the player to hold, isolate, or export the intended blueprint.
+
+### Player Blueprint Inventory Delivery
+
+On Factorio 2.1.12, an online player in remote view (observed controller type 7)
+had a valid physical character and character inventory while
+`LuaPlayer.get_main_inventory()` returned `nil`. For physical item delivery,
+validate `LuaPlayer.character` and use the character's main inventory; still
+fail safely when no physical character or inventory exists. Do not report a
+player as offline merely because the current controller exposes no main
+inventory.
+
+The successful dotboard experiment selected a known empty character-inventory
+slot, created the blueprint there, set its tiles and snapping metadata, then
+read everything back. Verification required a nonempty blueprint, the exact 16
+unique landfill tile positions, no entities, and the intended 20 x 20 relative
+snap. On any setup or verification failure, clear only the newly allocated
+stack. Do not insert first and then use `find_item_stack("blueprint")`, which can
+select and overwrite an older blueprint.
 
 ### Exact Blueprint Deployment
 

@@ -279,6 +279,25 @@ the live save changes unexpectedly. Report both archive paths and verification.
 
 ## Runtime Pitfalls
 
+### Opaque Chat Item Links
+
+The server log records a linked blueprint as an opaque token such as
+`[special-item=internal_12]`, without its exchange string or contents. The
+numeric suffix is not `LuaItemCommon.item_number`. Treat it as opaque; scanning
+a player's inventory is useful only when the intended item is otherwise
+unambiguous. If several candidates exist, ask the player to hold, isolate, or
+export the item rather than guessing.
+
+### Remote View Player Inventories
+
+On Factorio 2.1.12, `LuaPlayer.get_main_inventory()` returned `nil` for an online
+player in remote view (controller type 7), although `LuaPlayer.character` and
+the character's main inventory remained valid. For physical item inspection or
+delivery, validate the character and use `player.character.get_main_inventory()`;
+still handle players without a physical character deterministically. Do not
+interpret a missing current-controller inventory as proof that the player is
+offline.
+
 ### Cross-filesystem Handle Invalidation
 
 Windows writes to the server log can invalidate WSL's open file descriptor.
