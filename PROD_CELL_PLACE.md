@@ -9,7 +9,7 @@ recipe-category table.
 
 ## Current Implementation Status
 
-Steps 1 through 3 are implemented for a single explicit GPS candidate and an
+Steps 1 through 4 are implemented for a single explicit GPS candidate and an
 item-only recipe. The current code:
 
 - classifies explicit requests into `PRODUCE|surface|item|gps`, dispatches the
@@ -24,18 +24,21 @@ item-only recipe. The current code:
   smaller candidates;
 - reads live dimensions, scans the complete footprint for occupancy, checks
   logistic and construction coverage, verifies that the planned pole can power
-  the building and connect to a live pole, and preflights every component;
+  the building, and searches up to two fully preflighted extension poles when
+  the cell pole cannot reach live power directly;
 - repeats every component preflight immediately before mutation;
-- creates all six ghosts without mutation retry, copies the machine recipe
-  settings to the requester chest through the requesting player, verifies every
-  ingredient request, the assigned recipe, and construction registration, and
-  destroys and checks newly created ghosts if the mutation fails.
+- creates the six base ghosts plus any extension poles without mutation retry,
+  copies the machine recipe settings to the requester chest through the
+  requesting player, verifies every ingredient request, the assigned recipe,
+  and construction registration, and destroys and checks all newly created
+  ghosts if the mutation fails.
 
 The following details are deliberately not implemented yet:
 
 - automatic placement when no GPS hint is supplied, including player-relative
   direction resolution and the spawn fallback (Step 5);
-- extending power or shifting a blocked pole (Step 4);
+- shifting the fixed cell or pole layout when the bounded extension search is
+  blocked;
 - caching live prototype dimensions across requests (Step 6);
 - fluid-capable cells with pipe or barrel handling;
 - heated cells for Aquilo;
@@ -154,10 +157,12 @@ The first Lua command validates one candidate without changing the world:
       every planned entity.
    d. Require the planned normal-quality medium pole's supply area to cover the
       building center.
-   e. Require the planned pole to be within mutual wire reach of an existing
-      pole with an electric network.
-6. Return the first suitable anchor, dimensions, and building prototype, or the
-   last grounded failure.
+   e. Accept a direct mutual-wire-reach connection to an existing powered pole,
+      or breadth-first search half-tile pole centers for at most two extension
+      poles. Every extension candidate must be outside the complete cell box,
+      unoccupied, placeable as a ghost, and in construction coverage.
+6. Return the first suitable anchor, dimensions, building prototype, and exact
+   extension-pole positions, or the last grounded failure.
 
 The product item is never treated as the crafting machine merely because it has
 a placeable entity prototype.
@@ -171,12 +176,14 @@ in one `pcall`:
    require the building dimensions to still match Phase 1.
 2. Repeat the complete bounding-box occupancy scan, every per-entity
    `can_place_entity()` check, logistic and construction coverage checks, and
-   planned-pole supply and live-wire checks.
+   planned-pole supply checks. Recheck each extension position for occupancy,
+   placement, construction coverage, pairwise wire reach, and a final live
+   powered-pole connection.
 3. Create the building at `(x+w/2, y+h/2)`, the requester and provider at
    `(x-1.5, row)` and `(x+w+1.5, row)`, the two west-facing inserters at
    `(x-0.5, row)` and `(x+w+0.5, row)`, and the pole at
    `(x+floor(w/2)+0.5, y-0.5)`, where
-   `row = y+floor(h/2)+0.5`.
+   `row = y+floor(h/2)+0.5`, followed by the exact preflighted extension poles.
 4. Verify that the building ghost retained the requested recipe.
 5. Call `requester_ghost.copy_settings(building_ghost, player)` and verify that
    every recipe ingredient appears in its logistic sections with a positive
@@ -231,8 +238,9 @@ and compatible building prototype or a grounded failure string.
 ### Step 2: `place_production_cell()` — placement and verification
 
 Implemented. The Phase 2 Lua command repeats preflight, creates and verifies the
-six ghosts, and returns either a success message with the anchor GPS link and
-entity summary or a failure description. It does not retry mutation.
+six base ghosts and any planned extension poles, and returns either a success
+message with the anchor GPS link and entity summary or a failure description. It
+does not retry mutation.
 
 ### Step 3: Parser and dispatch
 
@@ -244,11 +252,12 @@ GPS-required response without RCON.
 
 ### Step 4: Power extension subplan
 
-The current layout always includes one planned medium pole and requires it to be
-in construction range, supply the building, and be within mutual copper-wire
-reach of an existing powered pole. If that position cannot connect, search for
-and validate an extension-pole chain or shifted cell layout, then include every
-additional pole ghost in the same `pcall` and rollback list.
+Implemented with a bounded extension-only scope. The fixed cell pole must remain
+in construction range and supply the building. If it cannot reach an existing
+powered pole directly, Phase 1 breadth-first searches half-tile centers for at
+most two medium-pole extensions using the live normal-quality wire distance.
+Phase 2 revalidates the exact chain and creates every pole in the same `pcall`
+and rollback list. Shifting the cell or fixed pole remains deferred.
 
 ### Step 5: Location spiral for player-free hints
 
@@ -280,9 +289,9 @@ restart because mods or game updates may change the prototypes.
 - Settings verification (`copy_settings` + section inspection) happens in
   the same RCON command to catch fulfillment races.
 - Building dimensions are queried from live prototypes, never hardcoded.
-- Power validation applies the planned pole prototype's quality-aware supply and
-  wire distances, and requires mutual wire reach to an existing pole whose
-  `electric_network` is not `nil`.
+- Power validation applies quality-aware supply and wire distances, requires
+  pairwise reach through at most two extension poles, and ends at an existing
+  pole whose `electric_network` is not `nil`.
 - Never replay a mutation automatically after an RCON disconnect.
 
 ## Failure Modes
@@ -297,7 +306,9 @@ restart because mods or game updates may change the prototypes.
 | No GPS hint | Return a deterministic GPS-required error; no RCON or mutation |
 | Occupancy or any `can_place_entity()` check fails | Reject the candidate; no mutation |
 | Logistic or full-cell construction coverage is absent | Reject the candidate; no mutation |
-| Planned pole cannot supply the building or connect to live power | Reject the candidate; no mutation |
+| Planned pole cannot supply the building | Reject the candidate; no mutation |
+| No direct or at-most-two-pole route to live power | Reject the candidate; no mutation |
+| Extension position becomes blocked, uncovered, or disconnected | Roll back every new ghost |
 | `pcall` catches an error during mutation | Destroy all newly created ghosts in reverse order; return error |
 | A newly created ghost survives rollback | Report the original error and the survivor count |
 | `copy_settings` does not produce expected requester filters | Destroy all ghosts; return error |
@@ -317,9 +328,11 @@ The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 - live category-based machine resolution, dimensions, half-tile geometry,
   inserter directions, fluid/Aquilo/surface-condition rejection, power,
   logistics, construction coverage, and both-phase placement checks;
-- creation of all six ghosts, recipe and requester-filter verification,
-  construction registration, occupancy-race rejection, reverse rollback with
-  survivor reporting, and disabled mutation retry.
+- bounded extension search, strict serialized-chain validation, Phase 2
+  extension rechecks, and extension ghost creation;
+- creation of all base and extension ghosts, recipe and requester-filter
+  verification, construction registration, occupancy-race rejection, reverse
+  rollback with survivor reporting, and disabled mutation retry.
 
 ## Rollback
 

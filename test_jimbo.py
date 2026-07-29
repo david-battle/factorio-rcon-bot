@@ -1061,6 +1061,91 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("pole.quality", phase1)
         self.assertIn("dx*dx+dy*dy<=reach*reach", phase1)
 
+    def test_place_cell_searches_a_bounded_extension_pole_chain(self):
+        client = Mock()
+        client.run.return_value = (
+            "ERROR: No live power connection within 2 extension poles"
+        )
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertEqual(jimbo.production_cell_max_extension_poles, 2)
+        self.assertIn("local max_extensions=2", phase1)
+        self.assertIn("local search_radius=(max_extensions+1)*new_wire", phase1)
+        self.assertIn("local function valid_extension(pos)", phase1)
+        self.assertIn("s.count_entities_filtered{area=cell}", phase1)
+        self.assertIn("find_logistic_networks_by_construction_area", phase1)
+        self.assertIn("local frontier={{position=pole_pos,path={}}}", phase1)
+        self.assertIn("distance<=new_wire*new_wire", phase1)
+        self.assertIn("reaches_live(candidate.position)", phase1)
+        self.assertIn("table.concat(encoded,';')", phase1)
+        self.assertEqual(
+            result, "ERROR: No live power connection within 2 extension poles"
+        )
+        self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_revalidates_and_creates_extension_poles(self):
+        client = Mock()
+        client.run.side_effect = [
+            (
+                "ANCHOR:10,20,3,3,assembling-machine-3,"
+                "15.5:19.5;22.5:19.5"
+            ),
+            "SUCCESS: placed with 2 extension poles",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn(
+            "local extensions={{15.5,19.5},{22.5,19.5}}", phase2
+        )
+        self.assertIn("extension pole overlaps cell", phase2)
+        self.assertIn("entity appeared at extension pole", phase2)
+        self.assertIn("cannot place extension pole", phase2)
+        self.assertIn(
+            "no construction network coverage for extension pole", phase2
+        )
+        self.assertIn("extension pole chain exceeds wire reach", phase2)
+        self.assertIn("previous=pos", phase2)
+        self.assertIn(
+            "inner_name='medium-electric-pole'", phase2
+        )
+        self.assertIn("cleanup[#cleanup+1]=extra", phase2)
+        self.assertIn("#extensions..' extension medium-electric-pole'", phase2)
+        self.assertEqual(result, "SUCCESS: placed with 2 extension poles")
+        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+
+    def test_place_cell_rejects_invalid_extension_plan_from_phase1(self):
+        invalid_plans = (
+            "15:19.5",
+            "15.5:19.5;15.5:19.5",
+            "15.5:19.5;22.5:19.5;29.5:19.5",
+            "nan:19.5",
+        )
+
+        for plan in invalid_plans:
+            with self.subTest(plan=plan):
+                client = Mock()
+                client.run.return_value = (
+                    "ANCHOR:10,20,3,3,assembling-machine-3," + plan
+                )
+
+                result = jimbo.place_production_cell(
+                    client, "nauvis", "electronic-circuit",
+                    "[gps=10,20,nauvis]", "dlbattle",
+                )
+
+                self.assertEqual(result, "ERROR: Invalid location response")
+                self.assertEqual(client.run.call_count, 1)
+
     def test_place_cell_preflights_every_entity_in_both_phases(self):
         client = Mock()
         client.run.side_effect = [

@@ -63,13 +63,14 @@ dialogue_log_tail_bytes = 256 * 1024
 safe_retry_commands = (
     "/players online", "/players", "/evolution", "/time", "/version",
 )
+production_cell_max_extension_poles = 2
 
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now handle requests to place item-only production cells at supplied "
-    "map pings, reporting the verified cell or explaining why placement was "
-    "rejected."
+    "I can now bridge short power gaps for production cells with up to two "
+    "fully checked extension poles, rolling back the whole plan if any ghost "
+    "fails."
 )
 
 opencode_config = json.dumps({
@@ -525,25 +526,104 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local supply=pole_proto.get_supply_area_distance('normal');"
         f"local supplies=math.abs(cx-pole_pos[1])<=supply "
         f"and math.abs(cy-pole_pos[2])<=supply;"
-        f"local connected=false;"
         f"local new_wire=pole_proto.get_max_wire_distance('normal');"
-        f"local poles=s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{pole_pos[1]-new_wire,pole_pos[2]-new_wire}},"
-        f"{{pole_pos[1]+new_wire,pole_pos[2]+new_wire}}}},force='player'}};"
-        f"for _,pole in ipairs(poles) do "
-        f"if pole.electric_network then "
+        f"local max_extensions={production_cell_max_extension_poles};"
+        f"local search_radius=(max_extensions+1)*new_wire;"
+        f"local live={{}};"
+        f"for _,pole in ipairs(s.find_entities_filtered{{type='electric-pole',"
+        f"area={{{{pole_pos[1]-search_radius,pole_pos[2]-search_radius}},"
+        f"{{pole_pos[1]+search_radius,pole_pos[2]+search_radius}}}},"
+        f"force='player'}}) do "
+        f"if pole.electric_network then live[#live+1]=pole end end;"
+        f"table.sort(live,function(a,b) "
+        f"local adx=a.position.x-pole_pos[1];"
+        f"local ady=a.position.y-pole_pos[2];"
+        f"local bdx=b.position.x-pole_pos[1];"
+        f"local bdy=b.position.y-pole_pos[2];"
+        f"local da=adx*adx+ady*ady;local db=bdx*bdx+bdy*bdy;"
+        f"if da~=db then return da<db end;"
+        f"if a.position.x~=b.position.x then "
+        f"return a.position.x<b.position.x end;"
+        f"return a.position.y<b.position.y end);"
+        f"local function reaches_live(pos) "
+        f"for _,pole in ipairs(live) do "
         f"local reach=math.min(new_wire,"
         f"pole.prototype.get_max_wire_distance(pole.quality));"
-        f"local dx=pole.position.x-pole_pos[1];"
-        f"local dy=pole.position.y-pole_pos[2];"
-        f"if dx*dx+dy*dy<=reach*reach then connected=true break end end end;"
+        f"local dx=pole.position.x-pos[1];"
+        f"local dy=pole.position.y-pos[2];"
+        f"if dx*dx+dy*dy<=reach*reach then return true end end;"
+        f"return false end;"
+        f"local function overlaps_cell(pos) "
+        f"local left=pos[1]-0.5;local right=pos[1]+0.5;"
+        f"local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
+        f"return not (right<=area[1][1] or left>=area[2][1] "
+        f"or bottom<=area[1][2] or top>=area[2][2]) end;"
+        f"local function valid_extension(pos) "
+        f"if overlaps_cell(pos) then return false end;"
+        f"local cell={{{{pos[1]-0.5,pos[2]-0.5}},"
+        f"{{pos[1]+0.5,pos[2]+0.5}}}};"
+        f"if s.count_entities_filtered{{area=cell}}>0 then return false end;"
+        f"if not s.can_place_entity{{name='medium-electric-pole',position=pos,"
+        f"force='player',"
+        f"build_check_type=defines.build_check_type.script_ghost}} then "
+        f"return false end;"
+        f"return #s.find_logistic_networks_by_construction_area("
+        f"pos,'player')>0 end;"
+        f"local function key(pos) "
+        f"return string.format('%.1f,%.1f',pos[1],pos[2]) end;"
+        f"local function target_distance(pos) "
+        f"local best=math.huge;for _,pole in ipairs(live) do "
+        f"local dx=pole.position.x-pos[1];"
+        f"local dy=pole.position.y-pos[2];"
+        f"best=math.min(best,dx*dx+dy*dy) end;return best end;"
+        f"local chain={{}};local connected=reaches_live(pole_pos);"
+        f"if not connected and construction and supplies and #live>0 then "
+        f"local frontier={{{{position=pole_pos,path={{}}}}}};"
+        f"local seen={{[key(pole_pos)]=true}};"
+        f"for depth=1,max_extensions do "
+        f"local next_frontier={{}};"
+        f"for _,state in ipairs(frontier) do "
+        f"local candidates={{}};"
+        f"local min_x=math.ceil(state.position[1]-new_wire-0.5);"
+        f"local max_x=math.floor(state.position[1]+new_wire-0.5);"
+        f"local min_y=math.ceil(state.position[2]-new_wire-0.5);"
+        f"local max_y=math.floor(state.position[2]+new_wire-0.5);"
+        f"for tile_x=min_x,max_x do for tile_y=min_y,max_y do "
+        f"local pos={{tile_x+0.5,tile_y+0.5}};"
+        f"local dx=pos[1]-state.position[1];"
+        f"local dy=pos[2]-state.position[2];"
+        f"local distance=dx*dx+dy*dy;local pos_key=key(pos);"
+        f"if distance>0 and distance<=new_wire*new_wire "
+        f"and not seen[pos_key] then "
+        f"candidates[#candidates+1]={{position=pos,key=pos_key,"
+        f"target=target_distance(pos)}} end end end;"
+        f"table.sort(candidates,function(a,b) "
+        f"if a.target~=b.target then return a.target<b.target end;"
+        f"if a.position[1]~=b.position[1] then "
+        f"return a.position[1]<b.position[1] end;"
+        f"return a.position[2]<b.position[2] end);"
+        f"for _,candidate in ipairs(candidates) do "
+        f"seen[candidate.key]=true;"
+        f"if valid_extension(candidate.position) then "
+        f"local path={{}};for _,p in ipairs(state.path) do "
+        f"path[#path+1]=p end;path[#path+1]=candidate.position;"
+        f"if reaches_live(candidate.position) then "
+        f"chain=path;connected=true;break end;"
+        f"next_frontier[#next_frontier+1]="
+        f"{{position=candidate.position,path=path}} end end;"
+        f"if connected then break end end;"
+        f"if connected then break end;frontier=next_frontier end end;"
         f"if not construction then "
         f"last_error='No construction network coverage for full cell' "
         f"elseif not supplies then last_error='Planned pole cannot power building' "
         f"elseif not connected then "
-        f"last_error='No live power connection for planned pole' "
+        f"last_error='No live power connection within '..max_extensions.."
+        f"' extension poles' "
         f"else "
-        f"rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en) "
+        f"local encoded={{}};for _,pos in ipairs(chain) do "
+        f"encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
+        f"rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
+        f"','..table.concat(encoded,';')) "
         f"return end end end end end;"
         f"rcon.print('ERROR: '..last_error)"
     )
@@ -563,7 +643,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     except (IndexError, ValueError):
         return "ERROR: Invalid location response"
     if (
-        len(parts) != 5
+        len(parts) not in (5, 6)
         or not math.isfinite(anchor_ax_value)
         or not math.isfinite(anchor_ay_value)
         or not anchor_ax_value.is_integer()
@@ -573,8 +653,33 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         or not en
     ):
         return "ERROR: Invalid location response"
+    extensions = []
+    if len(parts) == 6 and parts[5]:
+        for encoded in parts[5].split(";"):
+            try:
+                px_text, py_text = encoded.split(":")
+                px = float(px_text)
+                py = float(py_text)
+            except (ValueError, TypeError):
+                return "ERROR: Invalid location response"
+            if (
+                not math.isfinite(px)
+                or not math.isfinite(py)
+                or not (px * 2).is_integer()
+                or not (py * 2).is_integer()
+                or int(px * 2) % 2 == 0
+                or int(py * 2) % 2 == 0
+                or (px, py) in extensions
+            ):
+                return "ERROR: Invalid location response"
+            extensions.append((px, py))
+    if len(extensions) > production_cell_max_extension_poles:
+        return "ERROR: Invalid location response"
     anchor_ax = str(int(anchor_ax_value))
     anchor_ay = str(int(anchor_ay_value))
+    extensions_lua = "{" + ",".join(
+        f"{{{px},{py}}}" for px, py in extensions
+    ) + "}"
 
     phase2 = (
         f"/silent-command "
@@ -585,6 +690,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local row=y+math.floor(h/2)+0.5;"
         f"local en={json.dumps(en)};"
         f"local item={item_lua};"
+        f"local extensions={extensions_lua};"
         f"local player=game.get_player({player_lua});"
         f"local cleanup={{}};"
         f"local function rb() "
@@ -630,23 +736,50 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"if #s.find_logistic_networks_by_construction_area("
         f"plan.position,'player')==0 then "
         f"error('no construction network coverage for full cell') end end;"
+        f"if #extensions>{production_cell_max_extension_poles} then "
+        f"error('too many extension poles') end;"
+        f"local function overlaps_cell(pos) "
+        f"local left=pos[1]-0.5;local right=pos[1]+0.5;"
+        f"local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
+        f"return not (right<=area[1][1] or left>=area[2][1] "
+        f"or bottom<=area[1][2] or top>=area[2][2]) end;"
+        f"for _,pos in ipairs(extensions) do "
+        f"if overlaps_cell(pos) then error('extension pole overlaps cell') end;"
+        f"local cell={{{{pos[1]-0.5,pos[2]-0.5}},"
+        f"{{pos[1]+0.5,pos[2]+0.5}}}};"
+        f"if s.count_entities_filtered{{area=cell}}>0 then "
+        f"error('entity appeared at extension pole') end;"
+        f"if not s.can_place_entity{{name='medium-electric-pole',position=pos,"
+        f"force='player',"
+        f"build_check_type=defines.build_check_type.script_ghost}} then "
+        f"error('cannot place extension pole') end;"
+        f"if #s.find_logistic_networks_by_construction_area("
+        f"pos,'player')==0 then "
+        f"error('no construction network coverage for extension pole') end end;"
         f"local supply=pole_proto.get_supply_area_distance('normal');"
         f"if math.abs(cx-pole_pos[1])>supply "
         f"or math.abs(cy-pole_pos[2])>supply then "
         f"error('planned pole cannot power building') end;"
-        f"local connected=false;"
         f"local new_wire=pole_proto.get_max_wire_distance('normal');"
+        f"local previous=pole_pos;"
+        f"for _,pos in ipairs(extensions) do "
+        f"local dx=pos[1]-previous[1];local dy=pos[2]-previous[2];"
+        f"if dx*dx+dy*dy>new_wire*new_wire then "
+        f"error('extension pole chain exceeds wire reach') end;"
+        f"previous=pos end;"
+        f"local connected=false;"
         f"local poles=s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{pole_pos[1]-new_wire,pole_pos[2]-new_wire}},"
-        f"{{pole_pos[1]+new_wire,pole_pos[2]+new_wire}}}},force='player'}};"
+        f"area={{{{previous[1]-new_wire,previous[2]-new_wire}},"
+        f"{{previous[1]+new_wire,previous[2]+new_wire}}}},force='player'}};"
         f"for _,pole in ipairs(poles) do "
         f"if pole.electric_network then "
         f"local reach=math.min(new_wire,"
         f"pole.prototype.get_max_wire_distance(pole.quality));"
-        f"local dx=pole.position.x-pole_pos[1];"
-        f"local dy=pole.position.y-pole_pos[2];"
+        f"local dx=pole.position.x-previous[1];"
+        f"local dy=pole.position.y-previous[2];"
         f"if dx*dx+dy*dy<=reach*reach then connected=true break end end end;"
-        f"if not connected then error('no live power connection for planned pole') end;"
+        f"if not connected then "
+        f"error('no live power connection for extension chain') end;"
         f"local b=s.create_entity{{"
         f"name='entity-ghost',position={{cx,cy}},force='player',"
         f"inner_name=en,recipe=item"
@@ -679,6 +812,11 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"force='player',inner_name='medium-electric-pole'"
         f"}};"
         f"if not po then error('pole') end;cleanup[#cleanup+1]=po;"
+        f"for _,pos in ipairs(extensions) do "
+        f"local extra=s.create_entity{{name='entity-ghost',position=pos,"
+        f"force='player',inner_name='medium-electric-pole'}};"
+        f"if not extra then error('extension pole') end;"
+        f"cleanup[#cleanup+1]=extra end;"
         f"local actual_recipe=b.get_recipe();"
         f"if not actual_recipe or actual_recipe.name~=item then "
         f"error('building recipe was not set') end;"
@@ -709,7 +847,9 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"'SUCCESS: [gps='..x..','..y..','..s.name..'] '"
         f"..w..'x'..h..' '..item..' cell placed with '..en.."
         f"', requester-chest, 2 inserters, passive-provider-chest, "
-        f"medium-electric-pole') end"
+        f"medium-electric-pole'..(#extensions>0 and "
+        f"', '..#extensions..' extension medium-electric-pole'.."
+        f"(#extensions==1 and '' or 's') or '')) end"
     )
 
     response = client.run(phase2, retry=False)

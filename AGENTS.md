@@ -87,8 +87,9 @@ not a recipe shortfall; compare it with exact requirements from dialogue. Do not
 replace this path with ad hoc `LuaForce.logistic_networks` queries.
 
 Production-cell placement uses `PRODUCE|surface|item-name|gps` and currently
-requires an explicit player-supplied map ping. Preserve the preflight, verified
-non-retried mutation, and rollback contract in `PROD_CELL_PLACE.md`.
+requires an explicit player-supplied map ping. A fixed cell may add at most two
+fully preflighted extension poles to reach live power. Preserve the verified
+non-retried mutation and complete rollback contract in `PROD_CELL_PLACE.md`.
 
 An explicit Jimbo request that objectively fails during classification, RCON,
 reply composition, or delivery gets a short deterministic failure acknowledgment
