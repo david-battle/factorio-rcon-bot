@@ -133,6 +133,12 @@ Jimbo to restart, update `startup_change_summary` in the same edit. Use a short,
 player-facing explanation of intent and visible behavior, not implementation
 details. This is part of completing the change, not optional cleanup.
 
+**ALSO REQUIRED:** Whenever `startup_change_summary` changes, append its exact
+new text to the tracked developer history in `STARTUP_ANNOUNCEMENTS.md` in the
+same edit. Do not record generic unchanged-summary restarts. Future contexts must
+maintain this history; do not rely on gitignored runtime logs to reconstruct it
+later.
+
 ## Spontaneous Comments
 
 Every 10 minutes Jimbo may comment using server activity since its last successful

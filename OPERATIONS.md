@@ -14,6 +14,9 @@ seeding, or one of the documented runtime pitfalls.
 - The server log is available to WSL at
   `/mnt/d/factorio-server/server-console.log`.
 - Python dependencies use the shared `/mnt/d/.venv`, auto-activated by `.bashrc`.
+- The live server last reported Factorio `2.1.12` through `/version` on
+  2026-07-29. Recheck `/version` before relying on version-sensitive runtime API
+  behavior.
 
 When the user says the "old repository," they mean
 `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`. It contains historical
@@ -100,6 +103,11 @@ does not establish material origins. Preserve the structured classifier examples
 input validation, deterministic tests, and failure acknowledgment when changing
 this flow.
 
+In Factorio 2.1, a recipe exposes plural `categories`; do not use the nonexistent
+`LuaRecipePrototype.category`. Resolve compatible crafting entities with
+`prototypes.get_entity_filtered()` and its `crafting-category` filter rather than
+assuming that a recipe's product entity is its crafting machine.
+
 ## AI Provider
 
 AI selection is centralized at the top of `jimbo.py`. Change only
@@ -124,6 +132,37 @@ The built-in OpenAI auth plugin must remain enabled, so do not set
 `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`. Transient timeouts, rate limits, and common
 HTTP 5xx failures get three total attempts; permanent failures fail immediately.
 Model identity is derived from the selected profile.
+
+### OpenCode CLI Containment
+
+OpenCode is only the current `openai` profile's model/authentication adapter. It
+does not make Jimbo a coding agent: the invocation is pure, project configuration
+is disabled, and every tool permission is denied. The other adapters call their
+provider directly; DeepSeek reads an OpenCode credential but does not launch the
+OpenCode executable.
+
+OpenCode 1.18.9 was observed extracting a 5,576,816-byte Rust FFF
+(`libfff_c`) search library to a uniquely named hidden `/tmp/.*.so` file on model
+calls without removing it. File timestamps matched Jimbo's scheduled and direct
+model calls; about 1,410 stale copies consumed roughly 7.9 GB. Zero-byte hidden
+`.node` extraction placeholders were also observed but did not consume material
+space.
+
+`ask_opencode()` therefore gives every invocation a private `TMPDIR` managed by
+`tempfile.TemporaryDirectory`. OpenCode may load native files there while it is
+running, and Python removes the directory after the subprocess exits or raises.
+Keep deterministic cleanup coverage when changing this adapter. Do not add a
+broad `/tmp` cleanup job or delete matching files while an OpenCode process may
+still be using them.
+
+OpenCode is not architecturally required. A future explicit provider change may
+replace this adapter with the official OpenAI Python client, avoiding a large
+subprocess launch and native extraction on every model call. Do that only when
+the owner supplies a suitable OpenAI API credential and accepts its API billing;
+do not assume the current OpenCode login can be reused directly. Preserve central
+profile selection, retry behavior, tool isolation expectations, tests, and this
+reference during such a migration. Until then, the contained OpenCode adapter is
+the smallest working path.
 
 ### Provider History
 
@@ -166,11 +205,15 @@ Long-running monitors must be detached with all streams redirected and their PID
 saved:
 
 ```bash
-nohup python -u program.py </dev/null >program.log 2>&1 & echo $! >program.pid
+nohup setsid python -u program.py </dev/null >program.log 2>&1 & echo $! >program.pid
 ```
 
-Verify the PID with `ps`; do not wait for the process to exit. Use
-`print(..., flush=True)` in long-running or redirected Python processes.
+The separate session matters when launching through a development command
+runner: a plain `nohup` Jimbo process was reaped when its launcher exited, while
+the `setsid` launch survived. Verify the recorded PID from a separate command
+session with `ps`; do not rely only on a check performed before the launching
+shell exits. Use `print(..., flush=True)` in long-running or redirected Python
+processes.
 
 ## Offline Testing
 

@@ -72,6 +72,36 @@ class DialogueTests(unittest.TestCase):
                 self.assertEqual(response, "response")
                 adapter.assert_called_once_with("prompt", profile)
 
+    def test_opencode_uses_and_cleans_private_temp_directory(self):
+        temp_paths = []
+
+        def fake_run(*args, **kwargs):
+            temp_path = kwargs["env"]["TMPDIR"]
+            temp_paths.append(temp_path)
+            self.assertTrue(os.path.isdir(temp_path))
+            with open(os.path.join(temp_path, "native-library.so"), "wb") as artifact:
+                artifact.write(b"temporary")
+            return Mock(
+                returncode=0,
+                stdout='{"type":"text","part":{"text":" response "}}\n',
+                stderr="",
+            )
+
+        with patch.object(jimbo.subprocess, "run", side_effect=fake_run) as run:
+            response = jimbo.ask_opencode(
+                "prompt", jimbo.ai_profiles["openai"]
+            )
+
+        self.assertEqual(response, "response")
+        self.assertEqual(len(temp_paths), 1)
+        self.assertFalse(os.path.exists(temp_paths[0]))
+        call = run.call_args
+        self.assertEqual(call.kwargs["cwd"], "/tmp/opencode")
+        self.assertEqual(call.kwargs["timeout"], 120)
+        self.assertEqual(
+            call.kwargs["env"]["OPENCODE_DISABLE_PROJECT_CONFIG"], "1"
+        )
+
     def test_deepseek_adapter_uses_historical_endpoint_without_sdk_retries(self):
         profile = jimbo.ai_profiles["deepseek"]
         result = Mock()
@@ -730,7 +760,7 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase1 = client.run.call_args_list[0].args[0]
@@ -749,7 +779,7 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase1 = client.run.call_args_list[0].args[0]
@@ -762,7 +792,7 @@ class ProduceCellTests(unittest.TestCase):
         client.run.return_value = "ERROR: Surface not found"
 
         result = jimbo.place_production_cell(
-            client, "nonexistent", "iron-plate", "[gps=0,0,nonexistent]"
+            client, "nonexistent", "iron-plate", "[gps=0,0,nonexistent]", "dlbattle"
         )
 
         self.assertIn("ERROR", result)
@@ -773,7 +803,7 @@ class ProduceCellTests(unittest.TestCase):
         client.run.return_value = "ERROR: 3 entities in area"
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "iron-plate", "[gps=100,100,nauvis]"
+            client, "nauvis", "iron-plate", "[gps=100,100,nauvis]", "dlbattle"
         )
 
         self.assertIn("ERROR", result)
@@ -784,7 +814,7 @@ class ProduceCellTests(unittest.TestCase):
         client.run.return_value = "ERROR: No power coverage at location"
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "iron-plate", "[gps=200,200,nauvis]"
+            client, "nauvis", "iron-plate", "[gps=200,200,nauvis]", "dlbattle"
         )
 
         self.assertIn("ERROR", result)
@@ -795,7 +825,7 @@ class ProduceCellTests(unittest.TestCase):
         client.run.return_value = "ERROR: No logistic network coverage"
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "iron-plate", "[gps=300,300,nauvis]"
+            client, "nauvis", "iron-plate", "[gps=300,300,nauvis]", "dlbattle"
         )
 
         self.assertIn("ERROR", result)
@@ -803,15 +833,61 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_handles_empty_hint(self):
         client = Mock()
-        client.run.return_value = "ERROR: No power coverage at location"
-
         result = jimbo.place_production_cell(
-            client, "nauvis", "iron-plate", ""
+            client, "nauvis", "iron-plate", "", "dlbattle"
         )
 
-        command = client.run.call_args.args[0]
-        self.assertIn("ax=nil", command)
-        self.assertIn("ay=nil", command)
+        self.assertEqual(result, "ERROR: A GPS location hint is currently required")
+        client.run.assert_not_called()
+
+    def test_place_cell_requires_requesting_player(self):
+        client = Mock()
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit", "[gps=10,20,nauvis]"
+        )
+
+        self.assertEqual(result, "ERROR: Requesting player is required")
+        client.run.assert_not_called()
+
+    def test_place_cell_rejects_invalid_or_mismatched_gps(self):
+        client = Mock()
+
+        invalid = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=oops,20,nauvis]", "dlbattle"
+        )
+        mismatched = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=10,20,fulgora]", "dlbattle"
+        )
+
+        self.assertEqual(invalid, "ERROR: Invalid GPS location hint")
+        self.assertEqual(
+            mismatched, "ERROR: GPS surface does not match requested surface"
+        )
+        client.run.assert_not_called()
+
+    def test_place_cell_rejects_malformed_location_response(self):
+        client = Mock()
+        client.run.return_value = "ANCHOR:bad"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=10,20,nauvis]", "dlbattle"
+        )
+
+        self.assertEqual(result, "ERROR: Invalid location response")
+        self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_rejects_fractional_anchor_response(self):
+        client = Mock()
+        client.run.return_value = "ANCHOR:10.5,20,3,3,assembling-machine-3"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        self.assertEqual(result, "ERROR: Invalid location response")
+        self.assertEqual(client.run.call_count, 1)
 
     def test_place_cell_phase2_creates_all_ghosts(self):
         client = Mock()
@@ -821,7 +897,7 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase2 = client.run.call_args_list[1].args[0]
@@ -830,9 +906,13 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("passive-provider-chest", phase2)
         self.assertIn("inserter", phase2)
         self.assertIn("medium-electric-pole", phase2)
-        self.assertIn("defines.direction.right", phase2)
-        self.assertIn("defines.direction.left", phase2)
+        self.assertEqual(phase2.count("direction=defines.direction.west"), 4)
+        self.assertNotIn("defines.direction.right", phase2)
+        self.assertNotIn("defines.direction.left", phase2)
         self.assertIn("pcall", phase2)
+        self.assertIn("actual_recipe=b.get_recipe()", phase2)
+        self.assertIn("cell placed with", phase2)
+        self.assertNotIn("] ..w", phase2)
 
     def test_place_cell_phase2_requester_filters(self):
         client = Mock()
@@ -842,14 +922,14 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase2 = client.run.call_args_list[1].args[0]
         self.assertIn("get_logistic_sections", phase2)
-        self.assertIn("create_section", phase2)
-        self.assertIn("sec.filters=flt", phase2)
-        self.assertIn("filter missing min", phase2)
+        self.assertIn("copy_settings(b,player)", phase2)
+        self.assertIn("filter.value.name==ing.name", phase2)
+        self.assertIn("request filter missing for", phase2)
 
     def test_place_cell_phase2_rollback_on_failure(self):
         client = Mock()
@@ -859,7 +939,7 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         result = jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         self.assertIn("ERROR", result)
@@ -873,13 +953,13 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase2_call = client.run.call_args_list[1]
         self.assertFalse(phase2_call.kwargs.get("retry", False))
 
-    def test_place_cell_phase2_resolves_entity_from_category(self):
+    def test_place_cell_resolves_compatible_machine_from_live_categories(self):
         client = Mock()
         client.run.side_effect = [
             "ANCHOR:10,20,3,3,assembling-machine-3",
@@ -887,15 +967,17 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase1 = client.run.call_args_list[0].args[0]
-        self.assertIn("map[cat]", phase1)
-        self.assertIn("assembling-machine-3", phase1)
-        self.assertIn("electromagnetic-plant", phase1)
-        self.assertIn("cryoplant", phase1)
-        self.assertIn("foundry", phase1)
+        self.assertIn("ipairs(r.categories)", phase1)
+        self.assertIn("prototypes.get_entity_filtered", phase1)
+        self.assertIn("filter='crafting-category'", phase1)
+        self.assertIn("crafting_category=category", phase1)
+        self.assertIn("a.get_crafting_speed('normal')", phase1)
+        self.assertNotIn("r.category", phase1)
+        self.assertNotIn("r.products[1]", phase1)
 
     def test_place_cell_checks_power_supply_radius(self):
         client = Mock()
@@ -905,12 +987,145 @@ class ProduceCellTests(unittest.TestCase):
         ]
 
         jimbo.place_production_cell(
-            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         phase1 = client.run.call_args_list[0].args[0]
         self.assertIn("get_supply_area_distance", phase1)
+        self.assertIn("get_max_wire_distance", phase1)
         self.assertIn("pole.quality", phase1)
+        self.assertIn("dx*dx+dy*dy<=reach*reach", phase1)
+
+    def test_place_cell_preflights_every_entity_in_both_phases(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        phase2 = client.run.call_args_list[1].args[0]
+        for command in (phase1, phase2):
+            self.assertIn("s.can_place_entity", command)
+            self.assertIn("defines.build_check_type.script_ghost", command)
+            self.assertIn("find_logistic_networks_by_construction_area", command)
+            self.assertIn("requester-chest", command)
+            self.assertIn("passive-provider-chest", command)
+            self.assertIn("medium-electric-pole", command)
+
+    def test_place_cell_uses_bottom_left_anchor_geometry(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,5,5,electromagnetic-plant",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("local cx=ax+w/2", phase1)
+        self.assertIn("local cy=ay+h/2", phase1)
+        self.assertIn("local row=ay+math.floor(h/2)+0.5", phase1)
+        self.assertIn("position={cx,cy}", phase2)
+        self.assertIn("position={x-1.5,row}", phase2)
+        self.assertIn("position={x+w+1.5,row}", phase2)
+        self.assertIn("pole_pos={x+math.floor(w/2)+0.5,y-0.5}", phase2)
+
+    def test_place_cell_rejects_fluid_recipes_before_location_checks(self):
+        client = Mock()
+        client.run.return_value = "ERROR: Fluid recipes are not supported"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertIn("ingredient.type=='fluid'", phase1)
+        self.assertIn("product.type=='fluid'", phase1)
+        self.assertEqual(result, "ERROR: Fluid recipes are not supported")
+        self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_handles_one_sided_surface_conditions(self):
+        client = Mock()
+        client.run.return_value = "ERROR: Recipe is not supported on nauvis"
+
+        jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertIn("condition.min and value<condition.min", phase1)
+        self.assertIn("condition.max and value>condition.max", phase1)
+
+    def test_place_cell_rejects_unheated_aquilo_cells(self):
+        client = Mock()
+        client.run.return_value = "ERROR: Unheated cells are not supported on Aquilo"
+
+        result = jimbo.place_production_cell(
+            client, "aquilo", "electronic-circuit", "[gps=10,20,aquilo]",
+            "dlbattle",
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertIn("s.planet.name=='aquilo'", phase1)
+        self.assertEqual(result, "ERROR: Unheated cells are not supported on Aquilo")
+        self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_rechecks_occupancy_before_mutation(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "ERROR: 1 entities appeared in area",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit", "[gps=10,20,nauvis]",
+            "dlbattle",
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("s.count_entities_filtered{area=area}", phase2)
+        self.assertIn("entities appeared in area", phase2)
+        self.assertIn("ERROR", result)
+
+    def test_place_cell_floors_gps_to_bottom_left_tile(self):
+        client = Mock()
+        client.run.return_value = "ERROR: blocked"
+
+        jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10.9,-20.1,nauvis]", "dlbattle",
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertIn("local ax=10;local ay=-21", phase1)
+
+    def test_place_cell_phase2_reports_incomplete_rollback(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "ERROR: request filter failed; rollback incomplete: 1",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("for i=#cleanup,1,-1", phase2)
+        self.assertIn("rollback incomplete", phase2)
+        self.assertEqual(
+            result, "ERROR: request filter failed; rollback incomplete: 1"
+        )
 
 
 if __name__ == "__main__":

@@ -1,36 +1,72 @@
 # Production Cell Placement
 
-Place a self-contained crafting cell (building, requester chest, provider
-chest, two inserters, power pole) at a verified location so construction bots
-can build it. The model specifies what to make; local code handles geometry,
-preflight, placement, and verification. The building type is determined at
-runtime from the requested item's recipe prototype so different building
-sizes (3×3 assemblers, 5×5 EM plants/foundries/cryoplants, etc.) work
-without hardcoded dimensions.
+Place a compact crafting cell (building, requester chest, provider chest, two
+inserters, power pole) at a verified location so construction bots can build
+it. The model specifies what to make; local code handles geometry, preflight,
+placement, and verification. Compatible crafting machines and their dimensions
+are resolved from live Factorio 2.1 prototypes rather than a hardcoded
+recipe-category table.
+
+## Current Implementation Status
+
+Steps 1 and 2 are implemented for a single explicit GPS candidate and an
+item-only recipe. The current code:
+
+- strictly validates the GPS coordinates, requires its surface when present to
+  match the requested surface, and floors the coordinates to a bottom-left tile;
+- rejects locked recipes, fluid ingredients or products, recipe/surface
+  mismatches, and unheated Aquilo cells before mutation;
+- resolves compatible placeable crafting machines through
+  `r.categories` and `prototypes.get_entity_filtered()` and prefers faster,
+  smaller candidates;
+- reads live dimensions, scans the complete footprint for occupancy, checks
+  logistic and construction coverage, verifies that the planned pole can power
+  the building and connect to a live pole, and preflights every component;
+- repeats every component preflight immediately before mutation;
+- creates all six ghosts without mutation retry, copies the machine recipe
+  settings to the requester chest through the requesting player, verifies every
+  ingredient request, the assigned recipe, and construction registration, and
+  destroys and checks newly created ghosts if the mutation fails.
+
+The following details are deliberately not implemented yet:
+
+- Step 3 classifier, dispatch, and reply-prompt integration;
+- automatic placement when no GPS hint is supplied, including player-relative
+  direction resolution and the spawn fallback (Step 5);
+- extending power or shifting a blocked pole (Step 4);
+- caching live prototype dimensions across requests (Step 6);
+- fluid-capable cells with pipe or barrel handling;
+- heated cells for Aquilo;
+- independent read-only post-mutation verification.
+
+Until the automatic search work is implemented, an empty hint returns
+`ERROR: A GPS location hint is currently required` without running RCON.
 
 ## Cell Layout
 
 The building's bottom-left tile is the anchor `(x, y)`. All other positions
 are relative to the building's dimensions `(w, h)` queried at runtime from
-`prototypes.recipe[item-name].products[1].name` → `prototypes.entity[entity-name].tile_width/tile_height`.
+the compatible crafting-machine prototypes selected from every category in
+`prototypes.recipe[item-name].categories`.
 
 ```
 [Req] [In] [Building w×h] [Out] [Prov]
-                    Power pole at (x + w//2 - 1, y - 1)
+                    Power pole below the building center
 ```
 
 | Component | Position | Notes |
 |---|---|---|
-| Building | `(x, y)` to `(x+w-1, y+h-1)` | Anchor is building's bottom-left |
-| Input inserter | `(x-1, y + h//2 - 1)` | Reaches building input slot, facing right |
-| Requester chest | `(x-2, y + h//2 - 1)` | One tile left of inserter |
-| Output inserter | `(x+w, y + h//2 - 1)` | Reaches building output slot, facing left |
-| Provider chest | `(x+w+1, y + h//2 - 1)` | One tile right of inserter |
-| Power pole | `(x + w//2 - 1, y-1)` | Below building center; may shift if blocked |
+| Building | entity center `(x+w/2, y+h/2)` | Occupies tiles from the bottom-left anchor across `w×h` |
+| Input inserter | `(x-0.5, y + floor(h/2) + 0.5)` | Picks up on its west side and drops into the building |
+| Requester chest | `(x-1.5, y + floor(h/2) + 0.5)` | One tile west of the input inserter |
+| Output inserter | `(x+w+0.5, y + floor(h/2) + 0.5)` | Picks up from the building and drops east |
+| Provider chest | `(x+w+1.5, y + floor(h/2) + 0.5)` | One tile east of the output inserter |
+| Power pole | `(x + floor(w/2) + 0.5, y-0.5)` | One tile row below the building |
 
-For a 3×3 building this produces the same positions as a hardcoded layout.
-For a 5×5 EM plant the bounding box grows naturally and inserters still
-reach because they target the building's edge tile, not its center.
+Both inserters use `defines.direction.west`: Factorio inserters pick up behind
+and drop in front, so this moves material west-to-east through the cell.
+Half-tile coordinates keep odd-width entities centered on tiles and even-width
+entities centered on tile borders.
 
 Every position is preflighted with `can_place_entity()` before any ghost is
 created. The full bounding box is a union of all component rectangles.
@@ -44,7 +80,7 @@ PRODUCE|surface|item-name|optional-position-hint
 ```
 
 - `surface` — lowercase internal surface name such as `nauvis` or `fulgora`.
-- `item-name` — lowercase internal item name such as `processing-unit`.
+- `item-name` — lowercase internal item name such as `electronic-circuit`.
 - `optional-position-hint` — one of:
   - A `[gps=x,y,surface]` map ping from the player.
   - A cardinal-direction phrase like `north`, `south-east`, `east of me`,
@@ -52,8 +88,9 @@ PRODUCE|surface|item-name|optional-position-hint
     requesting player's position, then compute the offset and emit a
     concrete GPS hint. Resolution is handled by the model's classification
     step; the code only receives resolved GPS coordinates.
-  - Empty if the player gave no location reference; Jimbo will search
-    automatically.
+  - Empty if the player gave no location reference. This is the intended final
+    interface, but the current Steps 1–2 implementation rejects it until the
+    automatic search in Step 5 is implemented.
 
 The classifier prompt gains lines describing the format and directional
 resolution:
@@ -67,6 +104,10 @@ resolution:
   to get their position, then compute the offset, and emit PRODUCE with a
   concrete [gps=...] location. Omit the hint to let Jimbo choose.
 ```
+
+The current cell supports item-only recipes. Classification may still identify
+a fluid recipe, but placement will return a grounded unsupported-fluid error
+rather than ghosting a cell that cannot run.
 
 ## Parsing
 
@@ -90,58 +131,71 @@ def parse_produce_decision(raw):
     return surface, item, hint
 ```
 
+The current parser also returns the GPS surface as a fourth field. Step 3 must
+either remove that redundant field or pass only `(surface, item, hint)` to
+`place_production_cell()`; blindly splatting the current parser result is not a
+valid dispatch interface.
+
 ## RCON Logic
 
-### Phase 1 — Find and verify a location (read-only)
+### Phase 1 — Resolve and verify a location (read-only)
 
-The first Lua command locates a buildable position. Building dimensions
-`w` and `h` are queried first from the recipe → entity prototypes so
-bounding boxes are correct for any building size:
+The first Lua command validates one candidate without changing the world:
 
-1. Resolve the target surface and look up the building type/prototype
-   dimensions for the requested item's recipe.
-2. Compute the cell's total bounding box span:
-   - Left edge: `anchor_x - 2` (requester chest)
-   - Right edge: `anchor_x + w + 1` (provider chest)
-   - Bottom edge: `anchor_y - 1` (power pole / inserters)
-   - Top edge: `anchor_y + h - 1` (building top)
-3. If the player gave a GPS hint, use that tile as the candidate anchor.
-   Otherwise, find the online player who made the request, get their
-   position, and search outward in a spiral for a clear area matching the
-   computed bounding box.
-4. For each anchor candidate:
-   a. Scan `find_entities_filtered{area=...}` over the full bounding box
-      for any entity or ghost — treat any occupancy as blocked.
-   b. Preflight every planned entity position with `can_place_entity()`.
-   c. Locate the nearest electric pole with a live network and verify the
-      building falls within its quality-aware supply area.
-   d. Verify the requester position has logistic coverage via
-      `surface.find_logistic_network_by_position()`.
-5. Return the first clear anchor and the building name, or report failure.
+1. Resolve the surface and recipe. Reject fluid ingredients or products, locked
+   recipes, invalid recipe surface conditions, and unheated Aquilo placement.
+2. Read every recipe category from `r.categories`. Use the live
+   `crafting-category` entity-prototype filter to find compatible placeable
+   assembling machines and furnaces, excluding unrelated fixed-recipe machines.
+   Sort candidates by crafting speed, footprint, then name.
+3. Floor the GPS coordinates to the bottom-left anchor tile. For each compatible
+   candidate, read `tile_width` and `tile_height` and compute the cell geometry.
+4. Compute the complete cell bounding box:
+   - Left boundary: `anchor_x - 2`.
+   - Right boundary: `anchor_x + w + 2`.
+   - Bottom boundary: `anchor_y - 1`.
+   - Top boundary: `anchor_y + h`.
+5. For each candidate:
+   a. Reject any entity or ghost in the complete bounding box.
+   b. Preflight every planned entity with `can_place_entity()` and
+      `script_ghost`.
+   c. Require logistic coverage at the requester and construction coverage at
+      every planned entity.
+   d. Require the planned normal-quality medium pole's supply area to cover the
+      building center.
+   e. Require the planned pole to be within mutual wire reach of an existing
+      pole with an electric network.
+6. Return the first suitable anchor, dimensions, and building prototype, or the
+   last grounded failure.
+
+The product item is never treated as the crafting machine merely because it has
+a placeable entity prototype.
 
 ### Phase 2 — Place and verify (mutation)
 
-A second Lua command creates all ghosts in one `pcall`. Positions use the
-building dimensions `(w, h)` determined in Phase 1:
+A second Lua command repeats the mutable assumptions and then creates all ghosts
+in one `pcall`:
 
-1. Create building ghost at anchor `(x, y)` with dimensions `(w, h)` and
-   the requested recipe.
-2. Create requester chest ghost at `(x-2, y + h//2 - 1)`.
-3. Create passive provider chest ghost at `(x+w+1, y + h//2 - 1)`.
-4. Create input inserter ghost at `(x-1, y + h//2 - 1)` facing right.
-5. Create output inserter ghost at `(x+w, y + h//2 - 1)` facing left.
-6. Create power pole ghost at `(x + w//2 - 1, y-1)`.
-7. Call `requester_ghost.copy_settings(building_ghost, player)`.
-8. Verify `requester_ghost.get_logistic_sections().sections` contains every
-   recipe ingredient with a positive `filter.min`.
-9. Verify each new ghost's construction registration with
-   `is_registered_for_construction()`.
-10. Print the anchor and entity list on success; on failure remove all newly
-    created ghosts and print the error.
+1. Re-resolve the surface, player, recipe, building, and pole prototypes and
+   require the building dimensions to still match Phase 1.
+2. Repeat the complete bounding-box occupancy scan, every per-entity
+   `can_place_entity()` check, logistic and construction coverage checks, and
+   planned-pole supply and live-wire checks.
+3. Create the building at `(x+w/2, y+h/2)`, the requester and provider at
+   `(x-1.5, row)` and `(x+w+1.5, row)`, the two west-facing inserters at
+   `(x-0.5, row)` and `(x+w+0.5, row)`, and the pole at
+   `(x+floor(w/2)+0.5, y-0.5)`, where
+   `row = y+floor(h/2)+0.5`.
+4. Verify that the building ghost retained the requested recipe.
+5. Call `requester_ghost.copy_settings(building_ghost, player)` and verify that
+   every recipe ingredient appears in its logistic sections with a positive
+   `filter.min`.
+6. Verify every new ghost with `is_registered_for_construction()`.
+7. Print the GPS anchor, dimensions, recipe, and exact entity list on success.
+   On failure, destroy the newly created ghosts in reverse order, count any
+   survivors, and report an incomplete rollback explicitly.
 
-All entity lookups use `find_entities_filtered` with type + position, not
-unit numbers, so positions work across RCON reconnects since we just placed
-them.
+The mutation call uses `retry=False`; an uncertain RCON failure is never replayed.
 
 ## Dispatch Block
 
@@ -153,7 +207,7 @@ if produce_request is not None:
     rcon_cmd = "RCON: production cell"
     try:
         rcon_response = place_production_cell(
-            client, *produce_request
+            client, *produce_request[:3], requesting_player=username
         )
         print(f"PRODUCE response: {rcon_response}", flush=True)
     except Exception as e:
@@ -177,31 +231,33 @@ if rcon_command == "RCON: production cell":
 
 ## Implementation Order
 
-### Step 1: `place_production_cell()` in `jimbo.py` — location search
+### Step 1: `place_production_cell()` in `jimbo.py` — explicit location preflight
 
-Implement the Phase 1 Lua command as a pure Python function that builds and
-runs the Lua string. Test with mocked RCON. The function returns either an
-anchor `(x, y)` or a failure string.
+Implemented. The Phase 1 Lua command is built by Python and run read-only through
+RCON. It validates one explicit GPS anchor and returns an anchor, dimensions,
+and compatible building prototype or a grounded failure string.
 
 ### Step 2: `place_production_cell()` — placement and verification
 
-Add the Phase 2 Lua command. Combine with Phase 1 so the caller gets one
-response string: either a success message with the anchor GPS link or a
-failure description.
+Implemented. The Phase 2 Lua command repeats preflight, creates and verifies the
+six ghosts, and returns either a success message with the anchor GPS link and
+entity summary or a failure description. It does not retry mutation.
 
 ### Step 3: Parser and dispatch
 
-Add `parse_produce_decision()`, its entry in the classifier prompt, the
-classifier `elif` branch, and the dispatch block. Wire the result into the
-reply builder with the produce hint. The model can now request production
-cells and Jimbo will reply with the outcome.
+The standalone `parse_produce_decision()` helper exists and has deterministic
+tests, but it is not connected to Jimbo's request flow. Reconcile its return
+shape with `place_production_cell()`, then add the classifier prompt entry,
+classifier branch, dispatch block, and reply hint. The model can request
+production cells only after all of those pieces are wired and tested.
 
 ### Step 4: Power extension subplan
 
-When the primary anchor has no electric coverage, search for the nearest
-power pole in construction range, verify its supply area reaches a live
-network, and include a medium-electric-pole ghost in the same `pcall`.
-Track it for rollback.
+The current layout always includes one planned medium pole and requires it to be
+in construction range, supply the building, and be within mutual copper-wire
+reach of an existing powered pole. If that position cannot connect, search for
+and validate an extension-pole chain or shifted cell layout, then include every
+additional pole ghost in the same `pcall` and rollback list.
 
 ### Step 5: Location spiral for player-free hints
 
@@ -210,83 +266,81 @@ in an expanding outward spiral from spawn (0, 0) for a clear area with both
 power and logistic coverage. The spiral step size adapts to the building's
 bounding box dimensions.
 
-### Step 6: Prototype lookup for building dimensions
+### Step 6: Prototype resolution caching and refinement
 
-The placement functions need the building entity's tile dimensions. Query
-them at runtime:
-
-```
-/silent-command local r=prototypes.recipe["processing-unit"];local p=r.products[1];local e=prototypes.entity[p.name];rcon.print(e.tile_width..","..e.tile_height)
-```
-
-Cache the result in the local Python response; building dimensions for a
-given entity name do not change during a server session but should be
-refetched after server restarts.
+The placement function already resolves compatible machines from every live
+recipe category and queries each candidate's tile dimensions during Phase 1. A
+later refinement may cache this prototype information within one server session
+or introduce an explicit machine-selection policy. Refetch it after a server
+restart because mods or game updates may change the prototypes.
 
 ## Safety Constraints
 
 - Every entity position is preflighted with `can_place_entity()` before any
   ghost is created.
-- Every new ghost occupies a unique tile; the bounding box scan rejects
-  overlapping builds.
+- The full bounding box is scanned in both phases because `script_ghost`
+  placement checks alone can accept some infrastructure overlaps.
+- Logistic coverage is required at the requester, and construction coverage is
+  required at every planned entity.
+- Fluid recipes and unheated Aquilo cells are rejected because the six-entity
+  layout has neither pipe connections nor heat infrastructure.
 - The entire mutation is wrapped in `pcall`; on failure all new ghosts are
-  destroyed and no claimed success is printed.
+  destroyed in reverse order, survivors are counted, and no success is printed.
 - Settings verification (`copy_settings` + section inspection) happens in
   the same RCON command to catch fulfillment races.
 - Building dimensions are queried from live prototypes, never hardcoded.
-- Power validation checks `pole.electric_network is not nil` and applies
-  `pole.prototype.get_supply_area_distance(pole.quality)` to confirm the
-  building is within supply radius.
-- Logistic coverage uses `surface.find_logistic_network_by_position()` on
-  the requester position.
+- Power validation applies the planned pole prototype's quality-aware supply and
+  wire distances, and requires mutual wire reach to an existing pole whose
+  `electric_network` is not `nil`.
 - Never replay a mutation automatically after an RCON disconnect.
-- Never use unit numbers from a previous RCON session to identify entities.
 
 ## Failure Modes
 
 | Condition | Behavior |
 |---|---|
 | Surface does not exist | Return error; no mutation |
-| Recipe not found or building cannot be determined | Return error; no mutation |
-| No clear area found within search radius | Return "no suitable location"; no mutation |
-| Any `can_place_entity()` fails during preflight | Skip anchor; try next candidate |
-| `pcall` catches an error during mutation | Destroy all newly created ghosts; return error |
+| Recipe not found, locked, or invalid for the surface | Return error; no mutation |
+| Recipe has a fluid ingredient or product | Return unsupported error; no mutation |
+| Surface is Aquilo | Return unsupported-heating error; no mutation |
+| No compatible placeable crafting machine | Return error; no mutation |
+| No GPS hint | Return a deterministic GPS-required error; no RCON or mutation |
+| Occupancy or any `can_place_entity()` check fails | Reject the candidate; no mutation |
+| Logistic or full-cell construction coverage is absent | Reject the candidate; no mutation |
+| Planned pole cannot supply the building or connect to live power | Reject the candidate; no mutation |
+| `pcall` catches an error during mutation | Destroy all newly created ghosts in reverse order; return error |
+| A newly created ghost survives rollback | Report the original error and the survivor count |
 | `copy_settings` does not produce expected requester filters | Destroy all ghosts; return error |
 | Construction registration fails for any ghost | Destroy all ghosts; return error |
-| Power pole position is blocked (no alternate nearby) | Report location found but no power; skip anchor |
 | RCON disconnect during Phase 2 | Report failure; do not replay |
-| Requesting player is offline and no GPS hint given | Search from spawn; fail if no location found |
+| Requesting player missing | Reject before mutation because recipe-copy settings require that player |
+| Requesting player is offline and no GPS hint given | Return the GPS-required error until Step 5 |
 
 ## Testing
 
-Follow the deterministic test patterns in `test_jimbo.py`:
+The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 
-- **`test_parse_produce_decision_valid`** — valid `PRODUCE|nauvis|processing-unit|`
-  and `PRODUCE|fulgora|holmium-plate|[gps=10,20,fulgora]`.
-- **`test_parse_produce_decision_invalid`** — wrong prefix, missing fields,
-  invalid item names.
-- **`test_produce_location_search_finds_clear_area`** — mock RCON returns a
-  clear area; verify correct Lua is built and anchor is returned.
-- **`test_produce_location_search_blocked`** — mock RCON returns blocked;
-  verify failure response.
-- **`test_produce_placement_success`** — mock Phase 2 success; verify
-  response contains anchor and entity summary.
-- **`test_produce_placement_pcall_failure`** — mock Lua error; verify no
-  entities are claimed and error is returned.
-- **`test_produce_reply_hint_in_prompt`** — verify production hint text is
-  injected into the reply prompt when rcon_command matches.
+- parser acceptance and internal-name rejection, without connecting it to the
+  classifier yet;
+- strict GPS validation, surface matching, flooring, required-player behavior,
+  malformed Phase 1 responses, and the no-hint short circuit;
+- live category-based machine resolution, dimensions, half-tile geometry,
+  inserter directions, fluid/Aquilo/surface-condition rejection, power,
+  logistics, construction coverage, and both-phase placement checks;
+- creation of all six ghosts, recipe and requester-filter verification,
+  construction registration, occupancy-race rejection, reverse rollback with
+  survivor reporting, and disabled mutation retry.
 
 ## Rollback
 
-Every mutating command stores the list of newly created ghosts (entity
-positions and types) before the mutation. On any failure within the `pcall`:
+The current mutating command stores each successfully created ghost object in a
+cleanup list. On any failure within the `pcall`:
 
 1. Iterate the stored list.
-2. For each position, call `surface.create_entity{name="entity-ghost" ...}`
-   only for entities that exist as ghosts — this is a no-op for already-built
-   entities and safe.
-3. Print the rollback result.
+2. Destroy each still-valid newly created ghost in reverse creation order,
+   isolating individual destruction failures.
+3. Count any still-valid survivors.
+4. Return the original mutation error and, when nonzero, the survivor count.
 
-Rollback uses `find_entities_filtered{type="entity-ghost", area=...}` at
-each stored position to confirm destruction. This runs inside the same
-`pcall` so partial rollback also fails atomically.
+Independently verifying a successful mutation in a later read-only command
+remains deferred. The mutation is not automatically replayed after an uncertain
+RCON disconnect.

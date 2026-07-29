@@ -200,7 +200,8 @@ all consumers at once. The verified Fulgora setup uses normal holmium plate
 plate weight `1000`), while the largest consumer takes 150 and its requester asks
 for 100.
 
-Rediscover machines before each mutation. On the current Factorio 2.0 server,
+Rediscover machines before each mutation. On the server version used for this
+earlier live test,
 direct unit-number lookup did not resolve these entities and `find_entity()` did
 not resolve a known uncommon-quality machine at its exact position. A surface
 `find_entities_filtered()` scan followed by checks of `unit_number`, recipe,
@@ -291,6 +292,19 @@ a working cell so inserter choices, directions, and chest limits are preserved.
 Validate each exact planned position with `can_place_entity()` and inspect the
 complete new footprint rather than relying on an expanded search that may include
 valid neighboring machines.
+
+The first explicit-location implementation deliberately supports item-only
+recipes. Live prototype inspection showed that processing units, holmium plates,
+and superconductors all require fluid inputs, so a chest-and-inserter-only cell
+must reject them until it has a pipe-aware layout. Aquilo also needs a separately
+validated heat supply; do not place the unheated six-entity layout there.
+
+In Factorio 2.1, use every entry in `LuaRecipePrototype.categories` and the
+`crafting-category` entity-prototype filter to discover compatible crafting
+machines. Do not use the nonexistent singular `category`, and do not infer a
+crafting machine from the recipe's product entity. Entity centers depend on
+footprint parity: when `(x, y)` is the integer bottom-left tile anchor, a `w×h`
+building is centered at `(x+w/2, y+h/2)`.
 
 Do not rely on `can_place_entity(..., build_check_type=script_ghost)` alone to
 protect existing infrastructure: live testing showed that it can accept a ghost
