@@ -9,12 +9,14 @@ recipe-category table.
 
 ## Current Implementation Status
 
-Steps 1 through 4 are implemented for a single explicit GPS candidate and an
-item-only recipe. The current code:
+Steps 1 through 5 are implemented for an item-only recipe. The current code:
 
-- classifies explicit requests into `PRODUCE|surface|item|gps`, dispatches the
-  parsed request with the requesting player, and grounds the reply in the
-  placement result;
+- classifies requests into `PRODUCE|surface|item|location`, distinguishing an
+  explicit GPS ping, current remote view, physical character position,
+  normalized direction, and an omitted location;
+- resolves `current` to the connected player's viewed or physical surface,
+  searches from the requested origin, and falls back to the requested surface's
+  actual force spawn when an omitted location has no matching online view;
 - strictly validates the GPS coordinates, requires its surface when present to
   match the requested surface, and floors the coordinates to a bottom-left tile;
 - rejects locked recipes, fluid ingredients or products, recipe/surface
@@ -26,6 +28,9 @@ item-only recipe. The current code:
   logistic and construction coverage, verifies that the planned pole can power
   the building, and searches up to two fully preflighted extension poles when
   the cell pole cannot reach live power directly;
+- searches deterministic footprint-sized expanding rings, bounded to 128 tiles
+  and 256 anchors per compatible machine, and applies the requested directional
+  sector before running the same placement checks;
 - repeats every component preflight immediately before mutation;
 - creates the six base ghosts plus any extension poles without mutation retry,
   copies the machine recipe settings to the requester chest through the
@@ -35,17 +40,12 @@ item-only recipe. The current code:
 
 The following details are deliberately not implemented yet:
 
-- automatic placement when no GPS hint is supplied, including player-relative
-  direction resolution and the spawn fallback (Step 5);
 - shifting the fixed cell or pole layout when the bounded extension search is
   blocked;
 - caching live prototype dimensions across requests (Step 6);
 - fluid-capable cells with pipe or barrel handling;
 - heated cells for Aquilo;
 - independent read-only post-mutation verification.
-
-Until the automatic search work is implemented, an empty hint returns
-`ERROR: A GPS location hint is currently required` without running RCON.
 
 ## Cell Layout
 
@@ -88,17 +88,24 @@ PRODUCE|surface|item-name|optional-position-hint
 - `item-name` — lowercase internal item name such as `electronic-circuit`.
 - `optional-position-hint` — one of:
   - A `[gps=x,y,surface]` map ping from the player.
-  - Empty if the player gave no explicit map ping, including when they supplied
-    only a relative direction. The current implementation returns the
-    deterministic GPS-required error until automatic or player-relative search
-    is implemented in Step 5.
+  - `view` for the current view center, including remote view.
+  - `standing` for the physical character position.
+  - `north`, `north-east`, `east`, `south-east`, `south`, `south-west`, `west`,
+    or `north-west`, relative to the current view.
+  - Empty when the player supplied no location.
+
+The classifier uses the pseudo-surface `current` when a player-relative request
+does not name a surface. Phase 1 resolves it from `LuaPlayer.surface` for the
+view or `LuaPlayer.physical_surface` for the physical character, and serializes
+the real surface into its result for Phase 2.
 
 The classifier prompt describes the format and current explicit-location limit:
 
 ```
-- PRODUCE|surface|item|gps — place a production cell for the requested item.
+- PRODUCE|surface|item|location — place a production cell for the requested item.
   Copy an explicit player-supplied GPS map ping exactly. Never invent or adjust
-  coordinates. Leave the hint empty when the player did not provide a map ping.
+  coordinates. Normalize view, standing, and the eight named directions. Use
+  current when a relative request does not name a surface.
 ```
 
 The current cell supports item-only recipes. Classification may still identify
@@ -110,7 +117,7 @@ rather than ghosting a cell that cannot run.
 A new `parse_produce_decision(raw)` function mirrors
 `parse_logistics_decision`. It validates surface and item names with the same
 internal-name rules (lowercase, digits, hyphens, underscores) and extracts the
-optional GPS hint.
+optional structured location hint.
 
 ```python
 def parse_produce_decision(raw):
@@ -134,16 +141,23 @@ player separately when calling `place_production_cell()`.
 
 ### Phase 1 — Resolve and verify a location (read-only)
 
-The first Lua command validates one candidate without changing the world:
+The first Lua command validates bounded candidates without changing the world:
 
-1. Resolve the surface and recipe. Reject fluid ingredients or products, locked
-   recipes, invalid recipe surface conditions, and unheated Aquilo placement.
+1. Resolve the requested surface. `current` means the connected player's viewed
+   surface, except `standing` uses their physical surface. Resolve the recipe
+   and reject fluid ingredients or products, locked recipes, invalid recipe
+   surface conditions, and unheated Aquilo placement.
 2. Read every recipe category from `r.categories`. Use the live
    `crafting-category` entity-prototype filter to find compatible placeable
    assembling machines and furnaces, excluding unrelated fixed-recipe machines.
    Sort candidates by crafting speed, footprint, then name.
-3. Floor the GPS coordinates to the bottom-left anchor tile. For each compatible
-   candidate, read `tile_width` and `tile_height` and compute the cell geometry.
+3. For explicit GPS, floor the coordinates to the bottom-left anchor tile.
+   Otherwise choose the origin from the connected player's view, their physical
+   position for `standing`, or the force's actual spawn on a named surface when
+   an omitted location cannot use the player's view. For each compatible
+   machine, read `tile_width` and `tile_height`; generate deterministic expanding
+   square rings in full-footprint steps, filter to a named directional sector
+   when requested, and stop at 128 tiles or 256 anchors.
 4. Compute the complete cell bounding box:
    - Left boundary: `anchor_x - 2`.
    - Right boundary: `anchor_x + w + 2`.
@@ -161,8 +175,9 @@ The first Lua command validates one candidate without changing the world:
       or breadth-first search half-tile pole centers for at most two extension
       poles. Every extension candidate must be outside the complete cell box,
       unoccupied, placeable as a ghost, and in construction coverage.
-6. Return the first suitable anchor, dimensions, building prototype, and exact
-   extension-pole positions, or the last grounded failure.
+6. Return the first suitable anchor, dimensions, building prototype, exact
+   extension-pole positions, and resolved real surface, or the last grounded
+   failure.
 
 The product item is never treated as the crafting machine merely because it has
 a placeable entity prototype.
@@ -247,8 +262,7 @@ does not retry mutation.
 Implemented. The parser returns only the three placement fields, the classifier
 recognizes structured production-cell requests, dispatch supplies the requesting
 player, and reply composition distinguishes verified success from grounded
-failure. Requests without an explicit GPS ping reach the deterministic
-GPS-required response without RCON.
+failure.
 
 ### Step 4: Power extension subplan
 
@@ -259,12 +273,15 @@ most two medium-pole extensions using the live normal-quality wire distance.
 Phase 2 revalidates the exact chain and creates every pole in the same `pcall`
 and rollback list. Shifting the cell or fixed pole remains deferred.
 
-### Step 5: Location spiral for player-free hints
+### Step 5: Bounded automatic and player-relative location search
 
-If the player gives no GPS hint and the requesting player is offline, search
-in an expanding outward spiral from spawn (0, 0) for a clear area with both
-power and logistic coverage. The spiral step size adapts to the building's
-bounding box dimensions.
+Implemented. Explicit GPS remains exact. `view` uses the current controller
+position and surface, so it follows remote view; `standing` uses the physical
+controller position and surface. Named directions search their sector from the
+current view. An omitted hint uses the online player's matching view, otherwise
+the requested surface's force spawn. The deterministic expanding-ring search
+uses full-cell footprint steps and is bounded to 128 tiles and 256 anchors per
+compatible machine.
 
 ### Step 6: Prototype resolution caching and refinement
 
@@ -303,7 +320,10 @@ restart because mods or game updates may change the prototypes.
 | Recipe has a fluid ingredient or product | Return unsupported error; no mutation |
 | Surface is Aquilo | Return unsupported-heating error; no mutation |
 | No compatible placeable crafting machine | Return error; no mutation |
-| No GPS hint | Return a deterministic GPS-required error; no RCON or mutation |
+| Explicit GPS is invalid or names another surface | Return error; no RCON or mutation |
+| `view`, `standing`, direction, or `current` needs an offline player | Return grounded error; no mutation |
+| Omitted location and no matching online view | Search from the requested surface's force spawn |
+| Automatic search exhausts 128 tiles or 256 anchors | Return the last grounded candidate failure; no mutation |
 | Occupancy or any `can_place_entity()` check fails | Reject the candidate; no mutation |
 | Logistic or full-cell construction coverage is absent | Reject the candidate; no mutation |
 | Planned pole cannot supply the building | Reject the candidate; no mutation |
@@ -315,16 +335,17 @@ restart because mods or game updates may change the prototypes.
 | Construction registration fails for any ghost | Destroy all ghosts; return error |
 | RCON disconnect during Phase 2 | Report failure; do not replay |
 | Requesting player missing | Reject before mutation because recipe-copy settings require that player |
-| Requesting player is offline and no GPS hint given | Return the GPS-required error until Step 5 |
 
 ## Testing
 
 The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 
-- classifier instructions, parser acceptance and internal-name rejection,
+- classifier instructions, normalized location parsing and rejection,
   three-field dispatch with the requesting player, and grounded reply guidance;
 - strict GPS validation, surface matching, flooring, required-player behavior,
-  malformed Phase 1 responses, and the no-hint short circuit;
+  malformed Phase 1 responses, remote-view versus physical-position origins,
+  resolved-current-surface transfer, spawn fallback, direction filtering, and
+  the radius/candidate bounds;
 - live category-based machine resolution, dimensions, half-tile geometry,
   inserter directions, fluid/Aquilo/surface-condition rejection, power,
   logistics, construction coverage, and both-phase placement checks;

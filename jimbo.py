@@ -64,13 +64,20 @@ safe_retry_commands = (
     "/players online", "/players", "/evolution", "/time", "/version",
 )
 production_cell_max_extension_poles = 2
+production_cell_directions = (
+    "north", "north-east", "east", "south-east",
+    "south", "south-west", "west", "north-west",
+)
+production_cell_relative_locations = ("view", "standing")
+production_cell_search_max_radius = 128
+production_cell_search_max_candidates = 256
 
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now bridge short power gaps for production cells with up to two "
-    "fully checked extension poles, rolling back the whole plan if any ghost "
-    "fails."
+    "I can now find nearby clear locations for production cells from your "
+    "current view, your physical position, a named direction, or the planet "
+    "spawn while keeping every existing placement check."
 )
 
 opencode_config = json.dumps({
@@ -399,49 +406,101 @@ def parse_produce_decision(raw):
     if not valid_name(surface) or not valid_name(item):
         return None
     if hint:
+        if (
+            hint in production_cell_directions
+            or hint in production_cell_relative_locations
+        ):
+            return surface, item, hint
         try:
-            inner = hint.strip("[]")
-            if inner.startswith("gps="):
-                coords = inner[4:].split(",")
-                float(coords[0])
-                float(coords[1])
-        except (ValueError, IndexError):
+            if not (hint.startswith("[gps=") and hint.endswith("]")):
+                return None
+            coords = [part.strip() for part in hint[5:-1].split(",")]
+            if len(coords) not in (2, 3):
+                return None
+            x = float(coords[0])
+            y = float(coords[1])
+            if not math.isfinite(x) or not math.isfinite(y):
+                return None
+        except ValueError:
             return None
     return surface, item, hint
 
 
 def place_production_cell(client, surface, item, hint="", requesting_player=""):
-    if not hint:
-        return "ERROR: A GPS location hint is currently required"
-    inner = hint[1:-1] if hint.startswith("[") and hint.endswith("]") else ""
-    if not inner.startswith("gps="):
-        return "ERROR: Invalid GPS location hint"
-    coords = [part.strip() for part in inner[4:].split(",")]
-    if len(coords) not in (2, 3):
-        return "ERROR: Invalid GPS location hint"
-    try:
-        ax_value = float(coords[0])
-        ay_value = float(coords[1])
-    except ValueError:
-        return "ERROR: Invalid GPS location hint"
-    if not math.isfinite(ax_value) or not math.isfinite(ay_value):
-        return "ERROR: Invalid GPS location hint"
-    if len(coords) == 3 and coords[2] != surface:
-        return "ERROR: GPS surface does not match requested surface"
     if not requesting_player:
         return "ERROR: Requesting player is required"
 
-    ax = math.floor(ax_value)
-    ay = math.floor(ay_value)
+    explicit = False
+    ax = 0
+    ay = 0
+    direction = ""
+    relative_location = ""
+    if hint in production_cell_directions:
+        direction = hint
+    elif hint in production_cell_relative_locations:
+        relative_location = hint
+    elif hint:
+        inner = hint[1:-1] if hint.startswith("[") and hint.endswith("]") else ""
+        if not inner.startswith("gps="):
+            return "ERROR: Invalid location hint"
+        coords = [part.strip() for part in inner[4:].split(",")]
+        if len(coords) not in (2, 3):
+            return "ERROR: Invalid GPS location hint"
+        try:
+            ax_value = float(coords[0])
+            ay_value = float(coords[1])
+        except ValueError:
+            return "ERROR: Invalid GPS location hint"
+        if not math.isfinite(ax_value) or not math.isfinite(ay_value):
+            return "ERROR: Invalid GPS location hint"
+        if len(coords) == 3 and coords[2] != surface:
+            return "ERROR: GPS surface does not match requested surface"
+        explicit = True
+        ax = math.floor(ax_value)
+        ay = math.floor(ay_value)
 
     surface_lua = json.dumps(surface)
     item_lua = json.dumps(item)
     player_lua = json.dumps(requesting_player)
+    direction_lua = json.dumps(direction)
+    relative_location_lua = json.dumps(relative_location)
+    explicit_lua = "true" if explicit else "false"
 
     phase1 = (
         f"/silent-command "
-        f"local s=game.surfaces[{surface_lua}];"
+        f"local requested_surface={surface_lua};"
+        f"local request_player=game.get_player({player_lua});"
+        f"local relative_location={relative_location_lua};"
+        f"local s=nil;"
+        f"if requested_surface=='current' then "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: Current location requires the requesting player "
+        f"online') return end;"
+        f"if relative_location=='standing' then "
+        f"s=request_player.physical_surface else s=request_player.surface end "
+        f"else s=game.surfaces[requested_surface] end;"
         f"if not s then rcon.print('ERROR: Surface not found') return end;"
+        f"local explicit={explicit_lua};"
+        f"local explicit_ax={ax};local explicit_ay={ay};"
+        f"local direction={direction_lua};"
+        f"local origin=nil;"
+        f"if not explicit then "
+        f"if relative_location=='standing' then "
+        f"if not request_player or not request_player.connected "
+        f"or request_player.physical_surface~=s then "
+        f"rcon.print('ERROR: Standing location requires the requesting player "
+        f"online on '..s.name) return end;"
+        f"origin=request_player.physical_position "
+        f"elseif relative_location=='view' or direction~='' then "
+        f"if not request_player or not request_player.connected "
+        f"or request_player.surface~=s then "
+        f"rcon.print('ERROR: View-relative location requires the requesting player "
+        f"online on '..s.name) return end;"
+        f"origin=request_player.position "
+        f"elseif request_player and request_player.connected "
+        f"and request_player.surface==s then "
+        f"origin=request_player.position "
+        f"else origin=game.forces.player.get_spawn_position(s) end end;"
         f"local r=prototypes.recipe[{item_lua}];"
         f"if not r then rcon.print('ERROR: Recipe not found') return end;"
         f"if s.planet and s.planet.name=='aquilo' then "
@@ -482,13 +541,43 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"return a.name<b.name end);"
         f"if #candidates==0 then "
         f"rcon.print('ERROR: No compatible crafting machine') return end;"
-        f"local ax={ax};local ay={ay};"
+        f"local max_search_radius={production_cell_search_max_radius};"
+        f"local max_search_candidates={production_cell_search_max_candidates};"
+        f"local function direction_ok(dx,dy) "
+        f"if direction=='' then return true end;"
+        f"if direction=='north' then return dy<0 and math.abs(dx)<=math.abs(dy) end;"
+        f"if direction=='north-east' then return dx>0 and dy<0 end;"
+        f"if direction=='east' then return dx>0 and math.abs(dy)<=math.abs(dx) end;"
+        f"if direction=='south-east' then return dx>0 and dy>0 end;"
+        f"if direction=='south' then return dy>0 and math.abs(dx)<=math.abs(dy) end;"
+        f"if direction=='south-west' then return dx<0 and dy>0 end;"
+        f"if direction=='west' then return dx<0 and math.abs(dy)<=math.abs(dx) end;"
+        f"return dx<0 and dy<0 end;"
         f"local pole_proto=prototypes.entity['medium-electric-pole'];"
         f"if not pole_proto then "
         f"rcon.print('ERROR: medium-electric-pole not found') return end;"
         f"local last_error='No suitable compatible crafting machine';"
         f"for _,e in ipairs(candidates) do "
         f"local en=e.name;local w=e.tile_width;local h=e.tile_height;"
+        f"local anchors={{}};"
+        f"if explicit then anchors[1]={{explicit_ax,explicit_ay}} else "
+        f"local step_x=w+4;local step_y=h+1;"
+        f"local base_x=math.floor(origin.x-w/2);"
+        f"local base_y=math.floor(origin.y-h/2);"
+        f"local max_ring=math.ceil(max_search_radius/math.min(step_x,step_y));"
+        f"for ring=0,max_ring do "
+        f"if #anchors>=max_search_candidates then break end;"
+        f"for gy=-ring,ring do "
+        f"if #anchors>=max_search_candidates then break end;"
+        f"for gx=-ring,ring do "
+        f"if #anchors>=max_search_candidates then break end;"
+        f"if math.max(math.abs(gx),math.abs(gy))==ring then "
+        f"local dx=gx*step_x;local dy=gy*step_y;"
+        f"if math.max(math.abs(dx),math.abs(dy))<=max_search_radius "
+        f"and direction_ok(dx,dy) then "
+        f"anchors[#anchors+1]={{base_x+dx,base_y+dy}} end end end end end end;"
+        f"for _,anchor in ipairs(anchors) do "
+        f"local ax=anchor[1];local ay=anchor[2];"
         f"local cx=ax+w/2;local cy=ay+h/2;"
         f"local row=ay+math.floor(h/2)+0.5;"
         f"local pole_pos={{ax+math.floor(w/2)+0.5,ay-0.5}};"
@@ -623,9 +712,11 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local encoded={{}};for _,pos in ipairs(chain) do "
         f"encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
         f"rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
-        f"','..table.concat(encoded,';')) "
-        f"return end end end end end;"
-        f"rcon.print('ERROR: '..last_error)"
+        f"','..table.concat(encoded,';')..','..s.name) "
+        f"return end end end end end end;"
+        f"if explicit then rcon.print('ERROR: '..last_error) "
+        f"else rcon.print('ERROR: No suitable production-cell location within "
+        f"'..max_search_radius..' tiles (last: '..last_error..')') end"
     )
 
     response = client.run(phase1, retry=True)
@@ -643,7 +734,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     except (IndexError, ValueError):
         return "ERROR: Invalid location response"
     if (
-        len(parts) not in (5, 6)
+        len(parts) not in (5, 6, 7)
         or not math.isfinite(anchor_ax_value)
         or not math.isfinite(anchor_ay_value)
         or not anchor_ax_value.is_integer()
@@ -653,8 +744,24 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         or not en
     ):
         return "ERROR: Invalid location response"
+    resolved_surface = surface
+    if len(parts) == 7:
+        resolved_surface = parts[6]
+        if (
+            not resolved_surface
+            or any(
+                not (
+                    char.islower()
+                    or char.isdigit()
+                    or char in "-_"
+                )
+                for char in resolved_surface
+            )
+            or (surface != "current" and resolved_surface != surface)
+        ):
+            return "ERROR: Invalid location response"
     extensions = []
-    if len(parts) == 6 and parts[5]:
+    if len(parts) >= 6 and parts[5]:
         for encoded in parts[5].split(";"):
             try:
                 px_text, py_text = encoded.split(":")
@@ -680,10 +787,11 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     extensions_lua = "{" + ",".join(
         f"{{{px},{py}}}" for px, py in extensions
     ) + "}"
+    phase2_surface_lua = json.dumps(resolved_surface)
 
     phase2 = (
         f"/silent-command "
-        f"local s=game.surfaces[{surface_lua}];"
+        f"local s=game.surfaces[{phase2_surface_lua}];"
         f"local x={anchor_ax};local y={anchor_ay};"
         f"local w={anchor_w};local h={anchor_h};"
         f"local cx=x+w/2;local cy=y+h/2;"
@@ -1108,14 +1216,20 @@ def build_classification_prompt(username, message, history_text):
         "not explicitly say 'logistic network'. Use surface 'all' when asked about "
         "anywhere, everywhere, all planets, or the whole solar system. Examples: "
         "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor.\n"
-        "- PRODUCE|surface|item-name|[gps=x,y,surface] — place a compact "
+        "- PRODUCE|surface|item-name|optional-location — place a compact "
         "production cell with a crafting machine, requester and provider chests, "
         "two inserters, and a power pole. Use lowercase internal names when the "
         "current player asks Jimbo to make, produce, craft, build, or set up "
         "manufacturing of a specific item. Copy an explicit player-supplied GPS "
-        "map ping exactly; never invent or adjust coordinates. If the player gives "
-        "no explicit GPS ping, including only a relative direction, leave the "
-        "fourth field empty so Jimbo can ask for a map ping. Example: "
+        "map ping exactly; never invent or adjust coordinates. Otherwise use "
+        "the normalized location 'view' for 'here', 'where I am looking', or the "
+        "current remote view; use 'standing' only for the player's physical "
+        "character position; or use one normalized direction: north, north-east, "
+        "east, south-east, south, south-west, west, north-west. Directions are "
+        "relative to the current view. Use an empty fourth field when no location "
+        "was supplied. Use surface 'current' when the request is relative to the "
+        "player and does not name a surface. Examples: "
+        "PRODUCE|current|electronic-circuit|view and "
         "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis].\n"
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
@@ -1138,9 +1252,10 @@ def build_classification_prompt(username, message, history_text):
         "Do not use this for where an item or material comes from; a planet list "
         "does not establish material sources. Use NONE for established Factorio "
         "knowledge or query relevant prototypes when live data is needed.\n"
-        "- PRODUCE|surface|item-name|optional-gps — the current player asks Jimbo "
-        "to place a production cell for a specific item. Use their explicit GPS "
-        "ping as the fourth field, or an empty fourth field when none was supplied.\n"
+        "- PRODUCE|surface|item-name|optional-location — the current player asks "
+        "Jimbo to place a production cell for a specific item. Use their explicit "
+        "GPS ping, view, standing, a normalized direction, or an empty fourth "
+        "field as described above.\n"
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
         "- /<Factorio command> — an executable slash command when the player asks "

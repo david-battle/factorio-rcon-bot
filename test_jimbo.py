@@ -625,7 +625,7 @@ class DialogueTests(unittest.TestCase):
         )
 
         self.assertIn(
-            "PRODUCE|surface|item-name|[gps=x,y,surface]", prompt
+            "PRODUCE|surface|item-name|optional-location", prompt
         )
         self.assertIn(
             "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis]",
@@ -633,8 +633,12 @@ class DialogueTests(unittest.TestCase):
         )
         self.assertIn("Copy an explicit player-supplied GPS", prompt)
         self.assertIn("never invent or adjust coordinates", prompt)
-        self.assertIn("including only a relative direction", prompt)
-        self.assertIn("leave the fourth field empty", prompt)
+        self.assertIn("normalized direction", prompt)
+        self.assertIn("north-east", prompt)
+        self.assertIn("empty fourth field", prompt)
+        self.assertIn("'view' for 'here'", prompt)
+        self.assertIn("'standing' only for the player's physical", prompt)
+        self.assertIn("surface 'current'", prompt)
 
     def test_production_reply_requires_grounded_success_or_failure(self):
         success_prompt = jimbo.build_reply_prompt(
@@ -789,6 +793,37 @@ class ProduceCellTests(unittest.TestCase):
             result, ("fulgora", "holmium-plate", "[gps=10,20,fulgora]")
         )
 
+    def test_parse_produce_decision_with_normalized_direction(self):
+        for direction in jimbo.production_cell_directions:
+            with self.subTest(direction=direction):
+                self.assertEqual(
+                    jimbo.parse_produce_decision(
+                        f"PRODUCE|nauvis|iron-plate|{direction}"
+                    ),
+                    ("nauvis", "iron-plate", direction),
+                )
+
+    def test_parse_produce_decision_distinguishes_view_and_standing(self):
+        self.assertEqual(
+            jimbo.parse_produce_decision(
+                "PRODUCE|current|iron-plate|view"
+            ),
+            ("current", "iron-plate", "view"),
+        )
+        self.assertEqual(
+            jimbo.parse_produce_decision(
+                "PRODUCE|current|iron-plate|standing"
+            ),
+            ("current", "iron-plate", "standing"),
+        )
+
+    def test_parse_produce_decision_rejects_unstructured_location(self):
+        self.assertIsNone(
+            jimbo.parse_produce_decision(
+                "PRODUCE|nauvis|iron-plate|somewhere-over-there"
+            )
+        )
+
     def test_parse_produce_decision_invalid_prefix(self):
         self.assertIsNone(jimbo.parse_produce_decision("MAKE|nauvis|iron-plate"))
 
@@ -898,12 +933,96 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_handles_empty_hint(self):
         client = Mock()
+        client.run.return_value = (
+            "ERROR: No suitable production-cell location within 128 tiles "
+            "(last: No logistic network coverage)"
+        )
         result = jimbo.place_production_cell(
             client, "nauvis", "iron-plate", "", "dlbattle"
         )
 
-        self.assertEqual(result, "ERROR: A GPS location hint is currently required")
-        client.run.assert_not_called()
+        phase1 = client.run.call_args.args[0]
+        self.assertIn("request_player.position", phase1)
+        self.assertIn("game.forces.player.get_spawn_position(s)", phase1)
+        self.assertIn("No suitable production-cell location within", result)
+        client.run.assert_called_once()
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+
+    def test_place_cell_uses_bounded_footprint_aware_location_search(self):
+        client = Mock()
+        client.run.return_value = (
+            "ERROR: No suitable production-cell location within 128 tiles"
+        )
+
+        jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "", "dlbattle"
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertEqual(jimbo.production_cell_search_max_radius, 128)
+        self.assertEqual(jimbo.production_cell_search_max_candidates, 256)
+        self.assertIn("local max_search_radius=128", phase1)
+        self.assertIn("local max_search_candidates=256", phase1)
+        self.assertIn("local step_x=w+4;local step_y=h+1", phase1)
+        self.assertIn("for ring=0,max_ring", phase1)
+        self.assertIn("#anchors>=max_search_candidates", phase1)
+        self.assertIn("math.max(math.abs(dx),math.abs(dy))<=max_search_radius", phase1)
+
+    def test_place_cell_named_direction_requires_online_player_on_surface(self):
+        client = Mock()
+        client.run.return_value = (
+            "ERROR: View-relative location requires the requesting player "
+            "online on nauvis"
+        )
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "north-east", "dlbattle"
+        )
+
+        phase1 = client.run.call_args.args[0]
+        self.assertIn('local direction="north-east"', phase1)
+        self.assertIn("not request_player.connected", phase1)
+        self.assertIn("request_player.surface~=s", phase1)
+        self.assertIn("direction=='north-east'", phase1)
+        self.assertIn("View-relative location requires", result)
+
+    def test_place_cell_distinguishes_remote_view_and_physical_position(self):
+        view_client = Mock()
+        view_client.run.return_value = "ERROR: blocked"
+        standing_client = Mock()
+        standing_client.run.return_value = "ERROR: blocked"
+
+        jimbo.place_production_cell(
+            view_client, "current", "iron-plate", "view", "dlbattle"
+        )
+        jimbo.place_production_cell(
+            standing_client, "current", "iron-plate", "standing", "dlbattle"
+        )
+
+        view_phase1 = view_client.run.call_args.args[0]
+        standing_phase1 = standing_client.run.call_args.args[0]
+        self.assertIn(
+            "s=request_player.physical_surface else s=request_player.surface",
+            view_phase1,
+        )
+        self.assertIn("origin=request_player.position", view_phase1)
+        self.assertIn("origin=request_player.physical_position", standing_phase1)
+        self.assertIn("request_player.physical_surface~=s", standing_phase1)
+
+    def test_place_cell_carries_resolved_current_surface_into_mutation(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3,,fulgora",
+            "SUCCESS: placed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "current", "iron-plate", "view", "dlbattle"
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn('local s=game.surfaces["fulgora"]', phase2)
+        self.assertEqual(result, "SUCCESS: placed")
 
     def test_place_cell_requires_requesting_player(self):
         client = Mock()
@@ -1256,7 +1375,7 @@ class ProduceCellTests(unittest.TestCase):
         )
 
         phase1 = client.run.call_args.args[0]
-        self.assertIn("local ax=10;local ay=-21", phase1)
+        self.assertIn("local explicit_ax=10;local explicit_ay=-21", phase1)
 
     def test_place_cell_phase2_reports_incomplete_rollback(self):
         client = Mock()
