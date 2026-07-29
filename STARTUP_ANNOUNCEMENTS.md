@@ -98,3 +98,4 @@ listed as announcements.
 - **15:37:32:** I can now handle requests to place item-only production cells at supplied map pings, reporting the verified cell or explaining why placement was rejected.
 - **15:54:03:** I can now bridge short power gaps for production cells with up to two fully checked extension poles, rolling back the whole plan if any ghost fails.
 - **16:10:20:** I can now find nearby clear locations for production cells from your current view, your physical position, a named direction, or the planet spawn while keeping every existing placement check.
+- **16:32:46:** I can now place production cells on Aquilo when every freezable component is beside a live heat source, and I recheck that heat immediately before placing anything.

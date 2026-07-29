@@ -19,8 +19,8 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
   actual force spawn when an omitted location has no matching online view;
 - strictly validates the GPS coordinates, requires its surface when present to
   match the requested surface, and floors the coordinates to a bottom-left tile;
-- rejects locked recipes, fluid ingredients or products, recipe/surface
-  mismatches, and unheated Aquilo cells before mutation;
+- rejects locked recipes, fluid ingredients or products, and recipe/surface
+  mismatches before mutation;
 - resolves compatible placeable crafting machines through
   `r.categories` and `prototypes.get_entity_filtered()` and prefers faster,
   smaller candidates;
@@ -31,6 +31,9 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
 - searches deterministic footprint-sized expanding rings, bounded to 128 tiles
   and 256 anchors per compatible machine, and applies the requested directional
   sector before running the same placement checks;
+- on Aquilo, requires each freezable planned component to touch an existing
+  heat pipe, reactor, or heat interface at 30°C or warmer, while allowing
+  non-overlapping heat infrastructure to remain inside the outer cell rectangle;
 - repeats every component preflight immediately before mutation;
 - creates the six base ghosts plus any extension poles without mutation retry,
   copies the machine recipe settings to the requester chest through the
@@ -44,7 +47,6 @@ The following details are deliberately not implemented yet:
   blocked;
 - caching live prototype dimensions across requests (Step 6);
 - fluid-capable cells with pipe or barrel handling;
-- heated cells for Aquilo;
 - independent read-only post-mutation verification.
 
 ## Cell Layout
@@ -145,8 +147,8 @@ The first Lua command validates bounded candidates without changing the world:
 
 1. Resolve the requested surface. `current` means the connected player's viewed
    surface, except `standing` uses their physical surface. Resolve the recipe
-   and reject fluid ingredients or products, locked recipes, invalid recipe
-   surface conditions, and unheated Aquilo placement.
+   and reject fluid ingredients or products, locked recipes, and invalid recipe
+   surface conditions.
 2. Read every recipe category from `r.categories`. Use the live
    `crafting-category` entity-prototype filter to find compatible placeable
    assembling machines and furnaces, excluding unrelated fixed-recipe machines.
@@ -175,6 +177,11 @@ The first Lua command validates bounded candidates without changing the world:
       or breadth-first search half-tile pole centers for at most two extension
       poles. Every extension candidate must be outside the complete cell box,
       unoccupied, placeable as a ghost, and in construction coverage.
+   f. On Aquilo, inspect each planned prototype's live `heating_energy`. Chests
+      and poles with zero heating demand need no heat; the building and each
+      inserter independently need any part of their collision box adjacent,
+      including diagonally, to a heat source whose live temperature is at least
+      30°C. The whole building footprint does not need to touch heat.
 6. Return the first suitable anchor, dimensions, building prototype, exact
    extension-pole positions, and resolved real surface, or the last grounded
    failure.
@@ -191,9 +198,11 @@ in one `pcall`:
    require the building dimensions to still match Phase 1.
 2. Repeat the complete bounding-box occupancy scan, every per-entity
    `can_place_entity()` check, logistic and construction coverage checks, and
-   planned-pole supply checks. Recheck each extension position for occupancy,
-   placement, construction coverage, pairwise wire reach, and a final live
-   powered-pole connection.
+   planned-pole supply checks. On Aquilo, recheck every freezable component's
+   live heat adjacency and ensure retained heat sources overlap no exact planned
+   component. Recheck each extension position for occupancy, placement,
+   construction coverage, pairwise wire reach, and a final live powered-pole
+   connection.
 3. Create the building at `(x+w/2, y+h/2)`, the requester and provider at
    `(x-1.5, row)` and `(x+w+1.5, row)`, the two west-facing inserters at
    `(x-0.5, row)` and `(x+w+0.5, row)`, and the pole at
@@ -283,6 +292,16 @@ the requested surface's force spawn. The deterministic expanding-ring search
 uses full-cell footprint steps and is bounded to 128 tiles and 256 anchors per
 compatible machine.
 
+### Aquilo heat refinement
+
+Implemented after Step 5. The blanket Aquilo rejection is gone. Phase 1 and
+Phase 2 use live prototype collision boxes, `heating_energy`, source
+`heating_radius`, and source temperature. Any overlap with the radius counts, so
+one adjacent building cell is sufficient; inserters are checked independently,
+while zero-demand chests and poles are exempt. Heat sources may remain in unused
+space inside the outer cell rectangle, but exact component overlap is still
+rejected before `can_place_entity()`.
+
 ### Step 6: Prototype resolution caching and refinement
 
 The placement function already resolves compatible machines from every live
@@ -299,8 +318,12 @@ restart because mods or game updates may change the prototypes.
   placement checks alone can accept some infrastructure overlaps.
 - Logistic coverage is required at the requester, and construction coverage is
   required at every planned entity.
-- Fluid recipes and unheated Aquilo cells are rejected because the six-entity
-  layout has neither pipe connections nor heat infrastructure.
+- Fluid recipes are rejected because the six-entity layout has no pipe
+  connections.
+- On Aquilo, every component with nonzero prototype `heating_energy` must touch
+  an existing heat source at 30°C or warmer in both phases. Heat sources may
+  remain inside unused portions of the outer rectangle, but exact overlap with
+  any planned entity is rejected explicitly.
 - The entire mutation is wrapped in `pcall`; on failure all new ghosts are
   destroyed in reverse order, survivors are counted, and no success is printed.
 - Settings verification (`copy_settings` + section inspection) happens in
@@ -318,7 +341,8 @@ restart because mods or game updates may change the prototypes.
 | Surface does not exist | Return error; no mutation |
 | Recipe not found, locked, or invalid for the surface | Return error; no mutation |
 | Recipe has a fluid ingredient or product | Return unsupported error; no mutation |
-| Surface is Aquilo | Return unsupported-heating error; no mutation |
+| Aquilo candidate lacks ≥30°C heat adjacency for a freezable component | Reject the candidate; no mutation |
+| Retained heat source overlaps an exact planned component | Reject the candidate; no mutation |
 | No compatible placeable crafting machine | Return error; no mutation |
 | Explicit GPS is invalid or names another surface | Return error; no RCON or mutation |
 | `view`, `standing`, direction, or `current` needs an offline player | Return grounded error; no mutation |
@@ -347,7 +371,8 @@ The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
   resolved-current-surface transfer, spawn fallback, direction filtering, and
   the radius/candidate bounds;
 - live category-based machine resolution, dimensions, half-tile geometry,
-  inserter directions, fluid/Aquilo/surface-condition rejection, power,
+  inserter directions, fluid/surface-condition rejection, Aquilo heat
+  requirements and source-overlap handling, power,
   logistics, construction coverage, and both-phase placement checks;
 - bounded extension search, strict serialized-chain validation, Phase 2
   extension rechecks, and extension ghost creation;

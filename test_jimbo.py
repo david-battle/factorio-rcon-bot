@@ -1334,9 +1334,12 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("condition.min and value<condition.min", phase1)
         self.assertIn("condition.max and value>condition.max", phase1)
 
-    def test_place_cell_rejects_unheated_aquilo_cells(self):
+    def test_place_cell_requires_live_heat_for_freezable_aquilo_components(self):
         client = Mock()
-        client.run.return_value = "ERROR: Unheated cells are not supported on Aquilo"
+        client.run.return_value = (
+            "ERROR: No suitable production-cell location within 128 tiles "
+            "(last: No heat coverage for assembling-machine-3)"
+        )
 
         result = jimbo.place_production_cell(
             client, "aquilo", "electronic-circuit", "[gps=10,20,aquilo]",
@@ -1344,9 +1347,41 @@ class ProduceCellTests(unittest.TestCase):
         )
 
         phase1 = client.run.call_args.args[0]
-        self.assertIn("s.planet.name=='aquilo'", phase1)
-        self.assertEqual(result, "ERROR: Unheated cells are not supported on Aquilo")
+        self.assertIn("local requires_heat=s.planet and s.planet.name=='aquilo'", phase1)
+        self.assertIn("p.heating_energy<=0", phase1)
+        self.assertIn("source.prototype.heating_radius", phase1)
+        self.assertIn("source.temperature>=30", phase1)
+        self.assertIn("local function plan_is_heated(plan)", phase1)
+        self.assertIn("local function plan_overlaps_heat_source(plan)", phase1)
+        self.assertIn("local function count_blockers(area)", phase1)
+        self.assertIn("if not heat_source_type[existing.type]", phase1)
+        self.assertIn("No heat coverage for", phase1)
+        self.assertNotIn("Unheated cells are not supported on Aquilo", phase1)
+        self.assertIn("No heat coverage", result)
         self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_rechecks_aquilo_heat_before_mutation(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3,,aquilo",
+            "ERROR: no heat coverage for inserter",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "aquilo", "electronic-circuit", "[gps=10,20,aquilo]",
+            "dlbattle",
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("local requires_heat=s.planet and s.planet.name=='aquilo'", phase2)
+        self.assertIn("p.heating_energy<=0", phase2)
+        self.assertIn("source.prototype.heating_radius", phase2)
+        self.assertIn("source.temperature>=30", phase2)
+        self.assertIn("plan_overlaps_heat_source(plan)", phase2)
+        self.assertIn("local count=count_blockers(area)", phase2)
+        self.assertIn("error('no heat coverage for '..plan.name)", phase2)
+        self.assertEqual(result, "ERROR: no heat coverage for inserter")
+        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
 
     def test_place_cell_rechecks_occupancy_before_mutation(self):
         client = Mock()

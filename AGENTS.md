@@ -90,8 +90,10 @@ Production-cell placement uses `PRODUCE|surface|item-name|location`. Location
 may be an explicit GPS ping, the current remote view, the physical character
 position, a normalized direction, or an automatic bounded player/spawn search.
 A fixed cell may add at most two fully preflighted extension poles to reach live
-power. Preserve the verified non-retried mutation and complete rollback contract
-in `PROD_CELL_PLACE.md`.
+power. On Aquilo, every freezable component must touch a live heat source at
+30°C or warmer; non-overlapping heat infrastructure may remain inside the cell's
+outer rectangle. Preserve the verified non-retried mutation and complete
+rollback contract in `PROD_CELL_PLACE.md`.
 
 An explicit Jimbo request that objectively fails during classification, RCON,
 reply composition, or delivery gets a short deterministic failure acknowledgment

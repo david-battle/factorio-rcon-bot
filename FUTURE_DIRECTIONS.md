@@ -359,8 +359,12 @@ valid neighboring machines.
 The first explicit-location implementation deliberately supports item-only
 recipes. Live prototype inspection showed that processing units, holmium plates,
 and superconductors all require fluid inputs, so a chest-and-inserter-only cell
-must reject them until it has a pipe-aware layout. Aquilo also needs a separately
-validated heat supply; do not place the unheated six-entity layout there.
+must reject them until it has a pipe-aware layout. Aquilo placement is supported
+only beside existing live heat infrastructure: every planned prototype with
+nonzero `heating_energy` must have any part of its collision box within the
+source's live `heating_radius`, and the source must be at least 30°C. Recheck
+this immediately before mutation. Existing heat sources may occupy unused space
+inside the outer cell rectangle, but must not overlap an exact planned component.
 
 In Factorio 2.1, use every entry in `LuaRecipePrototype.categories` and the
 `crafting-category` entity-prototype filter to discover compatible crafting
