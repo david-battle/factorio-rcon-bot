@@ -417,6 +417,15 @@ construction coverage, verify its quality-aware supply area, require copper-wire
 reach to a live network, and include its ghost in rollback. Once built,
 `assembler.is_connected_to_electric_network()` is the definitive power check.
 
+Named production-cell directions currently use the player's current view as
+their origin. The structured location field can express `standing` or `north`,
+but not both. This caused a live Aquilo request for “north of my current
+location” to exclude a valid heated nook that was north of the physical
+character but west of the remote view; leaving map view made the same request
+succeed. A future refinement should preserve both origin and direction, such as
+`standing:north` versus `view:north`, while retaining the existing explicit
+`view`, `standing`, direction, and GPS forms for compatibility.
+
 ### Automatic Research Control
 
 The current save's circuit-driven research is controlled by the `set_research`

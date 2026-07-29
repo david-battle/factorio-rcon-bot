@@ -2,149 +2,115 @@
 
 ## Verified State
 
-- Branch: `main`. HEAD before this post-handoff documentation work was `f6aeca7`
-  (`Harden production cells and contain OpenCode temp files`); use `git log -1`
-  for the new handoff commit created by the procedure.
-- Jimbo restarted successfully as PID `211363` at 2026-07-29 14:17 local time
-  with the `openai/gpt-5.4-mini` profile, but a post-handoff audit at 14:51 found
-  that PID gone and no replacement Jimbo process. `jimbo.log` ends at 14:48:50
-  without a traceback. The cause has not been diagnosed; do not describe Jimbo
-  as running or restart it without current verification and user direction.
-- Production-cell Steps 1 and 2 are committed but still unreachable from player
-  chat: the classifier, dispatch, and reply integration in Step 3 are not wired.
-- `AGENTS.md` is authoritative. Read `OPERATIONS.md` for runtime/provider
-  procedures, `PROD_CELL_PLACE.md` for the production-cell contract, and
-  `FUTURE_DIRECTIONS.md` before feature work based on live findings.
+- Branch: `main`. HEAD before this handoff documentation is `39f09e9`
+  (`Fit production cells in Aquilo heat rings`); use `git log -1` for the
+  handoff commit created by the procedure.
+- The tracked worktree was clean before this handoff. Local `main` was seven
+  commits ahead of `origin/main`; nothing was pushed.
+- Jimbo is running as the sole `python -u jimbo.py` process, PID `237127`,
+  started 2026-07-29 16:50:59 local time. It uses the centrally selected
+  `openai/gpt-5.4-mini` profile.
+- The startup announcement was observed at 16:51:00. Its tracked summary is:
+  “I can now fit Aquilo production cells inside compact heated rings, using the
+  surrounding roboport and existing electric coverage instead of forcing my
+  standard pole layout.”
+- `AGENTS.md` is authoritative. Read `OPERATIONS.md` for runtime procedures,
+  `PROD_CELL_PLACE.md` for the complete placement contract, and
+  `FUTURE_DIRECTIONS.md` before extending behavior from live findings.
 
 ## Completed Work
 
-### Production-cell Steps 1 and 2
+Production-cell Steps 1 through 5 are implemented and reachable from chat:
 
-The initial implementation was re-reviewed against Factorio 2.1.12 and corrected:
+- `PRODUCE|surface|item|location` supports exact GPS, current view, physical
+  standing position, named directions, and bounded automatic search.
+- Item-only compatible machines are resolved from live recipe categories and
+  prototype dimensions. Fluid recipes remain deliberately unsupported.
+- The standard six-ghost layout can add at most two fully preflighted extension
+  poles to reach live power.
+- Aquilo accepts existing heat infrastructure at 30°C or warmer, checks each
+  freezable component independently, and rechecks heat before mutation.
+- Aquilo first tries a five-ghost heated-ring layout: building at the north/top,
+  inserters below it, requester and provider chests at the south/bottom, and no
+  new pole when existing power covers the building and both inserters.
+- Phase 2 remains `retry=False`, revalidates all mutable assumptions, verifies
+  recipe, requester filters, and construction registration, and rolls back every
+  newly created ghost on failure.
 
-- Strict GPS parsing now requires an explicit candidate and requesting player,
-  rejects nonfinite or mismatched-surface coordinates, and floors to an integer
-  bottom-left tile anchor.
-- Phase 1 rejects locked recipes, invalid surface conditions, fluid ingredients
-  or products, and unheated Aquilo cells. It resolves compatible placeable
-  machines from every `LuaRecipePrototype.categories` entry with the live
-  `crafting-category` prototype filter; it no longer uses the nonexistent
-  singular `category` or treats the product entity as the crafting machine.
-- Half-tile entity centers and west-facing inserters now match live entity
-  geometry. Both phases scan the full bounding box and check every component
-  with `script_ghost`, requester logistic coverage, full-cell construction
-  coverage, planned-pole supply, and mutual wire reach to live power.
-- Phase 2 revalidates prototypes and dimensions immediately before mutation,
-  creates the six ghosts in one `pcall`, verifies the assigned recipe, copies
-  recipe settings through the requesting player, checks every ingredient filter
-  and construction registration, and rolls back in reverse order with survivor
-  reporting. Mutation remains `retry=False`.
-- `PROD_CELL_PLACE.md`, `FUTURE_DIRECTIONS.md`, and `OPERATIONS.md` now describe
-  the implemented limits and live Factorio 2.1 findings accurately.
+The commits after `origin/main` contain the completed rollout:
 
-Live validation was read-only: Phase 1 selected
-`ANCHOR:-622,51,4,4,electromagnetic-plant` for electronic circuits on Nauvis;
-the generated Phase 2 parsed successfully in an unreachable branch; its complete
-preflight executed successfully when truncated immediately before
-`create_entity`; and processing units returned the expected unsupported-fluid
-error. No production-cell ghosts or entities were created.
+- `f6aeca7` hardens initial placement and contains OpenCode temp files.
+- `921f2b5` records blueprint delivery findings.
+- `fcd7b61` wires production cells into chat.
+- `6288740` adds bounded power-extension poles.
+- `af054bc` adds bounded/player-relative location search.
+- `1c70b8f` adds live Aquilo heat validation.
+- `39f09e9` adds the compact heated-ring layout.
 
-### OpenCode temporary-file containment
+## Live Validation
 
-- OpenCode 1.18.9 was identified as the source of roughly 1,410 leaked hidden
-  FFF `libfff_c` copies that had consumed about 7.9 GB in `/tmp`.
-- `ask_opencode()` now gives every invocation a private
-  `tempfile.TemporaryDirectory` through `TMPDIR`; cleanup occurs after success or
-  failure. The historical artifacts were fingerprinted and permanently deleted.
-- Jimbo was restarted with the fix. Subsequent real model activity completed
-  with no leaked top-level `.so`/`.node` file and no abandoned private TMPDIR.
-- `OPERATIONS.md` records the diagnosis, direct-OpenAI alternative, and the
-  verified `nohup setsid` launch requirement. A plain `nohup` launch from the
-  development runner was reaped when its launcher exited.
-
-### Announcement history
-
-- `STARTUP_ANNOUNCEMENTS.md` is a tracked developer/operator history containing
-  30 recovered player-visible update announcements: all 28 handcrafted summaries
-  in the available server log plus two earlier model-generated announcements.
-- `AGENTS.md` now requires the exact new `startup_change_summary` text to be
-  appended to that history in the same edit. Generic restarts are excluded.
-
-### Post-handoff landfill dotboard experiment
-
-- Morgan3rd requested a repeating sparse landfill board for Spidertron travel.
-  A direct Codex RCON experiment delivered and verified a tile-only blueprint
-  with 16 single landfill dots on a five-tile square lattice in a 20 x 20
-  relative snap cell. Morgan reported that it looked repeatable; actual
-  Spidertron traversal remains untested.
-- `FUTURE_DIRECTIONS.md` records the feature request, reference and prototype
-  geometry, safe creation and rollback requirements, and opaque chat-link
-  behavior. `OPERATIONS.md` records that remote-view players can require access
-  through their physical character inventory.
+- At 16:56:54, dlbattle repeated: “Jimbo please place a production cell for
+  pump jacks north of my current location.”
+- At 16:57:14, the running Jimbo reported verified success at
+  `[gps=-21,-8,aquilo]` with an `assembling-machine-3`, requester chest, two
+  inserters, and passive provider chest. The compact layout reused the existing
+  substation; no cell pole was added.
+- The user confirmed the blueprint appeared and began crafting the items needed
+  to fill it. Other players also observed it in game.
+- Earlier direct assistant RCON work was read-only or parse-only. The actual
+  successful mutation was performed by the running Jimbo process.
 
 ## Validation
 
-Prior code validation for `f6aeca7`:
-
 - `python -m py_compile jimbo.py test_jimbo.py`
-- `python -m unittest test_jimbo` — 67 deterministic tests pass.
-- Live Factorio version: `2.1.12`.
-- Runtime containment verified after real post-restart model calls; `/tmp` had no
-  matching leaked artifacts or abandoned `jimbo-opencode-*` directories.
-
-Current documentation-only handoff:
-
+- `python -m unittest test_jimbo` — 83 deterministic tests pass.
+- The exact Aquilo Phase 1 preflight returned
+  `ANCHOR:-21,-8,3,3,assembling-machine-3,,aquilo,aquilo-compact`.
+- Factorio parsed the full Phase 2 command and executed its complete preflight
+  with creation disabled; the destination contained zero ghosts afterward.
+- The later real chat request completed Phase 2 successfully as described above.
 - `git diff --check`
-- No Python code changed, so the code test suite was not rerun.
 
 ## Remaining Work
 
-### Production-cell integration and deferred extensions
+### Directional origin semantics
 
-| Step | Description | Status |
-|---|---|---|
-| 1 | Explicit GPS preflight and machine resolution | complete |
-| 2 | Ghost placement, verification, rollback | complete |
-| 3 | Classifier prompt, decision branch, dispatch, reply hint | next, awaiting user confirmation |
-| 4 | Extension-pole chain or shifted layout | deferred |
-| 5 | Automatic/player-relative location search without GPS | deferred |
-| 6 | Optional prototype caching and selection refinement | deferred |
+Named directions currently always use the current view as their origin. The
+single structured location field can encode either `standing` or `north`, but
+not both. During the Aquilo test, the valid nook was north of the physical
+character but west of the remote view, so `north` excluded it. Leaving map view
+made the view and physical positions coincide and the same request succeeded.
 
-The standalone `parse_produce_decision()` currently returns four fields,
-including a redundant GPS surface, while `place_production_cell()` expects
-`surface`, `item`, `hint`, plus keyword `requesting_player`. Step 3 must reconcile
-that shape rather than blindly splatting the parser result. Preserve deterministic
-failure acknowledgments and never replay Phase 2.
+If the user chooses to refine this, preserve both origin and direction with a
+backward-compatible form such as `standing:north` and `view:north`. Update the
+classifier, strict parser, Phase 1 surface/origin resolution, tests, and
+`PROD_CELL_PLACE.md`. Do not silently redefine every existing direction without
+considering requests that intentionally refer to remote view.
 
-Fluid-capable layouts, Aquilo heat infrastructure, and an independent read-only
-post-mutation success check also remain deliberately unimplemented.
+### Deliberately deferred
 
-The user explicitly wants a fresh context before any more production-cell work.
-Do not begin Step 3 without renewed confirmation in that fresh context.
-
-### Alert awareness
-
-`ALERT_AWARENESS.md` remains a design only. Implementation is on hold behind the
-production-cell work.
+- Step 6 prototype caching or explicit machine-selection policy.
+- Fluid-capable production-cell layouts.
+- Shifting the fixed standard cell or pole layout when blocked.
+- Independent read-only post-mutation verification.
 
 ## Operational Caveats
 
-- Do not restart Jimbo or Factorio merely to resume work. PID `211363` is stale;
-  diagnose the unexplained stop or obtain user direction before starting a new
-  Jimbo process.
-- Use the detached launch procedure in `OPERATIONS.md` and verify the new PID
-  from a separate command session.
-- Do not delete hidden `/tmp` libraries without first fingerprinting exact
-  targets and confirming no process has them open.
+- Do not restart Jimbo or Factorio merely to resume work. Verify the PID and logs
+  first; use the detached `nohup setsid` procedure in `OPERATIONS.md` only when a
+  restart is actually required.
+- Any code change that will restart Jimbo must update
+  `startup_change_summary` and append its exact text to
+  `STARTUP_ANNOUNCEMENTS.md` in the same edit.
+- Never retry a production-cell mutation after an uncertain RCON disconnect.
 - Do not run live `test_ollama.py` while the Factorio client is using the GPU.
-- Credentials, logs, PID/state files, player data, and local caches remain
-  ignored and must not be staged.
+- Credentials, logs, PID/state files, player data, and local caches are ignored
+  and must not be staged.
 
 ## Natural Next Action
 
-In the fresh context, first verify the stopped Jimbo runtime separately and ask
-whether the user wants it diagnosed or restarted. Then ask whether to proceed
-with Step 3. Once confirmed, wire the existing parser and placement helper into
-classification, dispatch, and reply composition exactly as constrained by
-`PROD_CELL_PLACE.md`, then test the full chat flow without broadening into
-Steps 4–6.
+No production-cell task is currently required; the feature was shipped and
+verified in game. Await the user's next request. If they ask to fix the observed
+directional ambiguity, implement compound origin-plus-direction semantics as the
+smallest compatible refinement and repeat deterministic plus read-only live
+validation before restarting Jimbo.
