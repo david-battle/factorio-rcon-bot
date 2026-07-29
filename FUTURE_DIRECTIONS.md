@@ -124,6 +124,27 @@ Prototype values, technology effects, and similar factual questions should
 eventually use targeted RCON/Lua queries. Death tracking would require explicit
 game instrumentation or another reliable event source rather than model memory.
 
+Live chat on 2026-07-29 exposed the trust cost of leaving quantitative mechanics
+on the `NONE` path. Jimbo confidently estimated 2,000–3,000 scrap/min for 1,000
+electromagnetic science/min, two silos for 3,000 scrap/min, and a one-second silo
+animation without querying or calculating. Players responded with “Do NOT trust
+AI” and “this one especially.” A correction restored the immediate facts but
+did not restore confidence. Quantitative questions should therefore route to a
+small grounded calculation path that:
+
+1. queries live recipe products, shared probabilities, surface conditions,
+   force recipe productivity, machine base effects, item weight, rocket lift
+   weight, entity quality, and timing fields as relevant;
+2. states the assumptions and the few conversion factors that control the
+   result;
+3. separates a hard lower bound from a practical recommendation; and
+4. declines when the live data cannot support the calculation.
+
+Do not classify an export feasibility question as `PLATFORMS` merely because it
+mentions interplanetary shipping; a list of platform names says nothing about
+recipe feasibility or throughput. Also avoid Markdown emphasis in raw Factorio
+chat because it is delivered literally rather than rendered.
+
 The strongest product direction is a combination of event-aware context and
 natural situational awareness, including grounded production diagnosis. A useful
 first exploration would identify the small set of server conditions Jimbo should
@@ -304,6 +325,32 @@ mining drills.
 Large per-entity RCON reports can time out. Aggregate counts, status groups,
 buffers, and a few sample positions in Lua, or filter directly by prototype name,
 then run focused follow-up queries on the identified area.
+
+### Quantitative Recipe And Rocket Calculations
+
+Live Factorio 2.1.12 inspection established several useful calculation inputs.
+`electromagnetic-science-pack` requires `magnetic-field` exactly 99; the live
+properties were 99 on Fulgora, 90 on Nauvis, 25 on Gleba and Vulcanus, and 10 on
+Aquilo. Its final recipe is therefore Fulgora-only even though several
+intermediate recipes have no surface condition.
+
+Scrap recycling uses one shared random interval: holmium ore occupies 0.59–0.60,
+so its base expected yield is 1%. The live player force had
+`scrap-recycling.productivity_bonus=0.4`, and electromagnetic plants have 50%
+base productivity. Chaining the live science, supercapacitor, superconductor,
+electrolyte, holmium-plate, and holmium-solution recipes gives roughly 78,000
+scrap/min for 1,000 science/min before productivity modules. This is an
+assumption-specific calculation, not a permanent constant; recalculate from live
+bonuses and installed modules.
+
+The live rocket silo had lift weight 1,000,000 and scrap weight 2,000, so one
+rocket carries 500 scrap. Exporting 3,000 scrap/min requires six launches/min.
+Normal-quality Space Age silos have an animation-bound quick-launch interval of
+about 1,614 ticks (26.9 seconds), or about 2.23 launches/min, so the ideal lower
+bound is three fully supplied normal silos. Module speed cannot shorten the
+animation phases; silo quality can. Inspect actual silo qualities and ensure
+rocket-part production and loading sustain the bound before calling it a
+practical capacity.
 
 ### Logistic Group Mutation
 

@@ -80,6 +80,13 @@ The classifier defaults to SKIP unless the current message contains "Jimbo" so
 the bot does not interrupt player-to-player chat. No-RCON replies may also SKIP.
 Strip output lines beginning with `(Note:` or `(Corrected`.
 
+Quantitative or version-sensitive mechanics answers must come from relevant live
+RCON/prototype facts and explicit deterministic calculation. Do not use `NONE`
+to improvise rates, capacities, recipe requirements, surface restrictions, or
+timings. If the needed facts cannot be queried, say that the calculation is not
+grounded rather than presenting an estimate as fact. An unrelated platform or
+planet list is not evidence for the answer.
+
 Logistic availability uses `LOGISTICS|surface|item-name,item-name`; `all` scans
 every planetary surface. Keep results separated by surface and network, identify
 silo-connected networks, and report nonnegative available stock. Availability is

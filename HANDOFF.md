@@ -2,10 +2,10 @@
 
 ## Verified State
 
-- Branch: `main`. HEAD before this handoff documentation is `39f09e9`
-  (`Fit production cells in Aquilo heat rings`); use `git log -1` for the
+- Branch: `main`. HEAD before this handoff documentation is `e0cb57a`
+  (`Update production cell handoff`); use `git log -1` for the
   handoff commit created by the procedure.
-- The tracked worktree was clean before this handoff. Local `main` was seven
+- The tracked worktree was clean before this handoff. Local `main` was eight
   commits ahead of `origin/main`; nothing was pushed.
 - Jimbo is running as the sole `python -u jimbo.py` process, PID `237127`,
   started 2026-07-29 16:50:59 local time. It uses the centrally selected
@@ -46,6 +46,7 @@ The commits after `origin/main` contain the completed rollout:
 - `af054bc` adds bounded/player-relative location search.
 - `1c70b8f` adds live Aquilo heat validation.
 - `39f09e9` adds the compact heated-ring layout.
+- `e0cb57a` records the completed rollout and directional-origin limitation.
 
 ## Live Validation
 
@@ -60,6 +61,32 @@ The commits after `origin/main` contain the completed rollout:
 - Earlier direct assistant RCON work was read-only or parse-only. The actual
   successful mutation was performed by the running Jimbo process.
 
+## Player Feedback And Grounded Math
+
+After the placement work, Jimbo improvised several quantitative mechanics
+answers through `NONE` without RCON facts or calculations. It understated the
+scrap needed for 1,000 electromagnetic science/min, understated normal silo
+count for 3,000 scrap/min, and invented a one-second silo animation. Players
+responded with “Do NOT trust AI” and “this one especially.” The correction was
+accepted, but the durable issue is loss of trust from confident guessing.
+
+`AGENTS.md` now requires quantitative and version-sensitive answers to use live
+facts plus deterministic calculation or explicitly decline. `FUTURE_DIRECTIONS.md`
+records the observed feedback, recommended calculation flow, and verified live
+inputs:
+
+- electromagnetic science requires magnetic field exactly 99 and is
+  Fulgora-only;
+- current bonuses imply roughly 78,000 scrap/min for 1,000 science/min before
+  productivity modules;
+- one rocket carries 500 scrap;
+- 3,000 scrap/min means six launches/min and at least three fully supplied
+  normal-quality silos at the animation-bound 26.9-second quick cycle.
+
+Jimbo also misclassified an export-feasibility question as `PLATFORMS`; platform
+names were irrelevant evidence. Raw Factorio chat displayed Markdown markers
+literally. The last reviewed chat timestamp is 2026-07-29 17:18:32.
+
 ## Validation
 
 - `python -m py_compile jimbo.py test_jimbo.py`
@@ -72,6 +99,15 @@ The commits after `origin/main` contain the completed rollout:
 - `git diff --check`
 
 ## Remaining Work
+
+### Grounded quantitative mechanics
+
+The highest-priority behavioral refinement suggested by live feedback is a small
+grounded path for quantitative recipe, cargo, throughput, surface-condition, and
+timing questions. It should query only relevant prototype/live facts, calculate
+locally, show controlling assumptions, distinguish theoretical minimum from
+practical capacity, and decline unsupported calculations. Do not add a broad
+knowledge framework or trust model-generated arithmetic.
 
 ### Directional origin semantics
 
@@ -109,8 +145,9 @@ considering requests that intentionally refer to remote view.
 
 ## Natural Next Action
 
-No production-cell task is currently required; the feature was shipped and
-verified in game. Await the user's next request. If they ask to fix the observed
-directional ambiguity, implement compound origin-plus-direction semantics as the
-smallest compatible refinement and repeat deterministic plus read-only live
-validation before restarting Jimbo.
+No task is currently authorized beyond this documentation handoff. Await the
+user's next request. If they choose to address the player feedback, start with a
+bounded grounded calculation path and deterministic fixtures for the failed
+science/scrap/silo examples. The production-cell directional ambiguity remains
+the next isolated placement refinement. Repeat deterministic and read-only live
+validation before restarting Jimbo for either code change.
