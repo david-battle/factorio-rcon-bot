@@ -65,7 +65,8 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now check logistic availability across every planet instead of only one."
+    "I now identify the actual level of repeatable research, including Scrap "
+    "Recycling Productivity."
 )
 
 opencode_config = json.dumps({
@@ -510,7 +511,8 @@ def get_research_snapshot(client):
     cmd = (
         "/silent-command local f=game.forces.player;local out={};"
         "local function display(t) local base=t.name:match(\"^(.*)%-%d+$\");"
-        "local name=base and base..\" \"..t.level or t.name;"
+        "local repeatable=t.prototype.max_level>1;"
+        "local name=repeatable and (base or t.name)..\" \"..t.level or t.name;"
         "return name:gsub(\"-\",\" \") end;"
         "local current=f.current_research;"
         "out[#out+1]=\"Current: \"..(current and display(current) or \"none\");"
@@ -649,10 +651,12 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
     context = (
         "Recent shared chat (background context only):\n"
         f"{history_text}\n\n"
-        "For numbered repeatable research, use its base name plus its actual level "
-        "as a natural player-facing name: mining-productivity-3 at level 8 is "
-        "mining productivity 8, and the next level is mining productivity 9. Do "
-        "not mention the internal name or redundantly append '(level 8)'.\n\n"
+        "For repeatable research, use its base name plus its actual level as a "
+        "natural player-facing name, even when its internal name has no numeric "
+        "suffix. For example, mining-productivity-3 at level 8 is mining "
+        "productivity 8, and the next level is mining productivity 9. Similarly, "
+        "scrap-recycling-productivity at level 3 is scrap recycling productivity "
+        "3. Do not mention the internal name or redundantly append '(level 8)'.\n\n"
     )
     if rcon_response is not None:
         time_hint = ""

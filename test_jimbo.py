@@ -372,7 +372,7 @@ class DialogueTests(unittest.TestCase):
     def test_research_snapshot_requests_actual_levels(self):
         client = Mock()
         client.run.return_value = (
-            "Current: mining productivity 7\n"
+            "Current: scrap recycling productivity 3\n"
             "Progress: 87.37%\n"
             "Queue:\n"
             "1: mining productivity 7"
@@ -382,10 +382,12 @@ class DialogueTests(unittest.TestCase):
 
         command = client.run.call_args.args[0]
         self.assertIn("t.level", command)
+        self.assertIn("t.prototype.max_level>1", command)
+        self.assertIn("(base or t.name)", command)
         self.assertIn("display(current)", command)
         self.assertIn("gsub", command)
-        self.assertIn("Current: mining productivity 7", snapshot)
-        self.assertNotIn("(level 7)", snapshot)
+        self.assertIn("Current: scrap recycling productivity 3", snapshot)
+        self.assertNotIn("(level 3)", snapshot)
         self.assertTrue(client.run.call_args.kwargs["retry"])
 
     def test_research_level_change_is_not_treated_as_a_stall(self):
@@ -515,6 +517,7 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("answer only the current message", composer)
         self.assertIn("mining productivity 8", composer)
         self.assertIn("next level is mining productivity 9", composer)
+        self.assertIn("scrap recycling productivity 3", composer)
 
     def test_classifier_keeps_no_name_messages_on_skip_path(self):
         prompt = jimbo.build_classification_prompt(
