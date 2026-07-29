@@ -65,8 +65,9 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I now identify the actual level of repeatable research, including Scrap "
-    "Recycling Productivity."
+    "I can now place production cells — I'll find a clear spot with power "
+    "and logistics, then ghost-place a building, chests, inserters, and a "
+    "power pole for you."
 )
 
 opencode_config = json.dumps({
@@ -373,6 +374,209 @@ def get_logistic_availability(client, surface, items):
     )
     response = client.run(cmd, retry=True)
     return response.strip() if response else "(unavailable)"
+
+
+def parse_produce_decision(raw):
+    if not raw.startswith("PRODUCE|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) not in (3, 4):
+        return None
+    surface = parts[1].strip()
+    item = parts[2].strip()
+    hint = parts[3].strip() if len(parts) == 4 else ""
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    if not valid_name(surface) or not valid_name(item):
+        return None
+    hint_surface = ""
+    if hint:
+        try:
+            inner = hint.strip("[]")
+            if inner.startswith("gps="):
+                coords = inner[4:].split(",")
+                float(coords[0])
+                float(coords[1])
+                if len(coords) >= 3:
+                    hint_surface = coords[2].strip()
+        except (ValueError, IndexError):
+            return None
+    return surface, item, hint, hint_surface
+
+
+def place_production_cell(client, surface, item, hint=""):
+    ax = "nil"
+    ay = "nil"
+    if hint:
+        try:
+            inner = hint.strip("[]")
+            if inner.startswith("gps="):
+                coords = inner[4:].split(",")
+                ax = coords[0]
+                ay = coords[1]
+        except (ValueError, IndexError):
+            pass
+
+    surface_lua = json.dumps(surface)
+    item_lua = json.dumps(item)
+
+    phase1 = (
+        f"/silent-command "
+        f"local s=game.surfaces[{surface_lua}];"
+        f"if not s then rcon.print('ERROR: Surface not found') return end;"
+        f"local r=prototypes.recipe[{item_lua}];"
+        f"if not r then rcon.print('ERROR: Recipe not found') return end;"
+        f"local cat=r.category or 'crafting';"
+        f"local map={{"
+        f"['crafting-with-fluid']='assembling-machine-3',"
+        f"smelting='electric-furnace',chemistry='chemical-plant',"
+        f"['oil-processing']='oil-refinery',"
+        f"['advanced-crafting']='assembling-machine-3',"
+        f"centrifuging='centrifuge',cryogenics='cryoplant',"
+        f"metallurgy='foundry',electronics='electromagnetic-plant',"
+        f"['chemistry-or-cryogenics']='cryoplant'"
+        f"}};"
+        f"local en=map[cat] or 'assembling-machine-3';"
+        f"local p=r.products[1];"
+        f"if p and prototypes.entity[p.name] then en=p.name end;"
+        f"local e=prototypes.entity[en];"
+        f"if not e or not e.tile_width then "
+        f"rcon.print('ERROR: building '..en..' not found') return end;"
+        f"local w=e.tile_width;"
+        f"local h=e.tile_height;"
+        f"local ax={ax};"
+        f"local ay={ay};"
+        f"local left=ax-2;"
+        f"local right=ax+w+1;"
+        f"local bottom=ay-1;"
+        f"local top=ay+h-1;"
+        f"local count=s.count_entities_filtered{{"
+        f"area={{{{left,bottom}},{{right,top}}}}"
+        f"}};"
+        f"if count>0 then "
+        f"rcon.print('ERROR: '..count..' entities in area') return end;"
+        f"local poles=s.find_entities_filtered{{"
+        f"type='electric-pole',"
+        f"area={{{{left-16,bottom-16}},{{right+16,top+16}}}},"
+        f"force='player'"
+        f"}};"
+        f"local powered=false;"
+        f"local bx,by;"
+        f"for _,pole in ipairs(poles) do "
+        f"local n=pole.electric_network;"
+        f"if n then "
+        f"bx,by=pole.position.x,pole.position.y;"
+        f"local dist=pole.prototype.get_supply_area_distance(pole.quality);"
+        f"local cx=ax+w/2;"
+        f"local cy=ay+h/2;"
+        f"local dx=cx-bx;"
+        f"local dy=cy-by;"
+        f"if dx*dx+dy*dy<=dist*dist then powered=true break end "
+        f"end "
+        f"end;"
+        f"if not powered then "
+        f"rcon.print('ERROR: No power coverage at location') return end;"
+        f"local rx=ax-2+0.5;"
+        f"local ry=ay+math.floor(h/2)-1+0.5;"
+        f"local net=s.find_logistic_network_by_position({{rx,ry}},'player');"
+        f"if not net then "
+        f"rcon.print('ERROR: No logistic network coverage') return end;"
+        f"rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en)"
+    )
+
+    response = client.run(phase1, retry=True)
+    phase1_result = response.strip() if response else "ERROR: empty response"
+    if not phase1_result.startswith("ANCHOR:"):
+        return phase1_result
+
+    parts = phase1_result[len("ANCHOR:"):].split(",")
+    anchor_ax = parts[0]
+    anchor_ay = parts[1]
+    anchor_w = int(parts[2])
+    anchor_h = int(parts[3])
+    en = parts[4]
+
+    phase2 = (
+        f"/silent-command "
+        f"local s=game.surfaces[{surface_lua}];"
+        f"local x={anchor_ax};local y={anchor_ay};"
+        f"local w={anchor_w};local h={anchor_h};"
+        f"local en={json.dumps(en)};"
+        f"local item={item_lua};"
+        f"local cleanup={{}};"
+        f"local function rb() "
+        f"for _,g in ipairs(cleanup) do if g and g.valid then g.destroy() end end end;"
+        f"local ok,err=pcall(function() "
+        f"local b=s.create_entity{{"
+        f"name='entity-ghost',position={{x,y}},force='player',"
+        f"inner_name=en,recipe=item"
+        f"}};"
+        f"if not b then error('building') end;cleanup[#cleanup+1]=b;"
+        f"local req=s.create_entity{{"
+        f"name='entity-ghost',position={{x-2,y+math.floor(h/2)-1}},"
+        f"force='player',inner_name='requester-chest'"
+        f"}};"
+        f"if not req then error('requester') end;cleanup[#cleanup+1]=req;"
+        f"local prov=s.create_entity{{"
+        f"name='entity-ghost',position={{x+w+1,y+math.floor(h/2)-1}},"
+        f"force='player',inner_name='passive-provider-chest'"
+        f"}};"
+        f"if not prov then error('provider') end;cleanup[#cleanup+1]=prov;"
+        f"local ii=s.create_entity{{"
+        f"name='entity-ghost',position={{x-1,y+math.floor(h/2)-1}},"
+        f"force='player',inner_name='inserter',"
+        f"direction=defines.direction.right"
+        f"}};"
+        f"if not ii then error('input inserter') end;cleanup[#cleanup+1]=ii;"
+        f"local oi=s.create_entity{{"
+        f"name='entity-ghost',position={{x+w,y+math.floor(h/2)-1}},"
+        f"force='player',inner_name='inserter',"
+        f"direction=defines.direction.left"
+        f"}};"
+        f"if not oi then error('output inserter') end;cleanup[#cleanup+1]=oi;"
+        f"local po=s.create_entity{{"
+        f"name='entity-ghost',position={{x+math.floor(w/2)-1,y-1}},"
+        f"force='player',inner_name='medium-electric-pole'"
+        f"}};"
+        f"if not po then error('pole') end;cleanup[#cleanup+1]=po;"
+        f"local ri=prototypes.recipe[item];"
+        f"if ri and ri.ingredients then "
+        f"local sec=req.get_logistic_sections():create_section();"
+        f"local flt={{}};"
+        f"for _,ing in ipairs(ri.ingredients) do "
+        f"local ing_name,ing_amt;"
+        f"if type(ing)=='table' then "
+        f"ing_name=ing.name;ing_amt=ing.amount "
+        f"else ing_name=ing;ing_amt=1 end;"
+        f"flt[#flt+1]={{"
+        f"name=ing_name,count=ing_amt,min=ing_amt"
+        f"}};"
+        f"end;"
+        f"sec.filters=flt;"
+        f"local sec2=req.get_logistic_sections().sections[1];"
+        f"if not sec2 then error('no logistic sections') end;"
+        f"for _,f in ipairs(sec2.filters) do "
+        f"if not f.min or f.min<1 then "
+        f"error('filter missing min') end "
+        f"end "
+        f"end;"
+        f"for _,g in ipairs(cleanup) do "
+        f"if not g.is_registered_for_construction() then "
+        f"error(g.name..' not registered') end "
+        f"end;"
+        f"end);"
+        f"if not ok then rb();rcon.print('ERROR: '..err) "
+        f"else rcon.print("
+        f"'SUCCESS: [gps='..x..','..y..','..s.name..'] "
+        f"..w..'x'..h..' '..item..' cell placed') end"
+    )
+
+    response = client.run(phase2, retry=False)
+    return response.strip() if response else "ERROR: empty response"
 
 
 def reply_uses_research_context(reply, research_text):

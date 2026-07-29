@@ -698,5 +698,220 @@ class HydrationTests(unittest.TestCase):
         self.assertEqual(dialogue[1]["text"], "Alice is online.")
 
 
+class ProduceCellTests(unittest.TestCase):
+    def test_parse_produce_decision_valid(self):
+        result = jimbo.parse_produce_decision(
+            "PRODUCE|nauvis|processing-unit|"
+        )
+        self.assertEqual(result, ("nauvis", "processing-unit", "", ""))
+
+    def test_parse_produce_decision_with_gps(self):
+        result = jimbo.parse_produce_decision(
+            "PRODUCE|fulgora|holmium-plate|[gps=10,20,fulgora]"
+        )
+        self.assertEqual(
+            result, ("fulgora", "holmium-plate", "[gps=10,20,fulgora]", "fulgora")
+        )
+
+    def test_parse_produce_decision_invalid_prefix(self):
+        self.assertIsNone(jimbo.parse_produce_decision("MAKE|nauvis|iron-plate"))
+
+    def test_parse_produce_decision_invalid_item(self):
+        self.assertIsNone(jimbo.parse_produce_decision("PRODUCE|nauvis|Iron Plate|"))
+
+    def test_parse_produce_decision_invalid_surface(self):
+        self.assertIsNone(jimbo.parse_produce_decision("PRODUCE|Nauvis|iron-plate|"))
+
+    def test_place_cell_full_success(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: [gps=10,20,nauvis] 3x3 processing-unit cell placed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        self.assertIn("nauvis", phase1)
+        self.assertIn("processing-unit", phase1)
+        self.assertIn("ax=10", phase1)
+        self.assertIn("ay=20", phase1)
+        self.assertIn("SUCCESS", result)
+        self.assertIn("[gps=10,20,nauvis]", result)
+
+    def test_place_cell_looks_up_entity_dimensions(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,5,5,em-plasity-building",
+            "SUCCESS: [gps=10,20,nauvis] 5x5 processing-unit cell placed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        self.assertIn("e.tile_width", phase1)
+        self.assertIn("e.tile_height", phase1)
+        self.assertIn("SUCCESS", result)
+
+    def test_place_cell_reports_surface_error(self):
+        client = Mock()
+        client.run.return_value = "ERROR: Surface not found"
+
+        result = jimbo.place_production_cell(
+            client, "nonexistent", "iron-plate", "[gps=0,0,nonexistent]"
+        )
+
+        self.assertIn("ERROR", result)
+        self.assertIn("Surface not found", result)
+
+    def test_place_cell_reports_entity_blocked(self):
+        client = Mock()
+        client.run.return_value = "ERROR: 3 entities in area"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=100,100,nauvis]"
+        )
+
+        self.assertIn("ERROR", result)
+        self.assertIn("entities in area", result.lower())
+
+    def test_place_cell_reports_no_power(self):
+        client = Mock()
+        client.run.return_value = "ERROR: No power coverage at location"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=200,200,nauvis]"
+        )
+
+        self.assertIn("ERROR", result)
+        self.assertIn("power", result.lower())
+
+    def test_place_cell_reports_no_logistics(self):
+        client = Mock()
+        client.run.return_value = "ERROR: No logistic network coverage"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "[gps=300,300,nauvis]"
+        )
+
+        self.assertIn("ERROR", result)
+        self.assertIn("logistic", result.lower())
+
+    def test_place_cell_handles_empty_hint(self):
+        client = Mock()
+        client.run.return_value = "ERROR: No power coverage at location"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", ""
+        )
+
+        command = client.run.call_args.args[0]
+        self.assertIn("ax=nil", command)
+        self.assertIn("ay=nil", command)
+
+    def test_place_cell_phase2_creates_all_ghosts(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("entity-ghost", phase2)
+        self.assertIn("requester-chest", phase2)
+        self.assertIn("passive-provider-chest", phase2)
+        self.assertIn("inserter", phase2)
+        self.assertIn("medium-electric-pole", phase2)
+        self.assertIn("defines.direction.right", phase2)
+        self.assertIn("defines.direction.left", phase2)
+        self.assertIn("pcall", phase2)
+
+    def test_place_cell_phase2_requester_filters(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase2 = client.run.call_args_list[1].args[0]
+        self.assertIn("get_logistic_sections", phase2)
+        self.assertIn("create_section", phase2)
+        self.assertIn("sec.filters=flt", phase2)
+        self.assertIn("filter missing min", phase2)
+
+    def test_place_cell_phase2_rollback_on_failure(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "ERROR: building failed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        self.assertIn("ERROR", result)
+        self.assertIn("building", result)
+
+    def test_place_cell_phase2_no_retry_on_mutation(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase2_call = client.run.call_args_list[1]
+        self.assertFalse(phase2_call.kwargs.get("retry", False))
+
+    def test_place_cell_phase2_resolves_entity_from_category(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        self.assertIn("map[cat]", phase1)
+        self.assertIn("assembling-machine-3", phase1)
+        self.assertIn("electromagnetic-plant", phase1)
+        self.assertIn("cryoplant", phase1)
+        self.assertIn("foundry", phase1)
+
+    def test_place_cell_checks_power_supply_radius(self):
+        client = Mock()
+        client.run.side_effect = [
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]"
+        )
+
+        phase1 = client.run.call_args_list[0].args[0]
+        self.assertIn("get_supply_area_distance", phase1)
+        self.assertIn("pole.quality", phase1)
+
+
 if __name__ == "__main__":
     unittest.main()
