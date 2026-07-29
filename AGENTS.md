@@ -24,6 +24,9 @@ against Git and the current files; `AGENTS.md` remains authoritative.
 
 When asked to prepare or perform a handoff, follow `HANDOFF_PROCEDURE.md`.
 
+Read `FUTURE_DIRECTIONS.md` before planning or implementing a new Jimbo feature
+based on prior live experiments; tested implementation findings live there.
+
 ## Central Configuration
 
 **Read this before changing owner, model, or provider behavior.** `jimbo.py` keeps

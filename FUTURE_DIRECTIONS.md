@@ -35,31 +35,41 @@ natural interaction, and restrained behavior.
    work should distinguish platform inventory questions from ship-design advice
    and avoid presenting a platform query as relevant evidence for the latter.
 
-4. **Grounded GPS and construction actions.** A bare message such as
+4. **Grounded production diagnosis and bounded controls.** Jimbo should answer
+   broad questions such as "where are all the processing units going?" by tracing
+   production backward through actual logistic stock, requester and machine
+   buffers, recipe ingredients, entity statuses, fluid systems, and extraction
+   throughput. It should identify the first verified bottleneck and relevant map
+   locations rather than guessing from one empty inventory. With an explicit
+   request, the same grounded model could apply reversible logistic-network enable
+   conditions to reserve cargo or protect scarce ingredients. The tested findings
+   below capture the important API and threshold details.
+
+5. **Grounded GPS and construction actions.** A bare message such as
    `Jimbo [gps=362.1,-503.6]` is currently treated as conversation, so Jimbo may
    claim it is traveling there without inspecting anything. Recognize GPS-only
    engagement as an area-inspection request or ask what the player wants checked;
    never imply movement or observation without RCON evidence. Verified RCON
    techniques can inspect and clone entity ghosts with their inventory/equipment
    plans, ping exact locations, toggle circuit-controlled research, and create
-   compact powered logistic production cells. See `OPERATIONS.md` for the tested
-   APIs and safety constraints before turning any of them into Jimbo features.
+   compact powered logistic production cells. Use the tested APIs and safety
+   constraints below before turning any of them into Jimbo features.
 
-5. **Formal offline scenario harness.** The project already supports manual log
+6. **Formal offline scenario harness.** The project already supports manual log
    injection and mocked AI or RCON checks. Formalize that capability into a small,
    deterministic scenario harness for complete flows such as chat classification,
    follow-up replies, joins, spontaneous comments, failures, and fuzzy trigger
    matching. It should remain lightweight and should not introduce a testing or
    configuration framework larger than the bot itself.
 
-6. **Optional provider fallback.** Jimbo's model profiles are intentionally
+7. **Optional provider fallback.** Jimbo's model profiles are intentionally
    self-contained so a future explicit fallback order could reuse them without
    duplicating provider configuration. If pursued, fallback should remain
    optional, preserve the normal retry behavior, report the model that actually
    answered, and avoid silently switching models for permanent configuration or
    authentication errors.
 
-7. **Bounded one-chunk blueprint design.** The old repository contains useful
+8. **Bounded one-chunk blueprint design.** The old repository contains useful
    standard-library patterns for strict blueprint encoding/decoding, exact
    doubled-coordinate geometry, nominal footprint validation, and deterministic
    encode/decode artifact tests. A future first implementation should extract
@@ -71,8 +81,8 @@ natural interaction, and restrained behavior.
    Keep artifact generation separate from deployment. Prove the offline codec
    and validator first, then choose a reliable in-game delivery path, verify
    import through Factorio, and only later consider optional live placement using
-   the preflight, staging, clone, audit, and rollback procedure in
-   `OPERATIONS.md`. Do not import the old full-bot architecture, RCON wrappers,
+   the preflight, staging, clone, audit, and rollback procedure below. Do not
+   import the old full-bot architecture, RCON wrappers,
    complete solar/QUP generators, optimizer assumptions, or Factorio 2.1.11
    prototype tables. Those are design references, not a general current runtime
    framework.
@@ -85,7 +95,254 @@ eventually use targeted RCON/Lua queries. Death tracking would require explicit
 game instrumentation or another reliable event source rather than model memory.
 
 The strongest product direction is a combination of event-aware context and
-natural situational awareness. A useful first exploration would identify the
-small set of server conditions Jimbo should understand continuously, beginning
-with per-surface power health, then decide how players can ask about those
-conditions conversationally and when Jimbo should mention them unprompted.
+natural situational awareness, including grounded production diagnosis. A useful
+first exploration would identify the small set of server conditions Jimbo should
+understand continuously, beginning with per-surface power health, then decide how
+players can ask about those conditions conversationally and when Jimbo should
+mention them unprompted.
+
+## Tested Implementation Findings
+
+These findings came from successful live experiments. They constrain future
+features but do not mean Jimbo currently exposes the actions automatically.
+
+### Exact Blueprint Deployment
+
+For precise remote deployment, do not call `LuaItemStack.build_blueprint()`
+directly on the live surface: its cursor-position transform previously shifted
+builds across chunk boundaries. Decode the blueprint positions and apply one
+explicit world offset. Preflight every resulting entity center with
+`can_place_entity()` and abort before placement if any position is blocked.
+
+A settings-preserving workflow is:
+
+1. Import the blueprint into a temporary inventory and require import status 0.
+2. Build on a temporary generated surface and verify every prototype and local
+   center against `get_blueprint_entities()`.
+3. Use `clone_area()` with explicit rectangles to copy only entities onto the
+   already-preflighted live area.
+4. In the same command, verify destination prototypes, exact centers, direction,
+   mirroring, recipes and qualities, and construction registration.
+5. On failure, remove only matching destination ghosts. Delete temporary
+   surfaces and inventories after either successful validation or rollback.
+
+The staging workflow preserves recipes, module insert plans, and circuit and
+copper wiring. Still verify the finished electric networks and bridge an internal
+pole to a reachable live pole when necessary. Module requests appear as
+`item-request-proxy` entities; substitutions must preserve each proxy's inventory
+destinations, replace only item and quality, assign the complete plan back, and
+validate `item_requests`. Inventory qualities from
+`LuaLogisticNetwork.get_contents()` are strings. Inspect every connected
+logistic network before selecting stock.
+
+### Entity Ghost Inspection And Cloning
+
+For a GPS-directed inspection, resolve the supplied surface or use the requesting
+player's current surface. Search nearby `entity-ghost` entities and report
+`ghost_name`, `ghost_type`, position, force, quality, unit number, and
+`is_registered_for_construction()`.
+
+Equipment and inventory requests on a vehicle ghost are not represented by its
+runtime `grid`, which can be empty. Read both of these properties instead:
+
+- `item_requests` is the read-only item/count summary.
+- `insert_plan` is the exact writable blueprint plan, including inventory slot
+  destinations and equipment-grid counts.
+
+`LuaEntity.clone{position=..., surface=..., force=...}` preserves the ghost
+prototype, direction, quality, `item_requests`, and complete `insert_plan`. Use
+this sequence:
+
+1. Require a current explicit request and locate the source ghost read-only.
+2. Verify the requesting player is online and resolve their live surface and
+   position.
+3. Constrain `find_non_colliding_position_in_box()` to the requested destination.
+4. Snapshot requests and the insert plan, then clone once. Treat cloning as
+   unsafe to replay automatically after an RCON disconnect.
+5. Compare the clone's prototype, direction, quality, requests, and insert plan
+   to the source. Destroy only the new clone if validation fails.
+6. Print the actual result through RCON and send the verified clone position as
+   a clickable GPS link.
+
+Construction robots may fulfill the new ghost immediately if the network has
+the requested items, so verification should happen in the same Lua command as
+the clone. Never destroy or alter the source ghost.
+
+### Logistic Network Machine Conditions
+
+Crafting machines can use the logistic network as an enable condition without a
+circuit wire. Preflight every target before creating a control behavior, then set:
+
+```text
+local cb = entity.get_or_create_control_behavior()
+cb.connect_to_logistic_network = true
+cb.logistic_condition = {
+  first_signal = {type="item", name="holmium-plate", quality="normal"},
+  comparator = ">",
+  constant = 1200
+}
+```
+
+`get_control_behavior()` can be `nil` on an uncontrolled machine; use
+`get_or_create_control_behavior()` only during the authorized mutation. Snapshot
+existing connection and condition values for rollback. Factorio normalizes a
+normal-quality signal by omitting `type` and `quality` when it is read back, so
+verify a missing quality as normal rather than rejecting it. Control status may
+not update until a later tick; perform an independent read-only query and require
+both the saved condition and `disabled_by_control_behavior` to match live stock.
+
+Size a reserve threshold from available logistic stock, not total items hidden in
+machines or requester chests. A requester remains active when its consumer is
+disabled and in-flight robots can finish deliveries. Include the protected cargo,
+the largest immediate recipe draw, requester buffers, and a margin before enabling
+all consumers at once. The verified Fulgora setup uses normal holmium plate
+`> 1200`: a rocket carries 1,000 plates (`default_rocket_lift_weight=1000000`,
+plate weight `1000`), while the largest consumer takes 150 and its requester asks
+for 100.
+
+Rediscover machines before each mutation. On the current Factorio 2.0 server,
+direct unit-number lookup did not resolve these entities and `find_entity()` did
+not resolve a known uncommon-quality machine at its exact position. A surface
+`find_entities_filtered()` scan followed by checks of `unit_number`, recipe,
+position, and quality was reliable. Unit numbers are evidence for the current
+entity only and become stale after rebuilding.
+
+### Production Shortage Diagnosis
+
+Trace a stalled product backward one ingredient at a time. Start with logistic
+availability, but do not present `LuaLogisticNetwork.get_contents()` as total
+ownership: requester chests and crafting-machine input buffers can hold large
+quantities while available stock is zero. Enumerate positive requester filters,
+their current contents, consuming recipes, and complete machine input inventories.
+Idle one-off mall recipes can sequester hundreds of expensive intermediates.
+
+Interpret `LuaEntity.status` before assigning a cause. `full_output` means that
+machine is not currently consuming ingredients; `item_ingredient_shortage` does
+not identify which item is absent; and `fluid_ingredient_shortage` should be
+confirmed from `get_fluid_contents()`. Check every required ingredient and the
+downstream output path. In the verified Nauvis case, utility science had ample
+frames and low-density structures but no available processing units; most
+processing-unit machines were then found starved of advanced circuits.
+
+Keep fluid locations separate. A surface-wide fluid total can combine unrelated
+pipe systems: Nauvis simultaneously had an almost empty main petroleum tank and a
+full remote tank. Report tank positions and inspect connectivity before claiming
+that stored fluid can reach a consumer. Likewise, a bidirectional pump only moves
+existing fluid; it cannot solve missing production on the far side.
+
+All pumpjacks reporting `working` proves operation, not adequate throughput. If
+crude storage remains nearly empty while refineries and consumers are starved,
+extraction is below demand; speed modules or additional wells address sustained
+throughput more directly than changing pump direction. Inspect pumpjacks through
+their status and `mining_target`; crafting-machine-only properties raise errors on
+mining drills.
+
+Large per-entity RCON reports can time out. Aggregate counts, status groups,
+buffers, and a few sample positions in Lua, or filter directly by prototype name,
+then run focused follow-up queries on the identified area.
+
+### Logistic Group Mutation
+
+Named groups belong to a force. Use `LuaForce.create_logistic_group()`,
+`get_logistic_group()`, and `delete_logistic_group()` with the intended
+`defines.logistic_group_type`; the default `with_trash` type supports request and
+auto-trash limits. `get_logistic_group()` returns group information, not a
+directly writable group object. Write filters through a manual member
+`LuaLogisticSection.filters` or `set_slot()`.
+
+To create a populated but unattached group safely:
+
+1. Abort if the exact group name already exists.
+2. Create a disposable entity and manual section without raising build events.
+3. Set and validate the manual filters, create the force group, then assign the
+   section's `group` name.
+4. Verify the shared group's complete filter set before detaching the section.
+5. Clear the section's group, remove it, destroy the disposable entity, and
+   verify that the populated group persists with zero members.
+6. Wrap the operation in `pcall`; on failure destroy only temporary state and
+   delete only the newly created group.
+
+Existing populated groups can be edited through any valid manual member section.
+Snapshot the old filters, assign the complete replacement array once, verify the
+shared group and all requested limits, and restore the snapshot on failure. Never
+replay a mutation automatically after an uncertain RCON disconnect.
+
+`LogisticFilter.min=0,max=0` requests nothing and retains nothing. A nonzero
+minimum requires an exact quality and `=` comparator; it cannot use an any-quality
+range. To request one quality while preserving zero limits for the others, split
+the item into one filter per quality. In the current unmodded quality set these
+are normal, uncommon, rare, epic, and legendary.
+
+Derive GUI-tab membership from prototypes instead of a hand-maintained list. For
+example, the current `intermediate-products` item group contains 85 item
+prototypes and no fluid prototypes. Verify the live count before mutation because
+mods or game updates can change it.
+
+A bare `/silent-command` executes no mutation and normally returns empty. Empty
+RCON output is never proof of success. Every mutating command must print its
+verified result, and important changes should receive an independent read-only
+verification before a success message is sent.
+
+### Logistic Production Cells
+
+A reusable production cell consists of a crafting machine, a requester chest and
+input inserter, and an output inserter and passive provider chest. Prefer cloning
+a working cell so inserter choices, directions, and chest limits are preserved.
+Validate each exact planned position with `can_place_entity()` and inspect the
+complete new footprint rather than relying on an expanded search that may include
+valid neighboring machines.
+
+Do not rely on `can_place_entity(..., build_check_type=script_ghost)` alone to
+protect existing infrastructure: live testing showed that it can accept a ghost
+plan overlapping belts. Before creating anything, scan the complete destination
+bounding box for existing entities and ghosts, especially belts, underground
+belts, splitters, pipes, and wiring components. Treat any unplanned occupancy as
+blocked and choose another location.
+
+After setting the machine ghost's recipe, reproduce the player's recipe paste
+onto the requester ghost with:
+
+```text
+requester_ghost.copy_settings(assembler_ghost, player)
+```
+
+This lets Factorio calculate request buffers. Validate through
+`requester_ghost.get_logistic_sections().sections` that every recipe ingredient
+appears as `filter.value.name` with a positive `filter.min`; do not estimate
+quantities from chest contents. Locate source entities by name and position and
+confirm their unit numbers because players may rebuild them.
+
+Preserve a player-preplaced assembler: verify its state, set only the requested
+recipe, and create only peripheral ghosts. Wrap multi-cell work in one `pcall`,
+preflight every cell before the first change, and retain changed entities and new
+ghosts for precise rollback. Verify settings and construction registration in
+the same command because robots may fulfill ghosts before the next RCON query.
+
+Power must be validated separately from placement and logistic coverage. Before
+creating a cell, locate a real electric pole, verify `pole.electric_network` is
+not `nil`, read its quality-aware supply radius with
+`pole.prototype.get_supply_area_distance(pole.quality)`, and place the assembler
+inside that area. Also verify the requester with
+`surface.find_logistic_network_by_position()`.
+
+If the destination lacks coverage, treat a power extension as a separately
+validated subplan in the same `pcall`. Choose a collision-free pole in
+construction coverage, verify its quality-aware supply area, require copper-wire
+reach to a live network, and include its ghost in rollback. Once built,
+`assembler.is_connected_to_electric_network()` is the definitive power check.
+
+### Automatic Research Control
+
+The current save's circuit-driven research is controlled by the `set_research`
+option on one lab. Discover the active control lab before changing anything:
+
+```text
+/silent-command local s=game.surfaces["nauvis"];local out={};for _,e in pairs(s.find_entities_filtered{type="lab",force="player"}) do local cb=e.get_control_behavior();if cb and cb.set_research then out[#out+1]=string.format("unit=%s pos=%.1f,%.1f",e.unit_number,e.position.x,e.position.y) end end;rcon.print(#out>0 and table.concat(out,";") or "(none)")
+```
+
+After verifying the entity's unit number and position, set only
+`e.get_control_behavior().set_research` to `false` to disable automation or
+`true` to re-enable it. Verify the value afterward with RCON. This preserves the
+lab, combinators, wiring, research conditions, current technology, and research
+queue, making it the least destructive and most reversible control. Do not clear
+the queue or dismantle circuitry merely to pause automatic selection.
