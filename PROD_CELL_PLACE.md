@@ -9,9 +9,12 @@ recipe-category table.
 
 ## Current Implementation Status
 
-Steps 1 and 2 are implemented for a single explicit GPS candidate and an
+Steps 1 through 3 are implemented for a single explicit GPS candidate and an
 item-only recipe. The current code:
 
+- classifies explicit requests into `PRODUCE|surface|item|gps`, dispatches the
+  parsed request with the requesting player, and grounds the reply in the
+  placement result;
 - strictly validates the GPS coordinates, requires its surface when present to
   match the requested surface, and floors the coordinates to a bottom-left tile;
 - rejects locked recipes, fluid ingredients or products, recipe/surface
@@ -30,7 +33,6 @@ item-only recipe. The current code:
 
 The following details are deliberately not implemented yet:
 
-- Step 3 classifier, dispatch, and reply-prompt integration;
 - automatic placement when no GPS hint is supplied, including player-relative
   direction resolution and the spawn fallback (Step 5);
 - extending power or shifting a blocked pole (Step 4);
@@ -83,26 +85,17 @@ PRODUCE|surface|item-name|optional-position-hint
 - `item-name` — lowercase internal item name such as `electronic-circuit`.
 - `optional-position-hint` — one of:
   - A `[gps=x,y,surface]` map ping from the player.
-  - A cardinal-direction phrase like `north`, `south-east`, `east of me`,
-    `north of current location`, etc. The model must first query the
-    requesting player's position, then compute the offset and emit a
-    concrete GPS hint. Resolution is handled by the model's classification
-    step; the code only receives resolved GPS coordinates.
-  - Empty if the player gave no location reference. This is the intended final
-    interface, but the current Steps 1–2 implementation rejects it until the
-    automatic search in Step 5 is implemented.
+  - Empty if the player gave no explicit map ping, including when they supplied
+    only a relative direction. The current implementation returns the
+    deterministic GPS-required error until automatic or player-relative search
+    is implemented in Step 5.
 
-The classifier prompt gains lines describing the format and directional
-resolution:
+The classifier prompt describes the format and current explicit-location limit:
 
 ```
-- PRODUCE|surface|item|gps — place a production cell to craft the given item
-  on the given surface. Use when someone asks Jimbo to make, produce, craft,
-  build, or set up manufacturing of a specific item. Include the player's GPS
-  ping as the position. If the player says a direction like "north of me",
-  first run "/silent-command rcon.print(game.players[\"username\"].position)"
-  to get their position, then compute the offset, and emit PRODUCE with a
-  concrete [gps=...] location. Omit the hint to let Jimbo choose.
+- PRODUCE|surface|item|gps — place a production cell for the requested item.
+  Copy an explicit player-supplied GPS map ping exactly. Never invent or adjust
+  coordinates. Leave the hint empty when the player did not provide a map ping.
 ```
 
 The current cell supports item-only recipes. Classification may still identify
@@ -131,10 +124,8 @@ def parse_produce_decision(raw):
     return surface, item, hint
 ```
 
-The current parser also returns the GPS surface as a fourth field. Step 3 must
-either remove that redundant field or pass only `(surface, item, hint)` to
-`place_production_cell()`; blindly splatting the current parser result is not a
-valid dispatch interface.
+The parser returns exactly `(surface, item, hint)`. Dispatch adds the requesting
+player separately when calling `place_production_cell()`.
 
 ## RCON Logic
 
@@ -245,11 +236,11 @@ entity summary or a failure description. It does not retry mutation.
 
 ### Step 3: Parser and dispatch
 
-The standalone `parse_produce_decision()` helper exists and has deterministic
-tests, but it is not connected to Jimbo's request flow. Reconcile its return
-shape with `place_production_cell()`, then add the classifier prompt entry,
-classifier branch, dispatch block, and reply hint. The model can request
-production cells only after all of those pieces are wired and tested.
+Implemented. The parser returns only the three placement fields, the classifier
+recognizes structured production-cell requests, dispatch supplies the requesting
+player, and reply composition distinguishes verified success from grounded
+failure. Requests without an explicit GPS ping reach the deterministic
+GPS-required response without RCON.
 
 ### Step 4: Power extension subplan
 
@@ -319,8 +310,8 @@ restart because mods or game updates may change the prototypes.
 
 The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 
-- parser acceptance and internal-name rejection, without connecting it to the
-  classifier yet;
+- classifier instructions, parser acceptance and internal-name rejection,
+  three-field dispatch with the requesting player, and grounded reply guidance;
 - strict GPS validation, surface matching, flooring, required-player behavior,
   malformed Phase 1 responses, and the no-hint short circuit;
 - live category-based machine resolution, dimensions, half-tile geometry,

@@ -95,3 +95,4 @@ listed as announcements.
   supplied map locations are now checked for space, power, and logistics before
   any building, chest, inserter, or pole ghosts are placed. I also clean up
   model-call temporary files now so they can't fill server storage.
+- **15:37:32:** I can now handle requests to place item-only production cells at supplied map pings, reporting the verified cell or explaining why placement was rejected.

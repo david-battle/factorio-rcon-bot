@@ -67,10 +67,9 @@ safe_retry_commands = (
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I'm preparing production-cell placement: item-only recipes at supplied "
-    "map locations are now checked for space, power, and logistics before any "
-    "building, chest, inserter, or pole ghosts are placed. I also clean up "
-    "model-call temporary files now so they can't fill server storage."
+    "I can now handle requests to place item-only production cells at supplied "
+    "map pings, reporting the verified cell or explaining why placement was "
+    "rejected."
 )
 
 opencode_config = json.dumps({
@@ -398,7 +397,6 @@ def parse_produce_decision(raw):
 
     if not valid_name(surface) or not valid_name(item):
         return None
-    hint_surface = ""
     if hint:
         try:
             inner = hint.strip("[]")
@@ -406,11 +404,9 @@ def parse_produce_decision(raw):
                 coords = inner[4:].split(",")
                 float(coords[0])
                 float(coords[1])
-                if len(coords) >= 3:
-                    hint_surface = coords[2].strip()
         except (ValueError, IndexError):
             return None
-    return surface, item, hint, hint_surface
+    return surface, item, hint
 
 
 def place_production_cell(client, surface, item, hint="", requesting_player=""):
@@ -720,6 +716,17 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     return response.strip() if response else "ERROR: empty response"
 
 
+def dispatch_production_cell(client, produce_request, username):
+    surface, item, hint = produce_request
+    return place_production_cell(
+        client,
+        surface,
+        item,
+        hint,
+        requesting_player=username,
+    )
+
+
 def reply_uses_research_context(reply, research_text):
     normalized_reply = reply.lower().replace("-", " ")
     if "research" in normalized_reply:
@@ -961,6 +968,15 @@ def build_classification_prompt(username, message, history_text):
         "not explicitly say 'logistic network'. Use surface 'all' when asked about "
         "anywhere, everywhere, all planets, or the whole solar system. Examples: "
         "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor.\n"
+        "- PRODUCE|surface|item-name|[gps=x,y,surface] — place a compact "
+        "production cell with a crafting machine, requester and provider chests, "
+        "two inserters, and a power pole. Use lowercase internal names when the "
+        "current player asks Jimbo to make, produce, craft, build, or set up "
+        "manufacturing of a specific item. Copy an explicit player-supplied GPS "
+        "map ping exactly; never invent or adjust coordinates. If the player gives "
+        "no explicit GPS ping, including only a relative direction, leave the "
+        "fourth field empty so Jimbo can ask for a map ping. Example: "
+        "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis].\n"
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
         "rcon.print with the actual outcome. When querying research, print the "
@@ -982,6 +998,9 @@ def build_classification_prompt(username, message, history_text):
         "Do not use this for where an item or material comes from; a planet list "
         "does not establish material sources. Use NONE for established Factorio "
         "knowledge or query relevant prototypes when live data is needed.\n"
+        "- PRODUCE|surface|item-name|optional-gps — the current player asks Jimbo "
+        "to place a production cell for a specific item. Use their explicit GPS "
+        "ping as the fourth field, or an empty fourth field when none was supplied.\n"
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
         "- /<Factorio command> — an executable slash command when the player asks "
@@ -1026,6 +1045,16 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
                 "Compare it with any required quantity in recent chat. Zero means "
                 "none is available, so the full required quantity is still needed.\n"
             )
+        produce_hint = ""
+        if rcon_command == "RCON: production cell":
+            produce_hint = (
+                "This response is the verified result of a production-cell "
+                "placement request. On SUCCESS, report the anchor map ping and "
+                "every created entity named in the response. On ERROR, clearly say "
+                "the cell was not placed and explain the reported reason. Never "
+                "claim that placement succeeded when the response reports an "
+                "error.\n"
+            )
         return (
             context
             + f'{username} currently asked: "{message}".\n'
@@ -1033,6 +1062,7 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
             + time_hint
             + planet_hint
             + logistics_hint
+            + produce_hint
             + "You are Jimbo, a helpful Factorio bot. "
             + f"{model_identity}\n"
             + f"The server is owned and operated by {server_owner}.\n"
@@ -1363,6 +1393,7 @@ if __name__ == "__main__":
                     run_platforms = False
                     run_planets = False
                     logistics_request = None
+                    produce_request = None
 
                     try:
                         prompt = build_classification_prompt(
@@ -1389,6 +1420,12 @@ if __name__ == "__main__":
                             logistics_request = parse_logistics_decision(raw)
                             print(
                                 f"Model requested LOGISTICS: {logistics_request}",
+                                flush=True,
+                            )
+                        elif parse_produce_decision(raw) is not None:
+                            produce_request = parse_produce_decision(raw)
+                            print(
+                                f"Model requested PRODUCE: {produce_request}",
                                 flush=True,
                             )
                         elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
@@ -1444,6 +1481,19 @@ if __name__ == "__main__":
                             )
                             print(
                                 f"LOGISTICS response: {rcon_response}", flush=True
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
+
+                    if produce_request is not None:
+                        rcon_cmd = "RCON: production cell"
+                        try:
+                            rcon_response = dispatch_production_cell(
+                                client, produce_request, username
+                            )
+                            print(
+                                f"PRODUCE response: {rcon_response}", flush=True
                             )
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)

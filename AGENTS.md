@@ -69,9 +69,10 @@ with a decision or capability exercised by the running Jimbo process.
 ## Request Flow
 
 1. Parse a new chat line into username and message.
-2. Ask the model for SKIP, NONE, PLATFORMS, PLANETS, structured LOGISTICS, or a
-   slash command.
-3. Run canned platform, planet, or logistic Lua or the selected command if needed.
+2. Ask the model for SKIP, NONE, PLATFORMS, PLANETS, structured LOGISTICS,
+   structured PRODUCE, or a slash command.
+3. Run canned platform, planet, logistic, or production-cell logic or the
+   selected command if needed.
 4. Ask the model to compose a short reply from the player message and RCON data.
 5. Send each reply line separately as raw RCON text prefixed with `Jimbo says `.
 
@@ -84,6 +85,10 @@ every planetary surface. Keep results separated by surface and network, identify
 silo-connected networks, and report nonnegative available stock. Availability is
 not a recipe shortfall; compare it with exact requirements from dialogue. Do not
 replace this path with ad hoc `LuaForce.logistic_networks` queries.
+
+Production-cell placement uses `PRODUCE|surface|item-name|gps` and currently
+requires an explicit player-supplied map ping. Preserve the preflight, verified
+non-retried mutation, and rollback contract in `PROD_CELL_PLACE.md`.
 
 An explicit Jimbo request that objectively fails during classification, RCON,
 reply composition, or delivery gets a short deterministic failure acknowledgment

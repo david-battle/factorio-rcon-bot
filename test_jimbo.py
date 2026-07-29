@@ -617,6 +617,52 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("the whole solar system", prompt)
         self.assertIn("Never literally reply 'A Factorio slash command'", prompt)
 
+    def test_classifier_requests_structured_production_cells(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo make electronic circuits at [gps=-622,51,nauvis]",
+            "(none)",
+        )
+
+        self.assertIn(
+            "PRODUCE|surface|item-name|[gps=x,y,surface]", prompt
+        )
+        self.assertIn(
+            "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis]",
+            prompt,
+        )
+        self.assertIn("Copy an explicit player-supplied GPS", prompt)
+        self.assertIn("never invent or adjust coordinates", prompt)
+        self.assertIn("including only a relative direction", prompt)
+        self.assertIn("leave the fourth field empty", prompt)
+
+    def test_production_reply_requires_grounded_success_or_failure(self):
+        success_prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo make electronic circuits here",
+            "(none)",
+            "RCON: production cell",
+            (
+                "SUCCESS: [gps=-622,51,nauvis] 3x3 electronic-circuit cell "
+                "placed with assembling-machine-3, requester-chest, 2 inserters, "
+                "passive-provider-chest, medium-electric-pole"
+            ),
+        )
+        failure_prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo make electronic circuits here",
+            "(none)",
+            "RCON: production cell",
+            "ERROR: No logistic network coverage",
+        )
+
+        for prompt in (success_prompt, failure_prompt):
+            self.assertIn("verified result of a production-cell", prompt)
+            self.assertIn("report the anchor map ping", prompt)
+            self.assertIn("every created entity named", prompt)
+            self.assertIn("clearly say the cell was not placed", prompt)
+            self.assertIn("Never claim that placement succeeded", prompt)
+
     def test_owner_greeting_uses_configured_owner(self):
         owner_prompt = jimbo.build_greeting_prompt(jimbo.server_owner, is_new=False)
         player_prompt = jimbo.build_greeting_prompt("Alice", is_new=False)
@@ -733,14 +779,14 @@ class ProduceCellTests(unittest.TestCase):
         result = jimbo.parse_produce_decision(
             "PRODUCE|nauvis|processing-unit|"
         )
-        self.assertEqual(result, ("nauvis", "processing-unit", "", ""))
+        self.assertEqual(result, ("nauvis", "processing-unit", ""))
 
     def test_parse_produce_decision_with_gps(self):
         result = jimbo.parse_produce_decision(
             "PRODUCE|fulgora|holmium-plate|[gps=10,20,fulgora]"
         )
         self.assertEqual(
-            result, ("fulgora", "holmium-plate", "[gps=10,20,fulgora]", "fulgora")
+            result, ("fulgora", "holmium-plate", "[gps=10,20,fulgora]")
         )
 
     def test_parse_produce_decision_invalid_prefix(self):
@@ -751,6 +797,25 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_parse_produce_decision_invalid_surface(self):
         self.assertIsNone(jimbo.parse_produce_decision("PRODUCE|Nauvis|iron-plate|"))
+
+    def test_dispatch_production_cell_passes_only_placement_fields_and_player(self):
+        client = Mock()
+        request = jimbo.parse_produce_decision(
+            "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis]"
+        )
+        with patch.object(
+            jimbo, "place_production_cell", return_value="SUCCESS: placed"
+        ) as place:
+            result = jimbo.dispatch_production_cell(client, request, "Alice")
+
+        self.assertEqual(result, "SUCCESS: placed")
+        place.assert_called_once_with(
+            client,
+            "nauvis",
+            "electronic-circuit",
+            "[gps=-622,51,nauvis]",
+            requesting_player="Alice",
+        )
 
     def test_place_cell_full_success(self):
         client = Mock()
