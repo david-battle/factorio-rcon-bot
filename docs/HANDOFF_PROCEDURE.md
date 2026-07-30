@@ -17,8 +17,8 @@ conflict with concurrent changes requires one short question.
    unrelated or concurrent changes rather than reverting them.
 4. Save reusable findings in the appropriate durable documentation before
    writing the handoff. Keep routine rules in `AGENTS.md`, operational detail in
-   `OPERATIONS.md`, possible Jimbo work in `FUTURE_DIRECTIONS.md`, and separate
-   project ideas in `FUTURE_PROJECTS.md`.
+   `docs/OPERATIONS.md` and possible Jimbo work in
+   `docs/FUTURE_DIRECTIONS.md`.
 5. Preserve the current model philosophy unless the user explicitly changed it:
    use one model per provider where practical, keep Groq optional, do not add
    Mistral, and do not introduce automatic fallback merely because it is

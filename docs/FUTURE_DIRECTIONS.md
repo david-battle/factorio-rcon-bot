@@ -10,7 +10,7 @@ natural interaction, and restrained behavior.
    dialogue is implemented: 12 turns, 15 minutes, about 4,000 characters, Jimbo's
    delivered replies, relevant RCON facts, and restart hydration. Future work
    should tune those limits only from observed chat and consider richer context
-   only when a concrete failure remains. See `CONVERSATIONAL_CONTEXT_PLAN.md` for
+   only when a concrete failure remains. See `docs/BOT_CONTRACTS.md` for
    the implemented design and validation criteria.
 
 2. **Event-aware commentary.** Parse meaningful activity into recognizable events
@@ -166,6 +166,45 @@ first exploration would identify the small set of server conditions Jimbo should
 understand continuously, beginning with per-surface power health, then decide how
 players can ask about those conditions conversationally and when Jimbo should
 mention them unprompted.
+
+## Alert Awareness Design
+
+Give Jimbo awareness of active game alerts (entity damage, destroyed buildings,
+logistic shortages, and similar conditions) so spontaneous comments and direct
+replies are grounded in what is actually happening on each surface. This is an
+unimplemented design, not a committed feature.
+
+`game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields are
+the alert `type`, `target`, `surface`, `icon`, `ticks_to_live`, custom `message`,
+and `show_on_map`. A future `get_alerts_snapshot(client)` should mirror
+`get_research_snapshot()` and return a compact summary grouped by surface and
+type, with sample target GPS positions only when useful.
+
+The read-only query can group alerts as follows:
+
+```text
+/silent-command local f=game.forces.player;local out={};local groups={};
+for _,a in ipairs(f.alerts) do
+  local key=a.surface.name.."|"..a.type;
+  if not groups[key] then groups[key]=0 end;
+  groups[key]=groups[key]+1;
+end;
+for k,c in pairs(groups) do out[#out+1]=k..":"..c end;
+rcon.print(table.concat(out,"\\n"))
+```
+
+Potential output is `nauvis|turret_enemy:1` or
+`fulgora|not_enough_construction_robots:2`. A player-directed query could use
+`ALERTS|surface`, where `all` requests every surface. Include the snapshot in
+spontaneous commentary and, when a `NONE` reply concerns attacks, damage,
+warnings, or a problem, in the reply prompt. An empty snapshot should explicitly
+say that there are no active alerts.
+
+Implement in this order: test and add the snapshot function; add it to the
+spontaneous prompt; add classifier parsing and dispatch; then selectively add it
+to alert-related direct replies. Keep data transient, output compact, and avoid
+replaying old alerts. Tests should cover empty and multi-surface snapshots,
+valid/invalid `ALERTS` decisions, and prompt inclusion.
 
 ## Tested Implementation Findings
 

@@ -1,4 +1,79 @@
-# Production Cell Placement
+# Current Bot Projects
+
+This file holds the durable behavioral contracts for Jimbo features that are
+implemented or actively maintained. `jimbo.py` is authoritative for code and
+`test_jimbo.py` provides deterministic coverage.
+
+## Core Runtime Contract
+
+Jimbo has three moving parts: server-log input, AI decisions/reply composition,
+and RCON queries/actions plus chat output. Parse chat as
+`YYYY-MM-DD HH:MM:SS [CHAT] username: message text`; split on `[CHAT] ` before
+`: ` because timestamps contain colons. Join and leave events use `[JOIN]` and
+`[LEAVE]`. Ignore messages starting `Jimbo says ` to avoid bot echoes.
+
+For a new chat line, classify into `SKIP`, `NONE`, `PLATFORMS`, `PLANETS`,
+structured `LOGISTICS`, structured `PRODUCE`, or a slash command; gather the
+required RCON facts or execute the selected action; compose a short reply; and
+send every reply line separately with the `Jimbo says ` prefix. The classifier
+defaults to `SKIP` unless the current message contains `Jimbo`, so player chat
+is not interrupted. Strip reply lines beginning `(Note:` or `(Corrected`.
+
+Any current message containing the standalone word `Jimbo` is directly
+addressed and must not fail silently. Retry a `SKIP` classification once, then
+send the short deterministic failure acknowledgment on persistent classification
+failure, failed or empty RCON, reply-composition failure or `SKIP`, an empty
+filtered reply, or deliverable delivery failure. Intentional `SKIP` for messages
+not addressed to Jimbo stays silent. A mutating request needs a nonempty
+executable command and a printed, verified outcome; an empty RCON response,
+bare `/silent-command`, or unverified mutation is failure.
+
+Quantitative or version-sensitive answers require relevant live RCON/prototype
+facts and explicit deterministic calculation. Do not present estimates as facts.
+Logistic availability must use `LOGISTICS|surface|item-name,item-name` (with
+`all` scanning planetary surfaces), retain surface/network separation, identify
+silo-connected networks, and report nonnegative available stock. It is not a
+recipe shortfall and must not be replaced by ad hoc
+`LuaForce.logistic_networks` queries.
+
+## Shared Dialogue and Spontaneous Comments
+
+Jimbo keeps one public, server-wide conversation: the newest 12 logical turns,
+15 minutes, and roughly 4,000 rendered characters. Record player messages,
+successfully delivered Jimbo replies, relevant spontaneous comments, and exact
+RCON facts associated with replies. Keep the current message outside history;
+history may clarify a reference but cannot revive an old request. Multiline
+replies become one turn only after successful delivery, retaining a delivered
+subset after partial delivery.
+
+Startup hydrates a bounded recent log tail without replying retroactively,
+filters joins, leaves, greetings, startup noise, failed replies, and duplicate
+echoes, then tails from the hydration endpoint. Hydration cannot restore hidden
+RCON metadata. Join greetings stay outside dialogue; a successful greeting
+resets the spontaneous timer. Successful direct replies clear accumulated
+spontaneous activity but remain in dialogue. The exact command
+`Jimbo, forget all previous instructions.` clears both contexts and is
+acknowledged without being sent to the model.
+
+Every ten minutes Jimbo may comment from accumulated activity plus a live
+research/progress/queue snapshot. Only `dlbattle` may force this with
+`Jimbo, chime in`; trailing text is a topic hint. A request to be quiet skips
+only the next scheduled comment. Successful comments clear activity and reset
+the failure counter; skipped, failed, or unsent attempts increment it, and after
+12 failures stale spontaneous context is cleared. With no players online,
+scheduled checks stay silent and clear stale activity/research baseline. Report
+an unchanged online research progress stall once, then suppress repeat notices
+until it changes or the technology changes.
+
+## Startup Announcements
+
+Jimbo announces every startup. If `startup_change_summary` differs from the
+gitignored `last_startup_summary.txt`, include that handcrafted, player-facing
+summary; otherwise use the generic greeting. Every changed summary must be
+recorded verbatim in `STARTUP_ANNOUNCEMENTS.md`. Do not record unchanged generic
+restarts.
+
+## Production Cell Placement
 
 Place a compact crafting cell (building, requester chest, provider chest, two
 inserters, and either a new or existing power supply) at a verified location so

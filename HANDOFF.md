@@ -11,9 +11,10 @@
   was observed at 18:12:04:
   “I no longer silently drop messages that directly address me, and
   production-cell searches now record why candidate sites were rejected.”
-- `AGENTS.md` is authoritative. Read `OPERATIONS.md` for runtime procedures,
-  `PROD_CELL_PLACE.md` for the production-cell contract, and
-  `FUTURE_DIRECTIONS.md` before implementing behavior from the live findings.
+- `AGENTS.md` is authoritative. Read `docs/OPERATIONS.md` for runtime
+  procedures, `docs/BOT_CONTRACTS.md` for active bot contracts, and
+  `docs/FUTURE_DIRECTIONS.md` before implementing behavior from the live
+  findings.
 - `last_chat_review.txt` was advanced through 2026-07-29 23:32:09. It is
   intentionally ignored and is not part of the commit.
 
@@ -51,7 +52,7 @@
 
 ### Durable live findings
 
-`FUTURE_DIRECTIONS.md` now records:
+`docs/FUTURE_DIRECTIONS.md` now records:
 
 - the requested future alert monitor and the transient
   `no_platform_storage` alert observed during orbital request allocation;
@@ -130,7 +131,7 @@ either snapshot; players are actively rebuilding Aquilo.
 ## Operational Caveats
 
 - Do not restart Jimbo or Factorio merely to resume work. Verify the existing
-  process and logs first; use the detached procedure in `OPERATIONS.md` only
+  process and logs first; use the detached procedure in `docs/OPERATIONS.md` only
   when a restart is required.
 - Any code change that will restart Jimbo must update
   `startup_change_summary` and append its exact text to
