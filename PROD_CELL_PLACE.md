@@ -7,13 +7,44 @@ handles geometry, preflight, placement, and verification. Compatible crafting
 machines and their dimensions are resolved from live Factorio 2.1 prototypes
 rather than a hardcoded recipe-category table.
 
+## Architecture
+
+The model does not choose coordinates for a relative placement. It returns only
+the structured `PRODUCE|surface|item|location` decision. Python validates those
+fields. Read-only Phase 1 Lua then resolves the actual current view or physical
+position from the server, derives the bottom-left starting anchor for each live
+compatible machine footprint, and searches deterministic expanding rings in the
+requested directional sector. An explicit GPS remains the one exact anchor.
+
+Phase 1 prefers a fully supported site and remembers the first structurally
+placeable fallback. Only after it returns a validated anchor does Python build
+the separate Phase 2 mutation command. Phase 2 revalidates the chosen plan,
+creates and verifies the ghosts once with retry disabled, and either prints the
+verified result or performs complete rollback.
+
+Every completed Phase 1 search appends a machine-readable trace to its private
+RCON response. Python removes it before reply composition and writes a compact
+`PRODUCE search trace` line to `jimbo.log`. It records:
+
+- resolved surface, exact origin, and directional sector;
+- compatible-machine and anchor counts;
+- structurally valid plan count;
+- occupied and exactly unplaceable plan counts;
+- structural plans missing heat, logistics, construction, or power support; and
+- the selected strict/fallback anchor and layout, or `none`.
+
+Compact and standard layouts may both be evaluated at one anchor, so the plan
+outcome counters can sum to more than the anchor count. The trace is diagnostic
+only and never relaxes mutation verification or appears in player chat.
+
 ## Current Implementation Status
 
 Steps 1 through 5 are implemented for an item-only recipe. The current code:
 
 - classifies requests into `PRODUCE|surface|item|location`, distinguishing an
   explicit GPS ping, current remote view, physical character position,
-  normalized direction, and an omitted location;
+  normalized direction with an optional explicit view or standing origin, and
+  an omitted location;
 - resolves `current` to the connected player's viewed or physical surface,
   searches from the requested origin, and falls back to the requested surface's
   actual force spawn when an omitted location has no matching online view;
@@ -32,11 +63,15 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
   and tile-sized steps on Aquilo, bounded to 128 tiles and 256 anchors per
   compatible machine, and applies the requested directional sector before
   running the same placement checks;
-- on Aquilo, requires each freezable planned component to touch an existing
+- on Aquilo, checks whether each freezable planned component touches an existing
   heat pipe, reactor, or heat interface at 30°C or warmer, while allowing
   non-overlapping heat infrastructure to remain inside the outer cell rectangle,
   and first tries a five-entity heated-ring layout powered by existing poles;
-- repeats every component preflight immediately before mutation;
+- prefers a candidate with heat, live power, logistics, and construction
+  coverage, but remembers the first structurally placeable fallback and uses it
+  with explicit support warnings if the bounded search finds no fully supported
+  candidate;
+- repeats every structural and support preflight immediately before mutation;
 - creates the selected five- or six-ghost layout plus any extension poles
   without mutation retry,
   copies the machine recipe settings to the requester chest through the
@@ -89,8 +124,10 @@ On Aquilo, Jimbo first tries this heated-ring layout with no new pole:
 The requester and provider are at `(x+0.5, y+h+1.5)` and
 `(x+1.5, y+h+1.5)`. Their inserters are immediately north at
 `(x+0.5, y+h+0.5)` facing south and `(x+1.5, y+h+0.5)` facing north.
-The machine and both inserters must already be covered by a powered electric
-pole. If this compact plan does not fit, the standard layout is still checked.
+The fully supported compact candidate has the machine and both inserters covered
+by a powered electric pole. A structural fallback may lack that coverage and
+reports it explicitly. If the compact plan does not fit, the standard layout is
+still checked.
 
 Every position is preflighted with `can_place_entity()` before any ghost is
 created. The full bounding box is a union of all component rectangles.
@@ -111,6 +148,8 @@ PRODUCE|surface|item-name|optional-position-hint
   - `standing` for the physical character position.
   - `north`, `north-east`, `east`, `south-east`, `south`, `south-west`, `west`,
     or `north-west`, relative to the current view.
+  - `view:<direction>` or `standing:<direction>` to preserve both the requested
+    origin and directional sector.
   - Empty when the player supplied no location.
 
 The classifier uses the pseudo-surface `current` when a player-relative request
@@ -123,8 +162,9 @@ The classifier prompt describes the format and current explicit-location limit:
 ```
 - PRODUCE|surface|item|location — place a production cell for the requested item.
   Copy an explicit player-supplied GPS map ping exactly. Never invent or adjust
-  coordinates. Normalize view, standing, and the eight named directions. Use
-  current when a relative request does not name a surface.
+  coordinates. Normalize view, standing, the eight named directions, and
+  origin-qualified directions such as standing:north. Use current when a
+  relative request does not name a surface.
 ```
 
 The current cell supports item-only recipes. Classification may still identify
@@ -172,8 +212,10 @@ The first Lua command validates bounded candidates without changing the world:
    Sort candidates by crafting speed, footprint, then name.
 3. For explicit GPS, floor the coordinates to the bottom-left anchor tile.
    Otherwise choose the origin from the connected player's view, their physical
-   position for `standing`, or the force's actual spawn on a named surface when
-   an omitted location cannot use the player's view. For each compatible
+   position for `standing` or `standing:<direction>`, or the force's actual spawn
+   on a named surface when an omitted location cannot use the player's view. A
+   bare direction and `view:<direction>` both use the current view for backward
+   compatibility. For each compatible
    machine, read `tile_width` and `tile_height`; generate deterministic expanding
    square rings in full-footprint steps normally and one-tile steps on Aquilo,
    filter to a named directional sector when requested, and stop at 128 tiles or
@@ -187,11 +229,11 @@ The first Lua command validates bounded candidates without changing the world:
    a. Reject any entity or ghost in the complete bounding box.
    b. Preflight every planned entity with `can_place_entity()` and
       `script_ghost`.
-   c. Require logistic coverage at the requester and construction coverage at
+   c. Check logistic coverage at the requester and construction coverage at
       every planned entity.
-   d. Require the planned normal-quality medium pole's supply area to cover the
-      building center.
-   e. Accept a direct mutual-wire-reach connection to an existing powered pole,
+   d. Check whether the planned normal-quality medium pole's supply area covers
+      the building center.
+   e. Prefer a direct mutual-wire-reach connection to an existing powered pole,
       or breadth-first search half-tile pole centers for at most two extension
       poles. Every extension candidate must be outside the complete cell box,
       unoccupied, placeable as a ghost, and in construction coverage.
@@ -200,11 +242,13 @@ The first Lua command validates bounded candidates without changing the world:
       inserter independently need any part of their collision box adjacent,
       including diagonally, to a heat source whose live temperature is at least
       30°C. The whole building footprint does not need to touch heat. Try the
-      five-entity heated-ring layout first and require existing powered-pole
-      supply at its building and both inserters.
-6. Return the first suitable anchor, dimensions, building prototype, exact
-   extension-pole positions, resolved real surface, and selected layout, or the
-   last grounded failure.
+      five-entity heated-ring layout first and check existing powered-pole supply
+      at its building and both inserters.
+6. Return the first fully supported candidate. During the same search, remember
+   the first candidate that passes occupancy and exact `can_place_entity()`
+   checks. If no fully supported candidate exists, return that structural
+   fallback marked for support warnings. Return a grounded failure only when no
+   structurally placeable candidate exists.
 
 The product item is never treated as the crafting machine merely because it has
 a placeable entity prototype.
@@ -216,14 +260,16 @@ in one `pcall`:
 
 1. Re-resolve the surface, player, recipe, building, and needed pole prototypes
    and require the building dimensions to still match Phase 1.
-2. Repeat the complete bounding-box occupancy scan, every per-entity
-   `can_place_entity()` check, logistic and construction coverage checks, and
-   selected-layout power checks. On Aquilo, recheck every freezable component's
-   live heat adjacency, existing power for the compact machine and inserters,
-   and ensure retained heat sources overlap no exact planned component. For the
-   standard layout, recheck each extension position for occupancy, placement,
-   construction coverage, pairwise wire reach, and a final live powered-pole
-   connection.
+2. Repeat the complete bounding-box occupancy scan and every per-entity
+   `can_place_entity()` check as hard requirements. Recheck logistic and
+   construction coverage and selected-layout power. On Aquilo, recheck every
+   freezable component's live heat adjacency, existing power for the compact
+   machine and inserters, and ensure retained heat sources overlap no exact
+   planned component. For the standard layout, recheck each extension position
+   for occupancy and placement as hard requirements, plus construction coverage,
+   pairwise wire reach, and a final live powered-pole connection. A strict
+   candidate rolls back if support changed after Phase 1; a marked fallback
+   records support and construction-registration deficiencies as warnings.
 3. Create the building at `(x+w/2, y+h/2)`, the requester and provider at
    `(x-1.5, row)` and `(x+w+1.5, row)`, the two west-facing inserters at
    `(x-0.5, row)` and `(x+w+0.5, row)`, and the pole at
@@ -236,9 +282,10 @@ in one `pcall`:
    every recipe ingredient appears in its logistic sections with a positive
    `filter.min`.
 6. Verify every new ghost with `is_registered_for_construction()`.
-7. Print the GPS anchor, dimensions, recipe, and exact entity list on success.
-   On failure, destroy the newly created ghosts in reverse order, count any
-   survivors, and report an incomplete rollback explicitly.
+7. Print the GPS anchor, dimensions, recipe, exact entity list, and every support
+   warning on success. On structural or settings failure, destroy the newly
+   created ghosts in reverse order, count any survivors, and report an incomplete
+   rollback explicitly.
 
 The mutation call uses `retry=False`; an uncertain RCON failure is never replayed.
 
@@ -309,12 +356,14 @@ and rollback list. Shifting the cell or fixed pole remains deferred.
 
 Implemented. Explicit GPS remains exact. `view` uses the current controller
 position and surface, so it follows remote view; `standing` uses the physical
-controller position and surface. Named directions search their sector from the
-current view. An omitted hint uses the online player's matching view, otherwise
-the requested surface's force spawn. The deterministic expanding-ring search
-uses full-cell footprint steps and is bounded to 128 tiles and 256 anchors per
-compatible machine. Aquilo uses one-tile steps so a prebuilt heat ring is not
-skipped by the coarser standard grid.
+controller position and surface. `view:<direction>` and
+`standing:<direction>` preserve the chosen origin while filtering the requested
+sector. Bare directions remain current-view-relative for compatibility. An
+omitted hint uses the online player's matching view, otherwise the requested
+surface's force spawn. The deterministic expanding-ring search uses full-cell
+footprint steps and is bounded to 128 tiles and 256 anchors per compatible
+machine. Aquilo uses one-tile steps so a prebuilt heat ring is not skipped by
+the coarser standard grid.
 
 ### Aquilo heat refinement
 
@@ -327,7 +376,8 @@ space inside the outer cell rectangle, but exact component overlap is still
 rejected before `can_place_entity()`. Jimbo first tries a compact ring layout
 with the machine at the north/top, two chests along the south/bottom, and their
 inserters between them. It adds no pole there; the machine and both inserters
-must already have live electric coverage.
+prefer existing live electric coverage, with a warning when a structural
+fallback lacks it.
 
 ### Step 6: Prototype resolution caching and refinement
 
@@ -343,22 +393,25 @@ restart because mods or game updates may change the prototypes.
   ghost is created.
 - The full bounding box is scanned in both phases because `script_ghost`
   placement checks alone can accept some infrastructure overlaps.
-- Logistic coverage is required at the requester, and construction coverage is
-  required at every planned entity.
+- Logistic and construction coverage are preferred. If the bounded search finds
+  no fully supported candidate, their absence is reported on the successfully
+  placed structural fallback.
 - Fluid recipes are rejected because neither current layout has pipe
   connections.
-- On Aquilo, every component with nonzero prototype `heating_energy` must touch
-  an existing heat source at 30°C or warmer in both phases. Heat sources may
-  remain inside unused portions of the outer rectangle, but exact overlap with
-  any planned entity is rejected explicitly.
+- On Aquilo, both phases check whether every component with nonzero prototype
+  `heating_energy` touches an existing heat source at 30°C or warmer. Missing
+  heat is reported on a structural fallback; exact overlap with a heat source
+  remains a hard rejection. Heat sources may remain inside unused portions of
+  the outer rectangle.
 - The entire mutation is wrapped in `pcall`; on failure all new ghosts are
   destroyed in reverse order, survivors are counted, and no success is printed.
 - Settings verification (`copy_settings` + section inspection) happens in
   the same RCON command to catch fulfillment races.
 - Building dimensions are queried from live prototypes, never hardcoded.
-- Power validation applies quality-aware supply and wire distances, requires
-  pairwise reach through at most two extension poles, and ends at an existing
-  pole whose `electric_network` is not `nil`.
+- Power validation applies quality-aware supply and wire distances and searches
+  pairwise-reachable chains of at most two extension poles ending at an existing
+  live network. Missing live power is a fallback warning; an extension position
+  that is occupied or cannot accept its ghost remains a hard failure.
 - Never replay a mutation automatically after an RCON disconnect.
 
 ## Failure Modes
@@ -368,7 +421,7 @@ restart because mods or game updates may change the prototypes.
 | Surface does not exist | Return error; no mutation |
 | Recipe not found, locked, or invalid for the surface | Return error; no mutation |
 | Recipe has a fluid ingredient or product | Return unsupported error; no mutation |
-| Aquilo candidate lacks ≥30°C heat adjacency for a freezable component | Reject the candidate; no mutation |
+| Aquilo candidate lacks ≥30°C heat adjacency for a freezable component | Keep searching; if no fully supported site exists, place the structural fallback and warn |
 | Retained heat source overlaps an exact planned component | Reject the candidate; no mutation |
 | No compatible placeable crafting machine | Return error; no mutation |
 | Explicit GPS is invalid or names another surface | Return error; no RCON or mutation |
@@ -376,14 +429,15 @@ restart because mods or game updates may change the prototypes.
 | Omitted location and no matching online view | Search from the requested surface's force spawn |
 | Automatic search exhausts 128 tiles or 256 anchors | Return the last grounded candidate failure; no mutation |
 | Occupancy or any `can_place_entity()` check fails | Reject the candidate; no mutation |
-| Logistic or full-cell construction coverage is absent | Reject the candidate; no mutation |
-| Planned pole cannot supply the building | Reject the candidate; no mutation |
-| No direct or at-most-two-pole route to live power | Reject the candidate; no mutation |
-| Extension position becomes blocked, uncovered, or disconnected | Roll back every new ghost |
+| Logistic or full-cell construction coverage is absent | Keep searching; if needed, place the structural fallback and warn |
+| Planned pole cannot supply the building | Keep searching; if needed, place the structural fallback and warn |
+| No direct or at-most-two-pole route to live power | Keep searching; if needed, place the structural fallback and warn |
+| Extension position becomes occupied, unplaceable, or exceeds pairwise wire reach | Roll back every new ghost |
+| Extension loses construction coverage or its final live-power connection | Strict candidate rolls back; structural fallback places and warns |
 | `pcall` catches an error during mutation | Destroy all newly created ghosts in reverse order; return error |
 | A newly created ghost survives rollback | Report the original error and the survivor count |
 | `copy_settings` does not produce expected requester filters | Destroy all ghosts; return error |
-| Construction registration fails for any ghost | Destroy all ghosts; return error |
+| Construction registration fails for any ghost | Strict candidate rolls back; structural fallback places and warns |
 | RCON disconnect during Phase 2 | Report failure; do not replay |
 | Requesting player missing | Reject before mutation because recipe-copy settings require that player |
 
@@ -391,16 +445,17 @@ restart because mods or game updates may change the prototypes.
 
 The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 
-- classifier instructions, normalized location parsing and rejection,
-  three-field dispatch with the requesting player, and grounded reply guidance;
+- classifier instructions, origin-qualified direction parsing and rejection,
+  backward-compatible view-relative directions, three-field dispatch with the
+  requesting player, and grounded reply guidance;
 - strict GPS validation, surface matching, flooring, required-player behavior,
   malformed Phase 1 responses, remote-view versus physical-position origins,
   resolved-current-surface transfer, spawn fallback, direction filtering, and
   the radius/candidate bounds;
 - live category-based machine resolution, dimensions, half-tile geometry,
-  inserter directions, fluid/surface-condition rejection, Aquilo heat
-  requirements and source-overlap handling, power,
-  logistics, construction coverage, and both-phase placement checks;
+  inserter directions, fluid/surface-condition rejection, Aquilo heat checks and
+  source-overlap handling, power, logistics, construction coverage, strict-site
+  preference, warning fallback, and both-phase placement checks;
 - bounded extension search, strict serialized-chain validation, Phase 2
   extension rechecks, and extension ghost creation;
 - creation of all base and extension ghosts, recipe and requester-filter

@@ -95,16 +95,24 @@ replace this path with ad hoc `LuaForce.logistic_networks` queries.
 
 Production-cell placement uses `PRODUCE|surface|item-name|location`. Location
 may be an explicit GPS ping, the current remote view, the physical character
-position, a normalized direction, or an automatic bounded player/spawn search.
-A fixed cell may add at most two fully preflighted extension poles to reach live
-power. On Aquilo, every freezable component must touch a live heat source at
-30°C or warmer; non-overlapping heat infrastructure may remain inside the cell's
-outer rectangle. Preserve the verified non-retried mutation and complete
-rollback contract in `PROD_CELL_PLACE.md`.
+position, an origin-qualified normalized direction, or an automatic bounded
+player/spawn search. A fixed cell may add at most two fully preflighted extension
+poles to reach live power. Prefer a fully supported location. If none exists,
+Jimbo may place the first structurally safe fallback and must report every
+missing heat, live-power, logistic, or construction connection. Collision,
+placement, recipe/settings verification, non-retried mutation, and complete
+rollback remain hard requirements. Non-overlapping heat infrastructure may
+remain inside the cell's outer rectangle. Preserve the complete contract in
+`PROD_CELL_PLACE.md`.
 
-An explicit Jimbo request that objectively fails during classification, RCON,
-reply composition, or delivery gets a short deterministic failure acknowledgment
-when delivery remains possible. Intentional SKIP decisions stay silent.
+Any current player message containing the standalone word `Jimbo` is directly
+addressed and must not fail silently. A classifier `SKIP` for such a message is
+invalid: retry classification once, then send the short deterministic failure
+acknowledgment if it still cannot be classified. Apply the same acknowledgment
+to classification errors, empty or failed RCON, reply-composition errors or
+`SKIP`, an empty filtered reply, and delivery failure when delivery remains
+possible. Only intentional SKIP decisions for messages not addressed to Jimbo
+stay silent.
 
 A mutating request requires an executable nonempty command and a printed,
 verified outcome. Treat a bare `/silent-command`, an empty RCON response, or an

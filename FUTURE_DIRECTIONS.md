@@ -35,6 +35,15 @@ natural interaction, and restrained behavior.
    work should distinguish platform inventory questions from ship-design advice
    and avoid presenting a platform query as relevant evidence for the latter.
 
+   A concrete player request from 2026-07-29 is for Jimbo to monitor important
+   Factorio alerts. Query alerts through the live API, deduplicate them by type
+   and target, and comment only when they remain actionable long enough to avoid
+   chat spam. Verify the underlying condition before speaking when possible.
+   Factorio 2.1.12 can briefly report `no_platform_storage` while orbital
+   requests are being allocated even when the hub has usable space and delivery
+   proceeds, so that alert specifically needs a short debounce plus live hub,
+   request, and pending-delivery context rather than immediate repetition.
+
 4. **Grounded production diagnosis and bounded controls.** Jimbo should answer
    broad questions such as "where are all the processing units going?" by tracing
    production backward through actual logistic stock, requester and machine
@@ -54,6 +63,12 @@ natural interaction, and restrained behavior.
    plans, ping exact locations, toggle circuit-controlled research, and create
    compact powered logistic production cells. Use the tested APIs and safety
    constraints below before turning any of them into Jimbo features.
+
+   A related live example was `Jimbo note this location. [gps=...]`: the
+   no-RCON reply claimed that the location was saved for later even though Jimbo
+   has no durable bookmark feature. Treat requests to remember, save, or mark a
+   location as unsupported until a verified storage action exists; bounded
+   dialogue context is not a persistent bookmark.
 
 6. **Formal offline scenario harness.** The project already supports manual log
    injection and mocked AI or RCON checks. Formalize that capability into a small,
@@ -406,17 +421,17 @@ valid neighboring machines.
 The first explicit-location implementation deliberately supports item-only
 recipes. Live prototype inspection showed that processing units, holmium plates,
 and superconductors all require fluid inputs, so a chest-and-inserter-only cell
-must reject them until it has a pipe-aware layout. Aquilo placement is supported
-only beside existing live heat infrastructure: every planned prototype with
-nonzero `heating_energy` must have any part of its collision box within the
-source's live `heating_radius`, and the source must be at least 30°C. Recheck
-this immediately before mutation. Existing heat sources may occupy unused space
-inside the outer cell rectangle, but must not overlap an exact planned component.
-For compact heated rings, put the machine on the north side, the requester and
-provider chests on the southwest and south-center tiles, and their inserters
-directly between the chests and machine. Reuse existing electric supply instead
-of adding a cell pole, and verify the machine and both inserters are inside a
-live pole's quality-aware supply area.
+must reject them until it has a pipe-aware layout. On Aquilo, prefer every
+planned prototype with nonzero `heating_energy` to have part of its collision box
+within a ≥30°C source's live `heating_radius`, and recheck this immediately
+before mutation. If the bounded search finds no fully heated site, a structurally
+placeable fallback may be ghosted with exact heat warnings. Existing heat sources
+may occupy unused space inside the outer cell rectangle, but must not overlap an
+exact planned component. For compact heated rings, put the machine on the north
+side, the requester and provider chests on the southwest and south-center tiles,
+and their inserters directly between the chests and machine. Prefer existing
+electric supply instead of adding a cell pole, and report when the machine or
+inserters lack live quality-aware supply coverage.
 
 In Factorio 2.1, use every entry in `LuaRecipePrototype.categories` and the
 `crafting-category` entity-prototype filter to discover compatible crafting
@@ -451,12 +466,15 @@ preflight every cell before the first change, and retain changed entities and ne
 ghosts for precise rollback. Verify settings and construction registration in
 the same command because robots may fulfill ghosts before the next RCON query.
 
-Power must be validated separately from placement and logistic coverage. Before
-creating a cell, locate a real electric pole, verify `pole.electric_network` is
-not `nil`, read its quality-aware supply radius with
-`pole.prototype.get_supply_area_distance(pole.quality)`, and place the assembler
-inside that area. Also verify the requester with
-`surface.find_logistic_network_by_position()`.
+Power must be validated separately from placement and logistic coverage. Prefer
+a real electric pole whose `electric_network` is not `nil`, read its
+quality-aware supply radius with
+`pole.prototype.get_supply_area_distance(pole.quality)`, and prefer an assembler
+inside that area. Also inspect the requester with
+`surface.find_logistic_network_by_position()`. If the bounded search finds no
+fully supported candidate, a structurally safe fallback may still be ghosted,
+but its exact missing power, logistics, heat, and construction support must be
+reported.
 
 If the destination lacks coverage, treat a power extension as a separately
 validated subplan in the same `pcall`. Choose a collision-free pole in
@@ -464,14 +482,85 @@ construction coverage, verify its quality-aware supply area, require copper-wire
 reach to a live network, and include its ghost in rollback. Once built,
 `assembler.is_connected_to_electric_network()` is the definitive power check.
 
-Named production-cell directions currently use the player's current view as
-their origin. The structured location field can express `standing` or `north`,
-but not both. This caused a live Aquilo request for “north of my current
+Named production-cell directions originally used only the player's current view
+as their origin. This caused a live Aquilo request for “north of my current
 location” to exclude a valid heated nook that was north of the physical
 character but west of the remote view; leaving map view made the same request
-succeed. A future refinement should preserve both origin and direction, such as
-`standing:north` versus `view:north`, while retaining the existing explicit
-`view`, `standing`, direction, and GPS forms for compatibility.
+succeed. The structured location now preserves both origin and direction with
+`standing:north` and `view:north`. Existing explicit `view`, `standing`, bare
+direction, and GPS forms remain compatible; a bare direction remains relative
+to the current view.
+
+### Electric Network And Aquilo Power Diagnosis
+
+Factorio 2.1 entities can be covered by more than one separate electric network.
+`LuaEntity.electric_network` exposes only the primary network; inspect every
+entry in `LuaEntity.electric_networks` for generators and consumers when
+diagnosing an apparent cross-connection. Electric poles themselves belong to
+only one network and continue to use `electric_network`.
+
+To verify a power-switch boundary, keep the switch in its observed state, group
+the relevant entities by every live network ID, and inspect the switch's
+connectors with `get_wire_connectors(false)`. The
+`power_switch_left_copper` and `power_switch_right_copper` connectors expose
+their separate electric networks and `real_connections`; this distinguishes
+actual copper wiring from an entity whose footprint merely overlaps two pole
+supply areas. Use `pole.prototype.get_supply_area_distance(pole.quality)` for
+the coverage check.
+
+Do not infer current topology from the electric-network statistics GUI or from
+the presence of a name in `current_output_quality_samples`. After a connected
+network is split, each side can retain zero-valued historical producer
+categories such as `solar-panel` or `steam-turbine`. A live Aquilo check showed
+these phantom categories on both sides while all 338 panels belonged only to one
+network and both turbines belonged only to the other. Require current
+`electric_networks` membership and, when useful, nonzero `flow_last_tick`
+production before reporting a live connection.
+
+Live Aquilo power tests also established several useful diagnostic facts. Its
+`solar-power` surface property is 1, so a normal panel produces 600 W at full
+daylight and 420 W averaged across the day/night cycle. Runtime energy and flow
+values used in these checks are joules per tick; multiply by 60 for watts.
+Disabled machines and inserters retain their fixed electric drain, and
+efficiency modules reduce active consumption but not that drain. An open power
+switch removes the downstream drain from the charging network, so a
+hysteresis latch is preferable to reconnecting a large load at one exact
+accumulator threshold.
+
+A normal roboport is especially important in a minimal bootstrap grid: its live
+prototype has 50 kW drain, a 100 MJ internal buffer, and roughly 2.05 MW maximum
+draw while filling or charging robots. Before recommending reconnection, inspect
+both accumulator energy and the roboport buffer; an otherwise sustainable solar
+grid can still brown out when an empty port is first attached.
+
+### Space Platform Requests And Asteroid Accounting
+
+A minimal platform with a nearly full hub exposed a likely request-allocation
+edge case. Electromagnetic plants and piercing ammunition were available on
+Nauvis, but an orbital request remained idle after the platform arrived with a
+full hub. Auto-trash asteroid requests later freed slots, the
+`no_platform_storage` alert disappeared, and no delivery remained pending, yet
+the ammunition request did not begin until the player deleted and recreated it.
+That recreation immediately worked. The hypothesis that allocation was not
+reevaluated after hub space changed is plausible but unconfirmed; report the
+observed state and workaround rather than presenting that cause as fact.
+
+A future platform-request diagnosis should inspect the platform's current
+location and travel state, request source mode (`all` versus a named planet),
+hub free slots and partial-stack capacity, auto-trash limits, pending deliveries,
+planetary silo-connected logistic stock, rocket availability, and current cargo
+pods before blaming item production. Request recreation is a player-approved
+workaround, not a mutation Jimbo should perform automatically.
+
+For tight asteroid inventory control, count every place a chunk can exist:
+collector storage and held chunks, both lanes of every belt, hub inventory,
+inserter hands into and out of crushers, and crusher input, output, and
+in-crafting contents. Crushers can create extra asteroid chunks, and inserter
+hand readers accidentally set to pulse instead of hold create accounting gaps.
+Even complete hold-mode accounting can overshoot a target by one when multiple
+collectors or machines act on the same positive request signal in the same
+update window. Diagnose wiring and read modes first, then describe any remaining
+one-item excess as a timing race rather than an invisible inventory.
 
 ### Automatic Research Control
 

@@ -279,6 +279,23 @@ the live save changes unexpectedly. Report both archive paths and verification.
 
 ## Runtime Pitfalls
 
+### Production Cell Search Traces
+
+Each completed production-cell Phase 1 search writes one
+`PRODUCE search trace:` line to `jimbo.log`. The trace reports the resolved
+surface and origin, direction, compatible machines, anchors examined,
+structurally valid layouts, occupancy and exact-placement rejections, support
+misses for heat/logistics/construction/power, and the selected strict or fallback
+anchor. Compact and standard layouts can both be evaluated at one anchor, so
+their outcome counters may exceed the anchor count.
+
+The trace is stripped before reply composition. Use it to diagnose why an
+apparently valid site was missed without replaying Phase 2. A missing trace means
+the request never completed Phase 1—for example, classification skipped or
+failed, the player/surface/recipe was rejected before search, or RCON failed.
+Never infer that a mutation occurred from a trace; only the separate verified
+Phase 2 `PRODUCE response` establishes placement.
+
 ### Opaque Chat Item Links
 
 The server log records a linked blueprint as an opaque token such as

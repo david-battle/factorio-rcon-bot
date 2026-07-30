@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -75,9 +76,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now fit Aquilo production cells inside compact heated rings, using "
-    "the surrounding roboport and existing electric coverage instead of forcing "
-    "my standard pole layout."
+    "I no longer silently drop messages that directly address me, and "
+    "production-cell searches now record why candidate sites were rejected."
 )
 
 opencode_config = json.dumps({
@@ -332,6 +332,29 @@ def report_request_failure(client, dialogue, recent_chat):
     return sent_lines, error
 
 
+def directly_addresses_jimbo(message):
+    return re.search(r"\bjimbo\b", message, flags=re.IGNORECASE) is not None
+
+
+def classify_current_message(username, message, history_text):
+    prompt = build_classification_prompt(username, message, history_text)
+    raw = ask_ai(prompt).split("\n")[0].strip()
+    if raw == "SKIP" and directly_addresses_jimbo(message):
+        print(
+            "Classifier incorrectly skipped a direct Jimbo message; retrying",
+            flush=True,
+        )
+        retry_prompt = (
+            prompt
+            + "\n\nYour previous answer was SKIP, but the current message directly "
+            "addresses Jimbo. Under the rules above it must be classified as NONE, "
+            "a structured request, or an executable slash command. Classify the "
+            "current message again with exactly one line."
+        )
+        raw = ask_ai(retry_prompt).split("\n")[0].strip()
+    return raw
+
+
 def parse_logistics_decision(raw):
     if not raw.startswith("LOGISTICS|"):
         return None
@@ -388,6 +411,21 @@ def get_logistic_availability(client, surface, items):
     return response.strip() if response else "(unavailable)"
 
 
+def parse_production_cell_relative_hint(hint):
+    if hint in production_cell_directions:
+        return "view", hint
+    if hint in production_cell_relative_locations:
+        return hint, ""
+    origin, separator, direction = hint.partition(":")
+    if (
+        separator
+        and origin in production_cell_relative_locations
+        and direction in production_cell_directions
+    ):
+        return origin, direction
+    return None
+
+
 def parse_produce_decision(raw):
     if not raw.startswith("PRODUCE|"):
         return None
@@ -406,10 +444,7 @@ def parse_produce_decision(raw):
     if not valid_name(surface) or not valid_name(item):
         return None
     if hint:
-        if (
-            hint in production_cell_directions
-            or hint in production_cell_relative_locations
-        ):
+        if parse_production_cell_relative_hint(hint) is not None:
             return surface, item, hint
         try:
             if not (hint.startswith("[gps=") and hint.endswith("]")):
@@ -435,10 +470,9 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     ay = 0
     direction = ""
     relative_location = ""
-    if hint in production_cell_directions:
-        direction = hint
-    elif hint in production_cell_relative_locations:
-        relative_location = hint
+    relative_hint = parse_production_cell_relative_hint(hint)
+    if relative_hint is not None:
+        relative_location, direction = relative_hint
     elif hint:
         inner = hint[1:-1] if hint.startswith("[") and hint.endswith("]") else ""
         if not inner.startswith("gps="):
@@ -501,6 +535,8 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"and request_player.surface==s then "
         f"origin=request_player.position "
         f"else origin=game.forces.player.get_spawn_position(s) end end;"
+        f"local origin_x=explicit and explicit_ax or origin.x;"
+        f"local origin_y=explicit and explicit_ay or origin.y;"
         f"local r=prototypes.recipe[{item_lua}];"
         f"if not r then rcon.print('ERROR: Recipe not found') return end;"
         f"for _,ingredient in ipairs(r.ingredients) do "
@@ -619,6 +655,24 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local pole_proto=prototypes.entity['medium-electric-pole'];"
         f"if not pole_proto then "
         f"rcon.print('ERROR: medium-electric-pole not found') return end;"
+        f"local trace={{anchors=0,structural=0,occupied=0,unplaceable=0,"
+        f"heat=0,logistics=0,construction=0,power=0}};"
+        f"local function trace_text(selection,ax,ay,layout) "
+        f"return string.format('surface=%s origin=%.1f:%.1f direction=%s "
+        f"machines=%d anchors=%d structural=%d occupied=%d unplaceable=%d "
+        f"heat=%d logistics=%d construction=%d power=%d "
+        f"selected=%s:%.0f:%.0f:%s',s.name,origin_x,origin_y,"
+        f"direction=='' and 'any' or direction,#candidates,trace.anchors,"
+        f"trace.structural,trace.occupied,trace.unplaceable,trace.heat,"
+        f"trace.logistics,trace.construction,trace.power,selection,ax,ay,"
+        f"layout) end;"
+        f"local function anchor_result(ax,ay,w,h,en,chain,layout,mode) "
+        f"local encoded={{}};for _,pos in ipairs(chain) do "
+        f"encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
+        f"return 'ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
+        f"','..table.concat(encoded,';')..','..s.name..','..layout..','..mode.."
+        f"'|TRACE:'..trace_text(mode,ax,ay,layout) end;"
+        f"local fallback_result=nil;"
         f"local last_error='No suitable compatible crafting machine';"
         f"for _,e in ipairs(candidates) do "
         f"local en=e.name;local w=e.tile_width;local h=e.tile_height;"
@@ -641,6 +695,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"and direction_ok(dx,dy) then "
         f"anchors[#anchors+1]={{base_x+dx,base_y+dy}} end end end end end end;"
         f"for _,anchor in ipairs(anchors) do "
+        f"trace.anchors=trace.anchors+1;"
         f"local ax=anchor[1];local ay=anchor[2];"
         f"local cx=ax+w/2;local cy=ay+h/2;"
         f"if requires_heat and w>=2 then "
@@ -656,6 +711,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"}};"
         f"local compact_count=count_blockers(compact_area);"
         f"if compact_count>0 then "
+        f"trace.occupied=trace.occupied+1;"
         f"last_error=compact_count..' entities in compact area' "
         f"else "
         f"local compact_placeable=true;local compact_blocked='';"
@@ -670,31 +726,45 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"if not plan_is_heated(plan) then "
         f"compact_heated=false;compact_cold=plan.name;break end end end;"
         f"if not compact_placeable then "
+        f"trace.unplaceable=trace.unplaceable+1;"
         f"last_error='Cannot place compact '..compact_blocked "
-        f"elseif not compact_heated then "
-        f"last_error='No heat coverage for compact '..compact_cold "
-        f"elseif not s.find_logistic_network_by_position("
-        f"compact_plans[2].position,'player') then "
-        f"last_error='No logistic network coverage for compact cell' "
         f"else "
+        f"trace.structural=trace.structural+1;"
+        f"local compact_net=s.find_logistic_network_by_position("
+        f"compact_plans[2].position,'player');"
         f"local compact_construction=true;"
         f"for _,plan in ipairs(compact_plans) do "
         f"if #s.find_logistic_networks_by_construction_area("
         f"plan.position,'player')==0 then "
         f"compact_construction=false break end end;"
+        f"local compact_power=plan_has_live_power(compact_plans[1]) "
+        f"and plan_has_live_power(compact_plans[4]) "
+        f"and plan_has_live_power(compact_plans[5]);"
+        f"if not compact_heated then trace.heat=trace.heat+1 end;"
+        f"if not compact_net then trace.logistics=trace.logistics+1 end;"
         f"if not compact_construction then "
+        f"trace.construction=trace.construction+1 end;"
+        f"if not compact_power then trace.power=trace.power+1 end;"
+        f"if compact_heated and compact_net and compact_construction "
+        f"and compact_power then "
+        f"rcon.print(anchor_result(ax,ay,w,h,en,{{}},"
+        f"'aquilo-compact','strict')) return "
+        f"else "
+        f"if not compact_heated then "
+        f"last_error='No heat coverage for compact '..compact_cold "
+        f"elseif not compact_net then "
+        f"last_error='No logistic network coverage for compact cell' "
+        f"elseif not compact_construction then "
         f"last_error='No construction network coverage for compact cell' "
-        f"elseif not plan_has_live_power(compact_plans[1]) "
-        f"or not plan_has_live_power(compact_plans[4]) "
-        f"or not plan_has_live_power(compact_plans[5]) then "
-        f"last_error='No existing power coverage for compact cell' "
-        f"else rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
-        f"',,'..s.name..',aquilo-compact') return end end end end;"
+        f"else last_error='No existing power coverage for compact cell' end;"
+        f"if not fallback_result then fallback_result=anchor_result("
+        f"ax,ay,w,h,en,{{}},'aquilo-compact','fallback') end end end end end;"
         f"local row=ay+math.floor(h/2)+0.5;"
         f"local pole_pos={{ax+math.floor(w/2)+0.5,ay-0.5}};"
         f"local area={{{{ax-2,ay-1}},{{ax+w+2,ay+h}}}};"
         f"local count=count_blockers(area);"
         f"if count>0 then "
+        f"trace.occupied=trace.occupied+1;"
         f"last_error=count..' entities in area' "
         f"else "
         f"local plans={{"
@@ -718,13 +788,13 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"if placeable then for _,plan in ipairs(plans) do "
         f"if not plan_is_heated(plan) then "
         f"heated=false;cold=plan.name;break end end end;"
-        f"if not placeable then last_error='Cannot place '..blocked "
-        f"elseif not heated then last_error='No heat coverage for '..cold "
+        f"if not placeable then "
+        f"trace.unplaceable=trace.unplaceable+1;"
+        f"last_error='Cannot place '..blocked "
         f"else "
+        f"trace.structural=trace.structural+1;"
         f"local requester=plans[2].position;"
         f"local net=s.find_logistic_network_by_position(requester,'player');"
-        f"if not net then last_error='No logistic network coverage' "
-        f"else "
         f"local construction=true;"
         f"for _,plan in ipairs(plans) do "
         f"if #s.find_logistic_networks_by_construction_area("
@@ -819,25 +889,36 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"{{position=candidate.position,path=path}} end end;"
         f"if connected then break end end;"
         f"if connected then break end;frontier=next_frontier end end;"
-        f"if not construction then "
+        f"if not heated then trace.heat=trace.heat+1 end;"
+        f"if not net then trace.logistics=trace.logistics+1 end;"
+        f"if not construction then trace.construction=trace.construction+1 end;"
+        f"if not supplies or not connected then trace.power=trace.power+1 end;"
+        f"if heated and net and construction and supplies and connected then "
+        f"rcon.print(anchor_result(ax,ay,w,h,en,chain,'standard','strict')) "
+        f"return "
+        f"else "
+        f"if not heated then last_error='No heat coverage for '..cold "
+        f"elseif not net then last_error='No logistic network coverage' "
+        f"elseif not construction then "
         f"last_error='No construction network coverage for full cell' "
         f"elseif not supplies then last_error='Planned pole cannot power building' "
-        f"elseif not connected then "
-        f"last_error='No live power connection within '..max_extensions.."
-        f"' extension poles' "
-        f"else "
-        f"local encoded={{}};for _,pos in ipairs(chain) do "
-        f"encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
-        f"rcon.print('ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
-        f"','..table.concat(encoded,';')..','..s.name..',standard') "
-        f"return end end end end end end;"
-        f"if explicit then rcon.print('ERROR: '..last_error) "
-        f"else rcon.print('ERROR: No suitable production-cell location within "
-        f"'..max_search_radius..' tiles (last: '..last_error..')') end"
+        f"else last_error='No live power connection within '..max_extensions.."
+        f"' extension poles' end;"
+        f"if not fallback_result then fallback_result=anchor_result("
+        f"ax,ay,w,h,en,chain,'standard','fallback') end end end end end end;"
+        f"if fallback_result then rcon.print(fallback_result) "
+        f"else local failure=nil;"
+        f"if explicit then failure='ERROR: '..last_error "
+        f"else failure='ERROR: No suitable production-cell location within "
+        f"'..max_search_radius..' tiles (last: '..last_error..')' end;"
+        f"rcon.print(failure..'|TRACE:'..trace_text('none',0,0,'none')) end"
     )
 
     response = client.run(phase1, retry=True)
     phase1_result = response.strip() if response else "ERROR: empty response"
+    phase1_result, trace_marker, search_trace = phase1_result.partition("|TRACE:")
+    if trace_marker:
+        print(f"PRODUCE search trace: {search_trace}", flush=True)
     if not phase1_result.startswith("ANCHOR:"):
         return phase1_result
 
@@ -851,7 +932,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
     except (IndexError, ValueError):
         return "ERROR: Invalid location response"
     if (
-        len(parts) not in (5, 6, 7, 8)
+        len(parts) not in (5, 6, 7, 8, 9)
         or not math.isfinite(anchor_ax_value)
         or not math.isfinite(anchor_ay_value)
         or not anchor_ax_value.is_integer()
@@ -877,8 +958,11 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
             or (surface != "current" and resolved_surface != surface)
         ):
             return "ERROR: Invalid location response"
-    layout = parts[7] if len(parts) == 8 else "standard"
+    layout = parts[7] if len(parts) >= 8 else "standard"
     if layout not in ("standard", "aquilo-compact"):
+        return "ERROR: Invalid location response"
+    placement_mode = parts[8] if len(parts) == 9 else "strict"
+    if placement_mode not in ("strict", "fallback"):
         return "ERROR: Invalid location response"
     extensions = []
     if len(parts) >= 6 and parts[5]:
@@ -923,9 +1007,16 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local en={json.dumps(en)};"
         f"local item={item_lua};"
         f"local layout={json.dumps(layout)};"
+        f"local allow_support_warnings="
+        f"{'true' if placement_mode == 'fallback' else 'false'};"
         f"local extensions={extensions_lua};"
         f"local player=game.get_player({player_lua});"
         f"local cleanup={{}};"
+        f"local warnings={{}};local warning_seen={{}};"
+        f"local function support_issue(text) "
+        f"if not allow_support_warnings then error(text) end;"
+        f"if not warning_seen[text] then warning_seen[text]=true;"
+        f"warnings[#warnings+1]=text end end;"
         f"local function rb() "
         f"for i=#cleanup,1,-1 do local g=cleanup[i];"
         f"if g and g.valid then pcall(function() g.destroy() end) end end;"
@@ -1041,21 +1132,24 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"error('cannot place '..plan.name) end end;"
         f"for _,plan in ipairs(plans) do "
         f"if not plan_is_heated(plan) then "
-        f"error('no heat coverage for '..plan.name) end end;"
+        f"support_issue('no heat coverage for '..plan.name) end end;"
         f"local requester=plans[2].position;"
         f"if not s.find_logistic_network_by_position(requester,'player') then "
-        f"error('no logistic network coverage') end;"
+        f"support_issue('no logistic network coverage') end;"
+        f"local construction=true;"
         f"for _,plan in ipairs(plans) do "
         f"if #s.find_logistic_networks_by_construction_area("
         f"plan.position,'player')==0 then "
-        f"error('no construction network coverage for full cell') end end;"
+        f"construction=false break end end;"
+        f"if not construction then "
+        f"support_issue('no construction network coverage for full cell') end;"
         f"if layout=='aquilo-compact' then "
         f"if not requires_heat then error('compact layout requires Aquilo') end;"
         f"if #extensions~=0 then error('compact layout cannot use extension poles') end;"
         f"if not plan_has_live_power(plans[1]) "
         f"or not plan_has_live_power(plans[4]) "
         f"or not plan_has_live_power(plans[5]) then "
-        f"error('no existing power coverage for compact cell') end "
+        f"support_issue('no existing power coverage for compact cell') end "
         f"else "
         f"if #extensions>{production_cell_max_extension_poles} then "
         f"error('too many extension poles') end;"
@@ -1076,11 +1170,12 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"error('cannot place extension pole') end;"
         f"if #s.find_logistic_networks_by_construction_area("
         f"pos,'player')==0 then "
-        f"error('no construction network coverage for extension pole') end end;"
+        f"support_issue('no construction network coverage for extension pole') "
+        f"end end;"
         f"local supply=pole_proto.get_supply_area_distance('normal');"
         f"if math.abs(cx-pole_pos[1])>supply "
         f"or math.abs(cy-pole_pos[2])>supply then "
-        f"error('planned pole cannot power building') end;"
+        f"support_issue('planned pole cannot power building') end;"
         f"local new_wire=pole_proto.get_max_wire_distance('normal');"
         f"local previous=pole_pos;"
         f"for _,pos in ipairs(extensions) do "
@@ -1100,7 +1195,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"local dy=pole.position.y-previous[2];"
         f"if dx*dx+dy*dy<=reach*reach then connected=true break end end end;"
         f"if not connected then "
-        f"error('no live power connection for extension chain') end end;"
+        f"support_issue('no live power connection for extension chain') end end;"
         f"local b=s.create_entity{{"
         f"name='entity-ghost',position=plans[1].position,force='player',"
         f"inner_name=en,recipe=item"
@@ -1156,7 +1251,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"end;"
         f"for _,g in ipairs(cleanup) do "
         f"if not g.is_registered_for_construction() then "
-        f"error(g.ghost_name..' not registered') end "
+        f"support_issue(g.ghost_name..' not registered for construction') end "
         f"end;"
         f"end);"
         f"if not ok then "
@@ -1168,10 +1263,12 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"'SUCCESS: [gps='..x..','..y..','..s.name..'] '"
         f"..w..'x'..h..' '..item..' cell placed with '..en.."
         f"', requester-chest, 2 inserters, passive-provider-chest'.."
-        f"(layout=='aquilo-compact' and ' using existing power' or "
+        f"(layout=='aquilo-compact' and "
+        f"(#warnings==0 and ' using existing power' or ' using compact layout') or "
         f"', medium-electric-pole'..(#extensions>0 and "
         f"', '..#extensions..' extension medium-electric-pole'.."
-        f"(#extensions==1 and '' or 's') or ''))) end"
+        f"(#extensions==1 and '' or 's') or '')).."
+        f"(#warnings>0 and '; WARNING: '..table.concat(warnings,', ') or '')) end"
     )
 
     response = client.run(phase2, retry=False)
@@ -1438,11 +1535,15 @@ def build_classification_prompt(username, message, history_text):
         "map ping exactly; never invent or adjust coordinates. Otherwise use "
         "the normalized location 'view' for 'here', 'where I am looking', or the "
         "current remote view; use 'standing' only for the player's physical "
-        "character position; or use one normalized direction: north, north-east, "
-        "east, south-east, south, south-west, west, north-west. Directions are "
-        "relative to the current view. Use an empty fourth field when no location "
-        "was supplied. Use surface 'current' when the request is relative to the "
-        "player and does not name a surface. Examples: "
+        "character position. Combine an origin and normalized direction as "
+        "'standing:north' for 'north of my current location' or where the player "
+        "is standing, and 'view:north' for north of the current map view. The "
+        "eight directions are north, north-east, east, south-east, south, "
+        "south-west, west, and north-west. A direction without an explicit origin "
+        "remains relative to the current view. Use an empty fourth field when no "
+        "location was supplied. Use surface 'current' when the request is relative "
+        "to the player and does not name a surface. Examples: "
+        "PRODUCE|current|electronic-circuit|standing:north, "
         "PRODUCE|current|electronic-circuit|view and "
         "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis].\n"
         "- Any other Factorio slash command needed to perform a requested server "
@@ -1460,7 +1561,8 @@ def build_classification_prompt(username, message, history_text):
         "Reply with exactly one line. Choose the best match:\n"
         "- SKIP (default) — player-to-player chat, casual greetings or comments "
         "NOT directed at Jimbo. If the message does not contain the word Jimbo, "
-        "reply SKIP.\n"
+        "reply SKIP. If the current message contains the word Jimbo, never reply "
+        "SKIP; use NONE for direct conversation with no action or query.\n"
         "- PLATFORMS — someone asking Jimbo about space platforms or ships.\n"
         "- PLANETS — someone asking Jimbo to list or identify the available planets. "
         "Do not use this for where an item or material comes from; a planet list "
@@ -1468,8 +1570,9 @@ def build_classification_prompt(username, message, history_text):
         "knowledge or query relevant prototypes when live data is needed.\n"
         "- PRODUCE|surface|item-name|optional-location — the current player asks "
         "Jimbo to place a production cell for a specific item. Use their explicit "
-        "GPS ping, view, standing, a normalized direction, or an empty fourth "
-        "field as described above.\n"
+        "GPS ping, view, standing, an origin-qualified normalized direction, a "
+        "backward-compatible view-relative direction, or an empty fourth field "
+        "as described above.\n"
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
         "- /<Factorio command> — an executable slash command when the player asks "
@@ -1519,10 +1622,12 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
             produce_hint = (
                 "This response is the verified result of a production-cell "
                 "placement request. On SUCCESS, report the anchor map ping and "
-                "every created entity named in the response. On ERROR, clearly say "
-                "the cell was not placed and explain the reported reason. Never "
-                "claim that placement succeeded when the response reports an "
-                "error.\n"
+                "every created entity named in the response. If SUCCESS includes "
+                "a WARNING, clearly say the cell was placed but repeat every "
+                "reported heat, power, logistics, or construction issue that still "
+                "needs attention. On ERROR, clearly say the cell was not placed "
+                "and explain the reported reason. Never claim that placement "
+                "succeeded when the response reports an error.\n"
             )
         return (
             context
@@ -1839,6 +1944,7 @@ if __name__ == "__main__":
                     trigger = "jimbo, chime in"
                     stripped_msg = msg.strip()
                     lowered_msg = stripped_msg.lower()
+                    directly_addressed = directly_addresses_jimbo(msg)
                     if username == server_owner and (
                         lowered_msg == trigger or lowered_msg.startswith(trigger + " ")
                     ):
@@ -1865,10 +1971,9 @@ if __name__ == "__main__":
                     produce_request = None
 
                     try:
-                        prompt = build_classification_prompt(
+                        raw = classify_current_message(
                             username, msg, history_text
                         )
-                        raw = ask_ai(prompt).split("\n")[0].strip()
                         skip = False
                     except Exception as e:
                         print(f"AI error (step 1): {e}", flush=True)
@@ -1877,7 +1982,15 @@ if __name__ == "__main__":
 
                     if not skip:
                         if raw == "SKIP":
-                            print(f"Model decided to skip", flush=True)
+                            if directly_addressed:
+                                request_failed = True
+                                print(
+                                    "Classifier failed a direct Jimbo message "
+                                    "after retry",
+                                    flush=True,
+                                )
+                            else:
+                                print("Model decided to skip", flush=True)
                             skip = True
                         elif raw == "PLATFORMS":
                             run_platforms = True
@@ -1969,7 +2082,7 @@ if __name__ == "__main__":
                             rcon_response = f"[error: {e}]"
 
                     if skip:
-                        if request_failed and "jimbo" in lowered_msg:
+                        if request_failed and directly_addressed:
                             report_request_failure(client, dialogue, recent_chat)
                         continue
 
@@ -1989,13 +2102,14 @@ if __name__ == "__main__":
                             print(f"RCON response: {rcon_response}", flush=True)
                             if rcon_response.startswith("[empty"):
                                 rcon_response = None
+                                rcon_failed = True
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)
                             rcon_response = None
                             rcon_failed = True
 
                     if rcon_failed:
-                        if "jimbo" in lowered_msg:
+                        if directly_addressed:
                             report_request_failure(client, dialogue, recent_chat)
                         continue
 
@@ -2009,7 +2123,15 @@ if __name__ == "__main__":
                         reply = ask_ai(step3_prompt)
                         if reply == "SKIP":
                             reply = None
-                            print(f"Model chose to stay silent", flush=True)
+                            if directly_addressed:
+                                reply_failed = True
+                                print(
+                                    "Model tried to stay silent on a direct "
+                                    "Jimbo message",
+                                    flush=True,
+                                )
+                            else:
+                                print("Model chose to stay silent", flush=True)
                         else:
                             print(f"Model reply: {reply}", flush=True)
                             if not reply.strip():
@@ -2020,7 +2142,7 @@ if __name__ == "__main__":
                         reply_failed = True
 
                     if reply_failed:
-                        if "jimbo" in lowered_msg:
+                        if directly_addressed:
                             report_request_failure(client, dialogue, recent_chat)
                         continue
 
@@ -2037,10 +2159,18 @@ if __name__ == "__main__":
                         )
                         if send_error is not None:
                             print(f"RCON error: {send_error}", flush=True)
-                            if "jimbo" in lowered_msg:
+                            if directly_addressed:
                                 report_request_failure(
                                     client, dialogue, recent_chat
                                 )
+                        elif not sent_lines and directly_addressed:
+                            print(
+                                "Reply contained no deliverable lines",
+                                flush=True,
+                            )
+                            report_request_failure(
+                                client, dialogue, recent_chat
+                            )
 
                     last_spontaneous = maybe_spontaneous(
                         client, recent_chat, dialogue, last_spontaneous,
