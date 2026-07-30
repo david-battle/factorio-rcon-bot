@@ -108,3 +108,16 @@ listed as announcements.
   coverage is missing, and I'll report exactly what needs attention.
 - **18:10:28:** I no longer silently drop messages that directly address me, and
   production-cell searches now record why candidate sites were rejected.
+
+## 2026-07-30
+
+- **13:47:** Spontaneous comments are now every 20 minutes instead of 10.
+  I will no longer parrot or just rephrase what players just said.
+- **13:??:** I can now tag entities on the map: just ask me to tag artillery,
+  poles, roboports, or any entity type on a named surface.
+- **15:??:** I can now remove chart tags: just ask me to untag artillery, poles,
+  roboports, or any entity type on a named surface.
+- **15:??:** I can now find and tag the entity with the highest damage dealt
+  on a surface. Ask me to show the top damage for artillery or other entities.
+- **16:35:** I can now find and tag the machine with the most products finished,
+  as well as the entity with the highest damage dealt. Just ask me!

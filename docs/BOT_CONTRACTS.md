@@ -55,15 +55,15 @@ spontaneous activity but remain in dialogue. The exact command
 `Jimbo, forget all previous instructions.` clears both contexts and is
 acknowledged without being sent to the model.
 
-Every ten minutes Jimbo may comment from accumulated activity plus a live
+Every twenty minutes Jimbo may comment from accumulated activity plus a live
 research/progress/queue snapshot. Only `dlbattle` may force this with
 `Jimbo, chime in`; trailing text is a topic hint. A request to be quiet skips
-only the next scheduled comment. Successful comments clear activity and reset
-the failure counter; skipped, failed, or unsent attempts increment it, and after
-12 failures stale spontaneous context is cleared. With no players online,
-scheduled checks stay silent and clear stale activity/research baseline. Report
-an unchanged online research progress stall once, then suppress repeat notices
-until it changes or the technology changes.
+the next scheduled comment. Successful
+comments clear activity and reset the failure counter; skipped, failed, or unsent
+attempts increment it, and after 12 failures stale spontaneous context is cleared.
+With no players online, scheduled checks stay silent and clear stale
+activity/research baseline. Report an unchanged online research progress stall
+once, then suppress repeat notices until it changes or the technology changes.
 
 ## Startup Announcements
 
@@ -245,6 +245,27 @@ The classifier prompt describes the format and current explicit-location limit:
 The current cell supports item-only recipes. Classification may still identify
 a fluid recipe, but placement will return a grounded unsupported-fluid error
 rather than ghosting a cell that cannot run.
+
+## Map Tagging
+
+The model returns a structured `TAG|surface|entity-type|optional-label` line
+during classification. Python validates the fields and builds the Lua command:
+
+```
+TAG|nauvis|artillery-turret|My Guns
+```
+
+- `surface` — lowercase internal surface name.
+- `entity-type` — lowercase internal entity type name such as
+  `artillery-turret`, `electric-pole`, `rocket-silo`, or `roboport`.
+- `optional-label` — free text shown on each tag; when omitted the tag text is
+  the entity type and unit number.
+
+The Python command `run_tag_command()` builds a `/silent-command` that iterates
+`find_entities_filtered{type=..., force='player'}` on the named surface and
+calls `force.add_chart_tag()` for each valid entity. It reports the count or a
+not-found message. The model never writes Lua for this action — it names the
+entity type and Python handles the rest.
 
 ## Parsing
 

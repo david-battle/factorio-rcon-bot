@@ -173,8 +173,15 @@ class DialogueTests(unittest.TestCase):
     def test_ai_retries_transient_http_status_from_provider_exception(self):
         error = RuntimeError("provider unavailable")
         error.status_code = 503
+        active_adapter_name = jimbo.ai_profile["provider"]
+        adapter_names = {
+            "opencode": "ask_opencode",
+            "openai-compatible": "ask_openai_compatible",
+            "ollama": "ask_ollama",
+        }
+        adapter_func = adapter_names[active_adapter_name]
         with patch.object(
-            jimbo, "ask_opencode", side_effect=[error, "response"]
+            jimbo, adapter_func, side_effect=[error, "response"]
         ) as adapter, patch.object(jimbo.time, "sleep") as sleep:
             response = jimbo.ask_ai("prompt")
 
@@ -334,6 +341,83 @@ class DialogueTests(unittest.TestCase):
             )
         )
 
+    def test_tag_decision_parses_and_validates(self):
+        self.assertEqual(
+            jimbo.parse_tag_decision("TAG|nauvis|artillery-turret"),
+            ("nauvis", "artillery-turret", ""),
+        )
+        self.assertEqual(
+            jimbo.parse_tag_decision("TAG|nauvis|artillery-turret|My Guns"),
+            ("nauvis", "artillery-turret", "My Guns"),
+        )
+        self.assertEqual(
+            jimbo.parse_tag_decision("TAG|fulgora|electric-pole|"),
+            ("fulgora", "electric-pole", ""),
+        )
+        self.assertIsNone(jimbo.parse_tag_decision("TAG|Nauvis|artillery-turret"))
+        self.assertIsNone(jimbo.parse_tag_decision("TAG|nauvis|ArtilleryTurret"))
+        self.assertIsNone(jimbo.parse_tag_decision("MARK|nauvis|artillery-turret"))
+        self.assertIsNone(
+            jimbo.parse_tag_decision(
+                'TAG|nauvis|artillery-turret\"] ; game.reset_time_played()'
+            )
+        )
+
+    def test_tag_command_builds_correct_lua(self):
+        client = Mock()
+        client.run.return_value = "Tagged 12 artillery-turret on nauvis"
+        result = jimbo.run_tag_command(client, "nauvis", "artillery-turret", "")
+        command = client.run.call_args.args[0]
+        self.assertIn('game.surfaces["nauvis"]', command)
+        self.assertIn("add_chart_tag", command)
+        self.assertIn("name=et", command)
+        self.assertIn("type=et", command)
+        self.assertIn("icon={type='entity',name=et}", command)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+        self.assertIn("Tagged", result)
+
+    def test_tag_command_with_label(self):
+        client = Mock()
+        client.run.return_value = "Tagged 5 electric-pole on nauvis"
+        result = jimbo.run_tag_command(client, "nauvis", "electric-pole", "Pole")
+        command = client.run.call_args.args[0]
+        self.assertIn('label_text="Pole"', command)
+        self.assertIn("Tagged", result)
+
+    def test_tag_command_reports_surface_not_found(self):
+        client = Mock()
+        client.run.return_value = "Surface not found"
+        result = jimbo.run_tag_command(client, "invalid", "artillery-turret", "")
+        self.assertIn("Surface not found", result)
+
+    def test_tag_command_reports_no_entities_found(self):
+        client = Mock()
+        client.run.return_value = "No artillery-turret found on nauvis"
+        result = jimbo.run_tag_command(client, "nauvis", "artillery-turret", "")
+        self.assertIn("No artillery-turret found", result)
+
+    def test_top_damage_decision_parses_and_validates(self):
+        self.assertEqual(
+            jimbo.parse_top_damage_decision("TOP_DAMAGE|nauvis|artillery-turret"),
+            ("nauvis", "artillery-turret"),
+        )
+        self.assertEqual(
+            jimbo.parse_top_damage_decision("TOP_DAMAGE|nauvis|any"),
+            ("nauvis", "any"),
+        )
+        self.assertIsNone(jimbo.parse_top_damage_decision("TOP_DAMAGE|Nauvis|artillery-turret"))
+
+    def test_top_damage_command_builds_correct_lua(self):
+        client = Mock()
+        client.run.return_value = "Tagged artillery-turret unit 12 at 0,0 with 100 damage"
+        result = jimbo.run_top_damage_command(client, "nauvis", "artillery-turret")
+        command = client.run.call_args.args[0]
+        self.assertIn('game.surfaces["nauvis"]', command)
+        self.assertIn("add_chart_tag", command)
+        self.assertIn("damage_dealt", command)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+        self.assertIn("Tagged", result)
+
     def test_logistic_availability_deduplicates_and_marks_silo_networks(self):
         client = Mock()
         client.run.return_value = (
@@ -448,14 +532,14 @@ class DialogueTests(unittest.TestCase):
             "stall_announced": True,
         }
 
-        with patch.object(jimbo.time, "time", return_value=1000), patch.object(
+        with patch.object(jimbo.time, "time", return_value=2000), patch.object(
             jimbo, "ask_ai"
         ) as ask_ai:
             last_spontaneous = jimbo.maybe_spontaneous(
                 client, recent_chat, deque(), 0, state
             )
 
-        self.assertEqual(last_spontaneous, 1000)
+        self.assertEqual(last_spontaneous, 2000)
         self.assertEqual(recent_chat, [])
         self.assertEqual(state["failed_attempts"], 0)
         self.assertIsNone(state["research_name"])
@@ -491,15 +575,15 @@ class DialogueTests(unittest.TestCase):
         dialogue = deque()
 
         with patch.object(jimbo, "ask_ai", return_value="SKIP") as ask_ai:
-            with patch.object(jimbo.time, "time", return_value=1000):
+            with patch.object(jimbo.time, "time", return_value=1300):
                 last_spontaneous = jimbo.maybe_spontaneous(
                     client, [], dialogue, 0, state
                 )
-            with patch.object(jimbo.time, "time", return_value=1600):
+            with patch.object(jimbo.time, "time", return_value=2600):
                 last_spontaneous = jimbo.maybe_spontaneous(
                     client, [], dialogue, last_spontaneous, state
                 )
-            with patch.object(jimbo.time, "time", return_value=2200):
+            with patch.object(jimbo.time, "time", return_value=3900):
                 jimbo.maybe_spontaneous(
                     client, [], dialogue, last_spontaneous, state
                 )

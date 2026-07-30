@@ -15,7 +15,7 @@ from rcon.source import Client
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
 server_owner = "dlbattle"
-ai_profile_name = "openai"
+ai_profile_name = "groq"
 ai_profiles = {
     "openai": {
         "provider": "opencode",
@@ -76,8 +76,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I no longer silently drop messages that directly address me, and "
-    "production-cell searches now record why candidate sites were rejected."
+    "I can now find and tag the machine with the most products finished, "
+    "as well as the entity with the highest damage dealt. Just ask me!"
 )
 
 opencode_config = json.dumps({
@@ -336,6 +336,17 @@ def directly_addresses_jimbo(message):
     return re.search(r"\bjimbo\b", message, flags=re.IGNORECASE) is not None
 
 
+def loosely_refers_to_jimbo(message):
+    lowered = message.lower()
+    target = "jimbo"
+    n = len(target)
+    for i in range(len(lowered) - n + 1):
+        chunk = lowered[i:i + n]
+        if sum(c1 != c2 for c1, c2 in zip(chunk, target)) <= 1:
+            return True
+    return False
+
+
 def classify_current_message(username, message, history_text):
     prompt = build_classification_prompt(username, message, history_text)
     raw = ask_ai(prompt).split("\n")[0].strip()
@@ -376,6 +387,163 @@ def parse_logistics_decision(raw):
     if not all(valid_name(item) for item in items):
         return None
     return surface, items
+
+
+def parse_tag_decision(raw):
+    if not raw.startswith("TAG|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) not in (3, 4):
+        return None
+    surface = parts[1].strip()
+    entity_type = parts[2].strip()
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    label = parts[3].strip() if len(parts) == 4 and parts[3].strip() else ""
+    if not valid_name(surface) or not valid_name(entity_type):
+        return None
+    return surface, entity_type, label
+
+
+def run_tag_command(client, surface, entity_type, label):
+    surface_lua = json.dumps(surface)
+    entity_lua = json.dumps(entity_type)
+    label_lua = json.dumps(label)
+    cmd = (
+        f"/silent-command local s=game.surfaces[{surface_lua}];"
+        f"if not s then rcon.print('Surface not found') return end;"
+        f"local et={entity_lua};"
+        f"local label_text={label_lua};"
+        f"local icon={{type='entity',name=et}};"
+        f"local count=0;"
+        f"local list=s.find_entities_filtered{{name=et}};"
+        f"if #list==0 then list=s.find_entities_filtered{{type=et}} end;"
+        f"for _,e in ipairs(list) do "
+        f"if e.valid then "
+        f"local tag_label=label_text~='' and label_text or e.name;"
+        f"game.forces.player.add_chart_tag(s,{{position=e.position,"
+        f"icon=icon,text=tag_label}});"
+        f"count=count+1 end end;"
+        f"if count==0 then rcon.print('No '..et..' found on '..s.name) "
+        f"else rcon.print('Tagged '..count..' '..et..' on '..s.name) end"
+    )
+    response = client.run(cmd, retry=True)
+    return response.strip() if response else "ERROR: empty response"
+
+
+def parse_untag_decision(raw):
+    if not raw.startswith("UNTAG|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) not in (3, 4):
+        return None
+    surface = parts[1].strip()
+    entity_type = parts[2].strip()
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    label = parts[3].strip() if len(parts) == 4 and parts[3].strip() else ""
+    if not valid_name(surface) or not valid_name(entity_type):
+        return None
+    return surface, entity_type, label
+
+
+def run_untag_command(client, surface, entity_type, label):
+    surface_lua = json.dumps(surface)
+    entity_lua = json.dumps(entity_type)
+    label_lua = json.dumps(label)
+    cmd = (
+        f"/silent-command local s=game.surfaces[{surface_lua}];"
+        f"if not s then rcon.print('Surface not found') return end;"
+        f"local et={entity_lua};"
+        f"local label_text={label_lua};"
+        f"local pt=prototypes.entity[et];"
+        f"local type_name=pt and pt.type or nil;"
+        f"local tags=game.forces.player.find_chart_tags(s);"
+        f"local count=0;"
+        f"for _,tag in ipairs(tags) do "
+        f"if (label_text~='' and tag.text==label_text) or "
+        f"(label_text=='' and "
+        f"(tag.text:lower():match('^'..et:lower():gsub('%-','%%-')) or "
+        f"(type_name and "
+        f"tag.text:lower():match('^'..type_name:lower():gsub('%-','%%-'))))) then "
+        f"tag.destroy();"
+        f"count=count+1 end end;"
+        f"if count==0 then rcon.print('No matching tags found on '..s.name) "
+        f"else rcon.print('Removed '..count..' tags from '..s.name) end"
+    )
+    response = client.run(cmd, retry=True)
+    return response.strip() if response else "ERROR: empty response"
+
+
+def parse_top_damage_decision(raw):
+    if not raw.startswith("TOP_DAMAGE|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) < 3 or len(parts) > 3:
+        return None
+    surface = parts[1].strip()
+    entity_type = parts[2].strip()
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    if not valid_name(surface):
+        return None
+    if entity_type != "any" and not valid_name(entity_type):
+        return None
+    return surface, entity_type
+
+
+def run_top_damage_command(client, surface, entity_type):
+    surface_lua = json.dumps(surface)
+    entity_lua = json.dumps(entity_type)
+    cmd = (
+        f"/silent-command local s=game.surfaces[{surface_lua}];"
+        f"if not s then rcon.print('Surface not found') return end;"
+        f"local et={entity_lua};"
+        f"local best=nil;local bd=0;local stat_name='damage';local best_name='';"
+        f"if et=='any' then "
+        f"local types={{'rocket-silo','assembling-machine','furnace','mining-drill',"
+        f"'chemical-plant','oil-refinery','centrifuge'}};"
+        f"for _,t in ipairs(types) do "
+        f"local list=s.find_entities_filtered{{type=t}};"
+        f"for _,e in ipairs(list) do "
+        f"local ok,v=pcall(function() return e.products_finished end);"
+        f"local sn=t=='rocket-silo' and 'launches' or 'products';"
+        f"if ok and v and v>bd then bd=v;best=e;stat_name=sn;best_name=e.name end end end;"
+        f"else "
+        f"local list=s.find_entities_filtered{{name=et}};"
+        f"if #list==0 then list=s.find_entities_filtered{{type=et}} end;"
+        f"for _,e in ipairs(list) do "
+        f"local ok,v=pcall(function() return e.products_finished end);"
+        f"if ok and v then "
+        f"local sn=(e.type=='rocket-silo' or e.name=='rocket-silo') and 'launches' or 'products';"
+        f"if v>bd then bd=v;best=e;stat_name=sn end "
+        f"else "
+        f"local ok2,v2=pcall(function() return e.damage_dealt end);"
+        f"if ok2 and v2 and v2>bd then bd=v2;best=e;stat_name='damage' end "
+        f"end end end;"
+        f"if not best then rcon.print('No '..et..' found on '..s.name) return end;"
+        f"local icon_name=best_name~='' and best_name or et;"
+        f"game.forces.player.add_chart_tag(s,{{position=best.position,"
+        f"icon={{type='entity',name=icon_name}},"
+        f"text='Highest '..stat_name..': '..tostring(math.floor(bd))}});"
+        f"rcon.print('Tagged '..et..' unit '..best.unit_number..' at '.."
+        f"tostring(best.position.x)..','..tostring(best.position.y)"
+        f"..' with '..tostring(math.floor(bd))..' '..stat_name..'')"
+    )
+    response = client.run(cmd, retry=True)
+    return response.strip() if response else "ERROR: empty response"
 
 
 def get_logistic_availability(client, surface, items):
@@ -1527,7 +1695,7 @@ def build_classification_prompt(username, message, history_text):
         "not explicitly say 'logistic network'. Use surface 'all' when asked about "
         "anywhere, everywhere, all planets, or the whole solar system. Examples: "
         "LOGISTICS|fulgora|holmium-plate,superconductor,supercapacitor.\n"
-        "- PRODUCE|surface|item-name|optional-location — place a compact "
+         "- PRODUCE|surface|item-name|optional-location — place a compact "
         "production cell with a crafting machine, requester and provider chests, "
         "two inserters, and a power pole. Use lowercase internal names when the "
         "current player asks Jimbo to make, produce, craft, build, or set up "
@@ -1546,6 +1714,24 @@ def build_classification_prompt(username, message, history_text):
         "PRODUCE|current|electronic-circuit|standing:north, "
         "PRODUCE|current|electronic-circuit|view and "
         "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis].\n"
+        "- TAG|surface|entity-type|optional-label — find every entity of a given "
+        "type on a surface and add a chart tag at each position. Use lowercase "
+        "internal entity type names such as artillery-turret, electric-pole, "
+        "rocket-silo, or roboport. The optional label is free text; when omitted, "
+        "each tag shows the entity type and unit number. Examples: "
+        "TAG|nauvis|artillery-turret, TAG|nauvis|artillery-turret|My Guns.\n"
+        "- UNTAG|surface|entity-type|optional-label — find every chart tag on a "
+        "surface whose text starts with the given entity type (or matches the "
+        "exact label) and remove it. Examples: UNTAG|nauvis|artillery-turret, "
+        "UNTAG|nauvis|artillery-turret|My Guns.\n"
+        "- TOP_DAMAGE|surface|entity-type — find the entity of a given type "
+        "with the highest stat on a surface and tag it. Uses damage_dealt for "
+        "turrets, products_finished for machines (labeled \"launches\" for "
+        "rocket-silo, \"products\" for other machines). Use entity-type \"any\" "
+        "to search all machine types for the one with the most products_finished. "
+        "Examples: TOP_DAMAGE|nauvis|artillery-turret, "
+        "TOP_DAMAGE|nauvis|rocket-silo, TOP_DAMAGE|nauvis|any.\n"
+
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
         "rcon.print with the actual outcome. When querying research, print the "
@@ -1568,18 +1754,40 @@ def build_classification_prompt(username, message, history_text):
         "Do not use this for where an item or material comes from; a planet list "
         "does not establish material sources. Use NONE for established Factorio "
         "knowledge or query relevant prototypes when live data is needed.\n"
-        "- PRODUCE|surface|item-name|optional-location — the current player asks "
+         "- PRODUCE|surface|item-name|optional-location — the current player asks "
         "Jimbo to place a production cell for a specific item. Use their explicit "
         "GPS ping, view, standing, an origin-qualified normalized direction, a "
         "backward-compatible view-relative direction, or an empty fourth field "
         "as described above.\n"
+        "- TAG|surface|entity-type|optional-label — the current player asks Jimbo "
+        "to tag, ping, or mark entities of a specific type on a named surface, "
+        "such as nauvis or fulgora. Use a real surface name — "
+        "\"current\" is not valid. Examples: TAG|nauvis|artillery-turret, "
+        "TAG|nauvis|rocket-silo.\n"
+        "- UNTAG|surface|entity-type|optional-label — the current player asks Jimbo "
+        "to remove chart tags for entities of a specific type from a surface. "
+        "When label is empty, matches tags whose text starts with the entity type "
+        "name. When label is provided, matches only tags with that exact text. "
+        "Examples: UNTAG|nauvis|artillery-turret, "
+        "UNTAG|nauvis|artillery-turret|My Guns.\n"
+        "- TOP_DAMAGE|surface|entity-type — the current player asks Jimbo to find "
+        "the entity with the highest stat (damage_dealt for turrets, "
+        "products_finished for machines) on a named surface and tag it. "
+        "Use \"any\" as entity-type to search all machine types for the one "
+        "with the most products_finished. Examples: "
+        "TOP_DAMAGE|nauvis|artillery-turret, TOP_DAMAGE|nauvis|rocket-silo, "
+        "TOP_DAMAGE|nauvis|any.\n"
+
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
         "- /<Factorio command> — an executable slash command when the player asks "
         "Jimbo to perform another server action. Never literally reply 'A Factorio "
         "slash command'. Do not return NONE for an actionable request.\n"
         "- NONE — someone directly addressing Jimbo by name but just chatting "
-        "(greetings, thanks) with no server info needed."
+        "(greetings, thanks) with no server info needed. Also use NONE when the "
+        "player asks for something that does not match any available action. "
+        "Do NOT substitute a different action (e.g. TAG all instead of the "
+        "one with the most launches) — instead return NONE and explain."
     )
 
 
@@ -1594,6 +1802,14 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
         "scrap-recycling-productivity at level 3 is scrap recycling productivity "
         "3. Do not mention the internal name or redundantly append '(level 8)'.\n\n"
     )
+    none_hint = ""
+    if rcon_command == "NONE":
+        none_hint = (
+            "No action was taken — the request does not match any available "
+            "command. Do NOT fabricate a result. Explain that you cannot "
+            "fulfill this specific request and suggest what you CAN do "
+            "(tag all, untag all, etc.).\n"
+        )
     if rcon_response is not None:
         time_hint = ""
         if rcon_command == "/time":
@@ -1629,14 +1845,44 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
                 "and explain the reported reason. Never claim that placement "
                 "succeeded when the response reports an error.\n"
             )
+        tag_hint = ""
+        if rcon_command == "RCON: map tags":
+            tag_hint = (
+                "This response reports how many entities were tagged on the "
+                "surface. If it found none, say so clearly. If it succeeded, "
+                "tell the player how many were tagged and of what type.\n"
+            )
+        untag_hint = ""
+        if rcon_command == "RCON: remove tags":
+            untag_hint = (
+                "This response reports how many chart tags were removed from "
+                "the surface. If it found no matching tags, say so clearly. "
+                "If it succeeded, tell the player how many were removed.\n"
+            )
+        top_damage_hint = ""
+        if rcon_command == "RCON: top damage":
+            top_damage_hint = (
+                "This response reports which entity of the requested type had "
+                "the highest stat (damage_dealt or products_finished), its "
+                "position, and the stat value. The response text either "
+                "describes what was tagged or says nothing was found. "
+                "Read the response literally and report its content — "
+                "do NOT fabricate a failure when the response describes "
+                "a successful tag.\n"
+            )
         return (
             context
             + f'{username} currently asked: "{message}".\n'
+            + f"Address your reply to {username}.\n"
             + f'I ran "{rcon_command}" and got the response: "{rcon_response}".\n'
             + time_hint
             + planet_hint
             + logistics_hint
             + produce_hint
+            + tag_hint
+            + untag_hint
+            + none_hint
+            + top_damage_hint
             + "You are Jimbo, a helpful Factorio bot. "
             + f"{model_identity}\n"
             + f"The server is owned and operated by {server_owner}.\n"
@@ -1653,7 +1899,9 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
         )
     return (
         context
-        + f'{username} currently said: "{message}".\n'
+        + f'{username} (the player currently talking to Jimbo) said: "{message}".\n'
+        + f"Address your reply to {username}.\n"
+        + none_hint
         + "You are Jimbo, a helpful Factorio bot. "
         + f"{model_identity}\n"
         + f"The server is owned and operated by {server_owner}.\n"
@@ -1693,7 +1941,7 @@ def maybe_spontaneous(
     client, recent_chat, dialogue, last_spontaneous, spontaneous_state,
     force=False, topic_hint="",
 ):
-    if not force and time.time() - last_spontaneous < 600:
+    if not force and time.time() - last_spontaneous < 1200:
         return last_spontaneous
     if not force and spontaneous_state["skip_next"]:
         spontaneous_state["skip_next"] = False
@@ -1758,7 +2006,9 @@ def maybe_spontaneous(
         "exactly rather than appending a separate level.\n"
         f"{focus_text}\n"
         "You can make a spontaneous comment if something interesting is "
-        "happening. Reply with a short chat message (1 sentence) or just 'SKIP'."
+        "happening. Reply with a short chat message (1 sentence) or just 'SKIP'. "
+        "Do not simply rephrase, echo, or restate what was just said. If you "
+        "cannot add something original, reply SKIP."
     )
     last_spontaneous = time.time()
     successful = False
@@ -1969,16 +2219,22 @@ if __name__ == "__main__":
                     run_planets = False
                     logistics_request = None
                     produce_request = None
+                    tag_request = None
+                    untag_request = None
+                    top_damage_request = None
 
-                    try:
-                        raw = classify_current_message(
-                            username, msg, history_text
-                        )
-                        skip = False
-                    except Exception as e:
-                        print(f"AI error (step 1): {e}", flush=True)
-                        skip = True
-                        request_failed = True
+                    if not loosely_refers_to_jimbo(msg):
+                        print("Model decided to skip", flush=True)
+                    else:
+                        try:
+                            raw = classify_current_message(
+                                username, msg, history_text
+                            )
+                            skip = False
+                        except Exception as e:
+                            print(f"AI error (step 1): {e}", flush=True)
+                            skip = True
+                            request_failed = True
 
                     if not skip:
                         if raw == "SKIP":
@@ -2010,10 +2266,28 @@ if __name__ == "__main__":
                                 f"Model requested PRODUCE: {produce_request}",
                                 flush=True,
                             )
+                        elif parse_tag_decision(raw) is not None:
+                            tag_request = parse_tag_decision(raw)
+                            print(
+                                f"Model requested TAG: {tag_request}",
+                                flush=True,
+                            )
+                        elif parse_untag_decision(raw) is not None:
+                            untag_request = parse_untag_decision(raw)
+                            print(
+                                f"Model requested UNTAG: {untag_request}",
+                                flush=True,
+                            )
+                        elif parse_top_damage_decision(raw) is not None:
+                            top_damage_request = parse_top_damage_decision(raw)
+                            print(
+                                f"Model requested TOP_DAMAGE: {top_damage_request}",
+                                flush=True,
+                            )
                         elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
                             rcon_cmd = raw
                             print(f"Model command: {rcon_cmd}", flush=True)
-                        elif raw == "NONE":
+                        elif raw.upper().startswith("NONE"):
                             rcon_cmd = "NONE"
                             print(f"Model command: NONE", flush=True)
                         else:
@@ -2081,6 +2355,45 @@ if __name__ == "__main__":
                             print(f"RCON error: {e}", flush=True)
                             rcon_response = f"[error: {e}]"
 
+                    if tag_request is not None:
+                        rcon_cmd = "RCON: map tags"
+                        try:
+                            rcon_response = run_tag_command(
+                                client, *tag_request
+                            )
+                            print(
+                                f"TAG response: {rcon_response}", flush=True
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
+
+                    if untag_request is not None:
+                        rcon_cmd = "RCON: remove tags"
+                        try:
+                            rcon_response = run_untag_command(
+                                client, *untag_request
+                            )
+                            print(
+                                f"UNTAG response: {rcon_response}", flush=True
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
+
+                    if top_damage_request is not None:
+                        rcon_cmd = "RCON: top damage"
+                        try:
+                            rcon_response = run_top_damage_command(
+                                client, *top_damage_request
+                            )
+                            print(
+                                f"TOP_DAMAGE response: {rcon_response}",
+                                flush=True,
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
                     if skip:
                         if request_failed and directly_addressed:
                             report_request_failure(client, dialogue, recent_chat)
