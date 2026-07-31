@@ -435,6 +435,7 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("add_chart_tag", command)
         self.assertIn("damage_dealt", command)
         self.assertIn("[gps=", command)
+        self.assertIn("icon_name..' '..tostring(best.unit_number)", command)
         self.assertTrue(client.run.call_args.kwargs["retry"])
         self.assertIn("Tagged", result)
 
@@ -493,6 +494,41 @@ class DialogueTests(unittest.TestCase):
             "some platform",
         )
         self.assertEqual(other, "Hey, there are 134 turrets.")
+
+    def test_untag_decision_parses_and_validates(self):
+        self.assertEqual(
+            jimbo.parse_untag_decision("UNTAG|nauvis|artillery-turret"),
+            ("nauvis", "artillery-turret", ""),
+        )
+        self.assertEqual(
+            jimbo.parse_untag_decision("UNTAG|nauvis|foundry|foundry 771429"),
+            ("nauvis", "foundry", "foundry 771429"),
+        )
+        self.assertIsNone(jimbo.parse_untag_decision("UNTAG|Nauvis|foundry"))
+
+    def test_untag_command_matches_label_and_type_prefixes(self):
+        client = Mock()
+        client.run.return_value = "Removed 1 tags from nauvis"
+        result = jimbo.run_untag_command(
+            client, "nauvis", "foundry", "foundry 771429"
+        )
+        command = client.run.call_args.args[0]
+        self.assertIn('game.surfaces["nauvis"]', command)
+        self.assertIn("find_chart_tags", command)
+        self.assertIn("tag.text:lower():match('^'..label_text", command)
+        self.assertIn("tag.text:lower():match('^'..et", command)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+        self.assertIn("Removed", result)
+
+    def test_untag_classifier_guidance_for_just_tagged_entity(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo remove all tags on that foundry",
+            "(none)",
+        )
+        self.assertIn("UNTAG|nauvis|foundry|", prompt)
+        self.assertIn("do not build a label from a unit number", prompt)
+        self.assertIn("starts with that label", prompt)
 
     def test_logistic_availability_deduplicates_and_marks_silo_networks(self):
         client = Mock()

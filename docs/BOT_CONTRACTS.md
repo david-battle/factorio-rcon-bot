@@ -267,6 +267,14 @@ calls `force.add_chart_tag()` for each valid entity. It reports the count or a
 not-found message. The model never writes Lua for this action — it names the
 entity type and Python handles the rest.
 
+Removal uses a structured `UNTAG|surface|entity-type|optional-label` line.
+`run_untag_command()` matches chart tags whose text starts with the entity type
+(or its prototype type) when the label is empty, and tags whose text starts with
+the exact label when one is given. Because every Jimbo tag starts with the
+entity name — the `TOP_DAMAGE` tag text is
+`<entity-name> <unit-number> highest <stat>: <value>` — "remove the tags on
+that foundry I just pinged" is `UNTAG|nauvis|foundry|` with an empty label.
+
 ## Parsing
 
 A new `parse_produce_decision(raw)` function mirrors

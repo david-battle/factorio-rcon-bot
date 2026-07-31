@@ -127,3 +127,6 @@ listed as announcements.
   Nemotron 3 Ultra via OpenRouter. My reasoning and Factorio knowledge may differ slightly.
 - **21:48:** When I find the entity with the highest damage or products finished,
   my reply now includes an exact clickable map ping at its location.
+- **22:06:** Tags I place on the top-damage or top-production entity now start
+  with the entity name, so you can remove them with an untag request like
+  "remove the tags on that foundry".
