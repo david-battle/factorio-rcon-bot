@@ -122,20 +122,23 @@ Available profiles:
 | `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
 | `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
 | `groq` | OpenAI-compatible Groq API | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1`, ignored `groq-api-key.txt` |
+| `nemotron` | OpenAI-compatible OpenRouter API | `nvidia/nemotron-3-ultra-550b-a55b:free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `openai`. It uses OpenCode's configured `openai` auth from
-`~/.local/share/opencode/auth.json`; never read or print the token. `ask_ai()`
-runs an isolated, tool-denied `opencode run --pure --agent jimbo --format json`
-from `/tmp/opencode`, with project configuration and external skills disabled.
-The built-in OpenAI auth plugin must remain enabled, so do not set
+The current profile is `deepseek`. It uses the OpenAI-compatible adapter against
+`https://opencode.ai/zen/v1`, reading the `opencode` credential from
+`~/.local/share/opencode/auth.json`; never read or print the token. The `openai`
+profile instead launches an isolated, tool-denied
+`opencode run --pure --agent jimbo --format json` from `/tmp/opencode`, with
+project configuration and external skills disabled. The built-in OpenAI auth
+plugin must remain enabled, so do not set
 `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`. Transient timeouts, rate limits, and common
 HTTP 5xx failures get three total attempts; permanent failures fail immediately.
 Model identity is derived from the selected profile.
 
 ### OpenCode CLI Containment
 
-OpenCode is only the current `openai` profile's model/authentication adapter. It
+OpenCode is only the `openai` profile's model/authentication adapter. It
 does not make Jimbo a coding agent: the invocation is pure, project configuration
 is disabled, and every tool permission is denied. The other adapters call their
 provider directly; DeepSeek reads an OpenCode credential but does not launch the

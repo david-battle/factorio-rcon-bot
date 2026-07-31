@@ -121,3 +121,9 @@ listed as announcements.
   on a surface. Ask me to show the top damage for artillery or other entities.
 - **16:35:** I can now find and tag the machine with the most products finished,
   as well as the entity with the highest damage dealt. Just ask me!
+- **16:45:** I now run on Nemotron 3 Ultra (free) via OpenRouter instead of GPT-OSS-120B
+  via Groq. My reasoning and Factorio knowledge may differ slightly.
+- **21:41:** I now run on DeepSeek V4 Flash (free) via the OpenCode AI API instead of
+  Nemotron 3 Ultra via OpenRouter. My reasoning and Factorio knowledge may differ slightly.
+- **21:48:** When I find the entity with the highest damage or products finished,
+  my reply now includes an exact clickable map ping at its location.

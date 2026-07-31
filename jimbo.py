@@ -15,7 +15,7 @@ from rcon.source import Client
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
 server_owner = "dlbattle"
-ai_profile_name = "groq"
+ai_profile_name = "deepseek"
 ai_profiles = {
     "openai": {
         "provider": "opencode",
@@ -53,6 +53,18 @@ ai_profiles = {
         "identity": "You run locally as qwen2.5-32b-ctx32k via Ollama.",
         "host": "http://127.0.0.1:11434",
     },
+    "nemotron": {
+        "provider": "openai-compatible",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "identity": "You run as Nemotron 3 Ultra (free) via OpenRouter.",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_path": os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "openrouter.key"
+        ),
+        "request_options": {
+            "max_completion_tokens": 256,
+        },
+    },
 }
 ai_profile = ai_profiles[ai_profile_name]
 model_name = ai_profile["model"]
@@ -76,8 +88,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now find and tag the machine with the most products finished, "
-    "as well as the entity with the highest damage dealt. Just ask me!"
+    "When I find the entity with the highest damage or products finished, "
+    "my reply now includes an exact clickable map ping at its location."
 )
 
 opencode_config = json.dumps({
@@ -293,6 +305,17 @@ def filtered_reply_lines(reply):
             continue
         lines.append(line)
     return lines
+
+
+def ensure_gps_ping(reply, rcon_command, rcon_response):
+    if rcon_command != "RCON: top damage":
+        return reply
+    if not reply or "[gps=" in reply:
+        return reply
+    match = re.search(r"\[gps=[^\]\n]+\]", rcon_response or "")
+    if not match:
+        return reply
+    return reply + f"\nRequested location: {match.group(0)}"
 
 
 def send_jimbo_lines(client, reply):
@@ -540,7 +563,9 @@ def run_top_damage_command(client, surface, entity_type):
         f"text='Highest '..stat_name..': '..tostring(math.floor(bd))}});"
         f"rcon.print('Tagged '..et..' unit '..best.unit_number..' at '.."
         f"tostring(best.position.x)..','..tostring(best.position.y)"
-        f"..' with '..tostring(math.floor(bd))..' '..stat_name..'')"
+        f"..' with '..tostring(math.floor(bd))..' '..stat_name"
+        f"..' [gps='..tostring(best.position.x)..','..tostring(best.position.y)"
+        f"..','..s.name..']')"
     )
     response = client.run(cmd, retry=True)
     return response.strip() if response else "ERROR: empty response"
@@ -1868,7 +1893,10 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
                 "describes what was tagged or says nothing was found. "
                 "Read the response literally and report its content — "
                 "do NOT fabricate a failure when the response describes "
-                "a successful tag.\n"
+                "a successful tag. When the response includes an exact "
+                "[gps=x,y,surface] map ping, include that markup verbatim "
+                "in your reply so it renders as a clickable ping; never "
+                "invent or change the coordinates.\n"
             )
         return (
             context
@@ -2460,6 +2488,7 @@ if __name__ == "__main__":
                         continue
 
                     if reply:
+                        reply = ensure_gps_ping(reply, rcon_cmd, rcon_response)
                         sent_lines, send_error = send_jimbo_lines(client, reply)
                         record_direct_reply(
                             dialogue,

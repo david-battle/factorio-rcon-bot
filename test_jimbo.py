@@ -15,7 +15,8 @@ def log_time(timestamp):
 class DialogueTests(unittest.TestCase):
     def test_all_historical_ai_profiles_are_predefined(self):
         self.assertEqual(
-            set(jimbo.ai_profiles), {"openai", "deepseek", "groq", "ollama"}
+            set(jimbo.ai_profiles),
+            {"openai", "deepseek", "groq", "ollama", "nemotron"},
         )
         self.assertEqual(
             jimbo.ai_profiles["openai"]["model"], "openai/gpt-5.4-mini"
@@ -50,6 +51,23 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(
             jimbo.ai_profiles["ollama"]["host"], "http://127.0.0.1:11434"
         )
+        self.assertEqual(jimbo.ai_profiles["nemotron"]["provider"], "openai-compatible")
+        self.assertEqual(
+            jimbo.ai_profiles["nemotron"]["model"],
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["nemotron"]["base_url"],
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(
+            os.path.basename(jimbo.ai_profiles["nemotron"]["api_key_path"]),
+            "openrouter.key",
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["nemotron"]["request_options"]["max_completion_tokens"],
+            256,
+        )
         self.assertIs(jimbo.ai_profile, jimbo.ai_profiles[jimbo.ai_profile_name])
         self.assertEqual(jimbo.model_name, jimbo.ai_profile["model"])
         self.assertEqual(jimbo.model_identity, jimbo.ai_profile["identity"])
@@ -60,6 +78,7 @@ class DialogueTests(unittest.TestCase):
             ("deepseek", "ask_openai_compatible"),
             ("groq", "ask_openai_compatible"),
             ("ollama", "ask_ollama"),
+            ("nemotron", "ask_openai_compatible"),
         )
         for profile_name, adapter_name in cases:
             profile = jimbo.ai_profiles[profile_name]
@@ -415,8 +434,65 @@ class DialogueTests(unittest.TestCase):
         self.assertIn('game.surfaces["nauvis"]', command)
         self.assertIn("add_chart_tag", command)
         self.assertIn("damage_dealt", command)
+        self.assertIn("[gps=", command)
         self.assertTrue(client.run.call_args.kwargs["retry"])
         self.assertIn("Tagged", result)
+
+    def test_top_damage_response_includes_exact_map_ping(self):
+        client = Mock()
+        client.run.return_value = (
+            "Tagged tesla-turret unit 10093840 at 646,1020 with 211368 "
+            "damage [gps=646,1020,nauvis]"
+        )
+        result = jimbo.run_top_damage_command(client, "nauvis", "tesla-turret")
+        self.assertIn("[gps=646,1020,nauvis]", result)
+
+    def test_top_damage_reply_hint_requires_exact_map_ping(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo ping the map and show the highest damage",
+            "(none)",
+            "RCON: top damage",
+            "Tagged tesla-turret unit 10093840 at 646,1020 with 211368 "
+            "damage [gps=646,1020,nauvis]",
+        )
+        self.assertIn("[gps=x,y,surface]", prompt)
+        self.assertIn("include that markup verbatim", prompt)
+        self.assertIn("never invent or change the coordinates", prompt)
+
+    def test_ensure_gps_ping_appends_verified_ping_when_missing(self):
+        reply = "Done! I pinged the tesla turret at 646,1020."
+        response = "Tagged tesla-turret unit 12 at 646,1020 with 211368 "
+        response += "damage [gps=646,1020,nauvis]"
+        merged = jimbo.ensure_gps_ping(
+            reply, "RCON: top damage", response
+        )
+        self.assertIn("[gps=646,1020,nauvis]", merged)
+        self.assertTrue(merged.endswith("Requested location: [gps=646,1020,nauvis]"))
+
+    def test_ensure_gps_ping_keeps_existing_ping(self):
+        reply = "Done! [gps=646,1020,nauvis]"
+        merged = jimbo.ensure_gps_ping(
+            reply,
+            "RCON: top damage",
+            "Tagged tesla-turret unit 12 at 646,1020 with 211368 damage "
+            "[gps=646,1020,nauvis]",
+        )
+        self.assertEqual(merged, reply)
+
+    def test_ensure_gps_ping_skips_failure_or_other_commands(self):
+        failure = jimbo.ensure_gps_ping(
+            "No tesla-turret found.",
+            "RCON: top damage",
+            "No tesla-turret found on nauvis",
+        )
+        self.assertEqual(failure, "No tesla-turret found.")
+        other = jimbo.ensure_gps_ping(
+            "Hey, there are 134 turrets.",
+            "RCON: list platforms",
+            "some platform",
+        )
+        self.assertEqual(other, "Hey, there are 134 turrets.")
 
     def test_logistic_availability_deduplicates_and_marks_silo_networks(self):
         client = Mock()

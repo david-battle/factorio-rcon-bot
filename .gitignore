@@ -6,6 +6,7 @@ last_chat_review.txt
 known_players.txt
 rconpw
 groq-api-key.txt
+*.key
 __pycache__/
 *.old
 *.swp
