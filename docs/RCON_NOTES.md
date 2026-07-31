@@ -1,0 +1,175 @@
+# RCON & Lua Notes
+
+Operational quirks learned from direct RCON/Lua work against the live server
+(Factorio 2.1.12). Context is precious: these cost real time to rediscover.
+Consult this file before composing new RCON or Lua queries, and add new
+learnings here as briefly as possible.
+
+## Tooling
+
+- `rcon.source.Client.run()` takes no `retry` kwarg. Jimbo's wrapper adds
+  `retry=True`; direct callers must use `client.run(cmd)` only.
+- Never inline Lua into a `python3 -c "..."` string: shell and Python both
+  mangle quotes, and `\n` inside `rcon.print` breaks. Instead write the Lua to a
+  temp file, read it in Python, and pass it to `/silent-command` in one call.
+- `rcon.print` accepts one string; join output with a separator (e.g. `##`)
+  rather than relying on embedded newlines.
+- RCON delivers only the first line of a multi-line command; send remaining
+  lines through separate commands.
+
+## Connection
+
+- Factorio supports concurrent RCON connections. The `Client` context manager
+  authenticates automatically, but a manually managed client must call
+  `client.connect(login=True)`. A bare `connect()` opens TCP without
+  authenticating and commands hang until timeout.
+
+## Command Reference
+
+- `/players`: all players who have played this save. `/players online`:
+  currently connected players.
+- `/evolution`: enemy evolution factor. `/time`: elapsed server/game time, not
+  wall-clock time.
+- `/version`: Factorio version. Recheck it before relying on
+  version-sensitive API behavior; `game.product_version` and
+  `game.build_version` do not exist.
+- Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
+- Raw RCON text without a leading slash appears in chat as `<server>`.
+- Online player count: `/silent-command rcon.print(#game.connected_players)`.
+
+## Map Pings
+
+- Factorio chat recognizes `[gps=x,y,surface]` as a clickable map location; send
+  it as raw RCON chat including Jimbo's normal prefix.
+- World chunks are 32 x 32 tiles, with boundaries and corners at coordinates
+  divisible by 32.
+
+## Query Idioms
+
+- Embed strings in Lua with `json.dumps(...)`; never interpolate raw input.
+- Probe unknown keys with `pcall(function() return obj[key] end)`: Factorio
+  raises `"...doesn't contain key X"` on unknown keys, and `pcall` cleanly
+  distinguishes present-but-nil from absent.
+- `rcon.print(table.concat(out,"\n"))` for lists; prefer joining on a separator
+  like `##` or `;` when the line must stay intact.
+- Entity lookup: `find_entities_filtered{name=et}`, falling back to
+  `{type=et}`. Prefer `find_entities_filtered()` scans over direct unit-number
+  lookup; unit numbers are evidence for the current entity only and go stale
+  after rebuilding.
+- Enumerate platforms via surfaces where `surface.platform` is set
+  (`surface.platform.name`) and planets via `surface.planet.name`.
+
+## Factorio 2.1.12 API Facts
+
+- `LuaSurface` has **no** `orbit` key. The old `surface.orbit` assumption is
+  gone.
+- `LuaSpacePlatform` has **no** `location` key. The correct members are
+  `space_location` (the current orbit/planet stop) and `space_connection`
+  (non-nil while traveling).
+- `platform.space_location.name` is the *planet* name (`nauvis`, `gleba`, ...),
+  not an `-orbit` string. `space_location.planet` does not exist; the name is
+  enough. A platform mid-travel has `space_location == nil`.
+- `game.item_prototypes` does not exist; item prototypes live at
+  `prototypes.item` (same 2.1 rename as `prototypes.recipe`). Enumerate with
+  `ip.type == "ammo"` instead of hardcoding names.
+- `game.recipe_prototypes` is gone; recipes are `prototypes.recipe`. In 2.1 a
+  recipe exposes plural `categories`; do not use the nonexistent
+  `LuaRecipePrototype.category`. Resolve compatible crafting machines with
+  `prototypes.get_entity_filtered{crafting-category=...}`; never assume the
+  recipe's product entity is its machine.
+- Lua has no `chr()`; use `string.char(...)`.
+
+## Verified Runtime Facts
+
+- `game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields:
+  `type`, `target`, `surface`, `icon`, `ticks_to_live`, `message`,
+  `show_on_map`.
+- `LuaPlayer.get_main_inventory()` returns `nil` for an online player in remote
+  view (controller type 7); `player.character.get_main_inventory()` still works.
+  Do not treat a missing current-controller inventory as proof the player is
+  offline.
+- Chat-linked blueprints appear in logs as opaque `[special-item=internal_N]`;
+  the numeric suffix is not `LuaItemCommon.item_number`.
+- Vehicle/entity-ghost requests: `item_requests` is the read-only item/count
+  summary; `insert_plan` is the exact writable plan (slot destinations and
+  equipment-grid counts). The runtime `grid` can be empty.
+- `LuaEntity.clone{position=..., surface=..., force=...}` preserves the ghost
+  prototype, direction, quality, `item_requests`, and complete `insert_plan`.
+  Treat cloning as unsafe to replay automatically after an RCON disconnect.
+- For precise remote deploy, do not call `LuaItemStack.build_blueprint()`: its
+  cursor-position transform previously shifted builds across chunk boundaries.
+  Decode positions, apply one explicit world offset, and preflight every entity
+  center with `can_place_entity()`.
+- Control behavior: `get_control_behavior()` can be `nil` on an uncontrolled
+  machine; use `get_or_create_control_behavior()` only during the authorized
+  mutation. Set `cb.connect_to_logistic_network = true` and
+  `cb.logistic_condition = {first_signal=..., comparator=..., constant=...}`.
+  Factorio normalizes a normal-quality signal by omitting `type`/`quality` on
+  read-back; verify a missing quality as normal.
+- `LuaEntity.status`: `full_output` means not currently consuming;
+  `item_ingredient_shortage` does not identify the absent item;
+  `fluid_ingredient_shortage` should be confirmed from `get_fluid_contents()`.
+  Mining drills raise on crafting-machine-only properties; inspect them via
+  status and `mining_target`.
+- Generators and consumers can belong to several networks: inspect every entry
+  of `electric_networks`, not only `electric_network`. Electric poles belong to
+  one network. Switch wiring: `get_wire_connectors(false)` exposes
+  `power_switch_left_copper` and `power_switch_right_copper`, each with its own
+  `electric_network` and `real_connections`.
+- Power coverage: `pole.prototype.get_supply_area_distance(pole.quality)`;
+  `assembler.is_connected_to_electric_network()` is the definitive check.
+- Logistic groups belong to a force: `LuaForce.create_logistic_group()`,
+  `get_logistic_group()` (returns info, not a writable group), and
+  `delete_logistic_group()`. Write filters through a member
+  `LuaLogisticSection.filters` or `set_slot()`.
+- `LogisticFilter.min=0,max=0` requests and retains nothing. A nonzero minimum
+  requires an exact quality and `=` comparator; use one filter per quality.
+- Recipe paste onto a requester ghost: `requester_ghost.copy_settings(
+  assembler_ghost, player)`; validate via
+  `get_logistic_sections().sections` filters.
+- `can_place_entity(..., build_check_type=script_ghost)` can accept a ghost
+  plan overlapping belts; scan the full destination bounding box first.
+- Entity centers: with the integer bottom-left tile anchor `(x, y)`, a `w x h`
+  building is centered at `(x+w/2, y+h/2)`.
+- Large per-entity RCON reports can time out; aggregate counts and status groups
+  in Lua, then run focused follow-up queries.
+- Automatic research is driven by a lab's `get_control_behavior().set_research`;
+  discover it with `find_entities_filtered{type="lab"}` and toggle the flag.
+- Windows writes to the server log can invalidate WSL's open file descriptor;
+  `f.tell()` may raise `ValueError`. Reopen the file on `OSError` or
+  `ValueError`.
+
+## Built-in Jimbo Queries
+
+`jimbo.py` holds the executable implementations; keep them authoritative rather
+than copying the Lua here.
+
+- Chart tags: `run_tag_command` / `run_untag_command` / `run_top_damage_command`
+  use `game.forces.player.add_chart_tag(s,{position=...,icon={type='entity',
+  name=...},text=...})`, `find_chart_tags(s)`, and `tag.destroy()`.
+- Logistics availability: `get_logistic_availability` discovers player networks
+  through roboports and dedupes them by `network_id`, links silos with
+  `find_logistic_network_by_position()`, and sums `max(0,count)` per item across
+  `LuaLogisticNetwork.get_contents()`.
+- Production cells: `place_production_cell` runs a read-only Phase 1 bounded
+  search, then a Phase 2 preflight+mutation+verify command; the mutation uses
+  `retry=False` and is never replayed after an RCON disconnect.
+- Research: `get_research_snapshot` reads `game.forces.player.current_research`,
+  `research_progress`, and `research_queue`.
+
+## Platform Cargo
+
+- Platform cargo lives on the `hub` entity inventories
+  `defines.inventory.hub_main` (cargo) and `defines.inventory.hub_trash`.
+  `space_platform_hub` is not a valid inventory index in 2.1.
+- Identify platforms in a given orbit:
+  `for _,s in pairs(game.surfaces) do if s.platform and s.platform.space_location and s.platform.space_location.name == "nauvis" then ... end end`
+
+## Ammo Item Names (2.1.12)
+
+- The railgun projectile is `railgun-ammo` (not `railgun-dart`).
+- Magazines: `firearm-magazine`, `piercing-rounds-magazine`,
+  `uranium-rounds-magazine`, `shotgun-shell`, `piercing-shotgun-shell`.
+- Rockets: `rocket`, `explosive-rocket`, `atomic-bomb`.
+- Always enumerate `prototypes.item` for a complete list rather than trusting
+  this list.

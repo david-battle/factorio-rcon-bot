@@ -209,7 +209,9 @@ valid/invalid `ALERTS` decisions, and prompt inclusion.
 ## Tested Implementation Findings
 
 These findings came from successful live experiments. They constrain future
-features but do not mean Jimbo currently exposes the actions automatically.
+features but do not mean Jimbo currently exposes the actions automatically. The
+verified RCON/Lua API facts are consolidated in `docs/RCON_NOTES.md`; this
+section keeps the surrounding design context.
 
 ### Chat-Linked Blueprint Inspection
 

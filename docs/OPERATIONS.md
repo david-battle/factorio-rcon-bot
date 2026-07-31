@@ -49,31 +49,12 @@ without authenticating, after which commands appear to hang until timeout.
 The password is copied from the live server configuration into the gitignored
 `rconpw`. Never hardcode, print, or commit it.
 
-### Command Reference
+### Command Reference And Map Pings
 
-- `/players`: all players who have played this save.
-- `/players online`: currently connected players.
-- `/evolution`: enemy evolution factor.
-- `/time`: elapsed server/game time, not wall-clock time.
-- `/version`: Factorio version. Do not use nonexistent Lua properties
-  `game.product_version` or `game.build_version`.
-- Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
-- Raw RCON text without a slash appears in chat as `<server>`.
-- Jimbo's built-in platform and planet queries are in `jimbo.py`; keep that
-  executable implementation authoritative rather than copying the Lua here.
-
-### Map Pings
-
-Factorio chat recognizes `[gps=x,y,surface]` as a clickable map location. Send it
-as raw RCON chat, including Jimbo's normal prefix:
-
-```text
-Jimbo says Requested location: [gps=128,64,nauvis]
-```
-
-Use the player's requested coordinates and surface rather than assuming Nauvis.
-Factorio world chunks are 32 x 32 tiles, with boundaries and corners at
-coordinates divisible by 32.
+See `docs/RCON_NOTES.md` for the command reference, the `[gps=x,y,surface]` map
+ping format, and RCON/Lua facts. Jimbo's built-in platform and planet queries
+are in `jimbo.py`; keep that executable implementation authoritative rather than
+copying the Lua here.
 
 ### Logistic Availability Queries
 

@@ -9,6 +9,8 @@ configuration frameworks.
 
 - Before editing code, read `docs/OPERATIONS.md` for setup, RCON, providers,
   testing, deployment, and runtime diagnosis.
+- Before composing any new RCON or Lua query, read `docs/RCON_NOTES.md`. Add new
+  RCON/Lua learnings back to that file, as briefly as possible.
 - Read `docs/BOT_CONTRACTS.md` before changing chat behavior, RCON
   actions, production cells, dialogue, startup announcements, or spontaneous
   comments.
