@@ -200,6 +200,11 @@ than copying the Lua here.
   `retry=False` and is never replayed after an RCON disconnect.
 - Research: `get_research_snapshot` reads `game.forces.player.current_research`,
   `research_progress`, and `research_queue`.
+- Alerts: `get_alerts_snapshot` groups `game.forces.player.alerts` by
+  `surface|type` with counts via `rcon.print`, returning `(no active alerts)`
+  when empty. `prepare_alerts_for_prompt` debounces `no_platform_storage` until
+  it persists across two snapshots because it can fire briefly while orbital
+  requests are allocated.
 
 ## Platform Cargo
 

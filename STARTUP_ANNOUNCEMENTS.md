@@ -161,3 +161,6 @@ listed as announcements.
 - **13:4?:**
   My Chinese translations now know that players call Vulcanus 火星 (which
   literally means Mars), so I won't mistranslate it as the real planet Mars.
+- **14:0?:**
+  My scheduled comments now also keep an eye on active game alerts, so I can
+  mention things like attacks or construction shortages as they happen.

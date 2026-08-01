@@ -171,8 +171,16 @@ mention them unprompted.
 
 Give Jimbo awareness of active game alerts (entity damage, destroyed buildings,
 logistic shortages, and similar conditions) so spontaneous comments and direct
-replies are grounded in what is actually happening on each surface. This is an
-unimplemented design, not a committed feature.
+replies are grounded in what is actually happening on each surface.
+
+The spontaneous-comment portion is implemented: `get_alerts_snapshot(client)`
+mirrors `get_research_snapshot()` and returns a compact summary grouped by
+surface and type, `prepare_alerts_for_prompt` debounces `no_platform_storage`
+until it persists across two snapshots, and the snapshot is included in the
+spontaneous prompt (active alerts can also break the already-announced
+research-stall silence). Still unimplemented: `ALERTS|surface` classifier
+parsing and dispatch, and including the snapshot in alert-related direct
+replies.
 
 `game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields are
 the alert `type`, `target`, `surface`, `icon`, `ticks_to_live`, custom `message`,

@@ -88,8 +88,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "My Chinese translations now know that players call Vulcanus 火星 (which "
-    "literally means Mars), so I won't mistranslate it as the real planet Mars."
+    "My scheduled comments now also keep an eye on active game alerts, so I can "
+    "mention things like attacks or construction shortages as they happen."
 )
 
 opencode_config = json.dumps({
@@ -1492,6 +1492,20 @@ def reply_uses_research_context(reply, research_text):
     return False
 
 
+def reply_uses_alerts_context(reply, alerts_text):
+    normalized_reply = reply.lower().replace("-", " ").replace("_", " ")
+    if "alert" in normalized_reply:
+        return True
+    for line in alerts_text.splitlines():
+        if "|" not in line or ":" not in line:
+            continue
+        alert_type = line.rsplit(":", 1)[0].split("|", 1)[1]
+        readable = alert_type.replace("_", " ").replace("-", " ")
+        if readable and readable in normalized_reply:
+            return True
+    return False
+
+
 def parse_log_timestamp(line):
     try:
         return datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S").timestamp()
@@ -1630,6 +1644,50 @@ def get_research_snapshot(client):
     )
     response = client.run(cmd, retry=True)
     return response.strip() if response else "(unavailable)"
+
+
+def get_alerts_snapshot(client):
+    cmd = (
+        "/silent-command local f=game.forces.player;local out={};local groups={};"
+        "for _,a in ipairs(f.alerts) do "
+        "local key=a.surface.name..\"|\"..a.type;"
+        "if not groups[key] then groups[key]=0 end;"
+        "groups[key]=groups[key]+1;"
+        "end;"
+        "for k,c in pairs(groups) do out[#out+1]=k..\":\"..c end;"
+        "rcon.print(table.concat(out,\"\\n\"))"
+    )
+    response = client.run(cmd, retry=True)
+    response = response.strip() if response else ""
+    if not response:
+        return "(no active alerts)"
+    return response
+
+
+def prepare_alerts_for_prompt(alerts_text, previous_keys):
+    """Debounce transient platform-storage alerts for the spontaneous prompt.
+
+    Returns (prompt_text, current_keys). A no_platform_storage alert can fire
+    briefly while orbital requests are allocated even when the hub has usable
+    space, so it is only surfaced after persisting across two snapshots.
+    """
+    if alerts_text in ("(no active alerts)", "(unavailable)"):
+        return alerts_text, set()
+    current_keys = set()
+    kept = []
+    for line in alerts_text.splitlines():
+        if not line:
+            continue
+        if "|" not in line or ":" not in line:
+            continue
+        key, _ = line.rsplit(":", 1)
+        current_keys.add(key)
+        if key.endswith("no_platform_storage") and key not in previous_keys:
+            continue
+        kept.append(line)
+    if not kept:
+        return "(no active alerts)", current_keys
+    return "\n".join(kept), current_keys
 
 
 def get_online_player_count(client):
@@ -2015,6 +2073,7 @@ def maybe_spontaneous(
         spontaneous_state["research_name"] = None
         spontaneous_state["research_progress"] = None
         spontaneous_state["stall_announced"] = False
+        spontaneous_state["alerts_prev_keys"] = set()
         print("Skipping spontaneous comment with no players online", flush=True)
         return time.time()
 
@@ -2026,6 +2085,18 @@ def maybe_spontaneous(
     stall_status, research_name, research_progress = update_research_stall_state(
         research_text, spontaneous_state
     )
+
+    try:
+        alerts_raw = get_alerts_snapshot(client)
+    except Exception as e:
+        print(f"Alerts snapshot error: {e}", flush=True)
+        alerts_raw = "(unavailable)"
+    alerts_text, alerts_keys = prepare_alerts_for_prompt(
+        alerts_raw, spontaneous_state.get("alerts_prev_keys", set())
+    )
+    spontaneous_state["alerts_prev_keys"] = alerts_keys
+    has_active_alerts = alerts_text not in ("(no active alerts)", "(unavailable)")
+
     stall_reply = None
     if stall_status == "new_stall":
         readable_name = research_name.replace("-", " ")
@@ -2034,7 +2105,7 @@ def maybe_spontaneous(
             f"{research_progress:g}%."
         )
     elif stall_status == "stalled":
-        if not recent_chat:
+        if not recent_chat and not has_active_alerts:
             print("Skipping already-announced research stall", flush=True)
             return time.time()
         research_text = (
@@ -2060,6 +2131,11 @@ def maybe_spontaneous(
         f"{research_text}\n"
         "Research names in this snapshot are already player-facing; use them "
         "exactly rather than appending a separate level.\n"
+        "Here is the current game alerts snapshot (surface|type:count):\n"
+        f"{alerts_text}\n"
+        "Alerts are grouped by surface and type with a count. An empty list "
+        "means there are no active alerts. Only mention an alert if it is "
+        "genuinely important; do not invent alerts that are not listed.\n"
         f"{focus_text}\n"
         "You can make a spontaneous comment if something interesting is "
         "happening. Reply with a short chat message (1 sentence) or just 'SKIP'. "
@@ -2078,12 +2154,21 @@ def maybe_spontaneous(
                 used_research = reply_uses_research_context(
                     visible_reply, research_text
                 )
+                used_alerts = reply_uses_alerts_context(
+                    visible_reply, alerts_text
+                )
+                rcon_command = None
+                rcon_response = None
+                if used_research:
+                    rcon_command, rcon_response = "research snapshot", research_text
+                if used_alerts:
+                    rcon_command, rcon_response = "alerts snapshot", alerts_text
                 add_dialogue_turn(
                     dialogue,
                     "Jimbo",
                     visible_reply,
-                    rcon_command="research snapshot" if used_research else None,
-                    rcon_response=research_text if used_research else None,
+                    rcon_command=rcon_command,
+                    rcon_response=rcon_response,
                 )
                 successful = True
                 if stall_reply is not None:
@@ -2126,6 +2211,7 @@ if __name__ == "__main__":
         "research_name": None,
         "research_progress": None,
         "stall_announced": False,
+        "alerts_prev_keys": set(),
     }
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
@@ -2236,6 +2322,7 @@ if __name__ == "__main__":
                         spontaneous_state["research_name"] = None
                         spontaneous_state["research_progress"] = None
                         spontaneous_state["stall_announced"] = False
+                        spontaneous_state["alerts_prev_keys"] = set()
                         print("Manually cleared spontaneous and dialogue context", flush=True)
                         try:
                             client.run("Jimbo says What previous instructions?")

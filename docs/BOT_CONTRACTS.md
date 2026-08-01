@@ -56,7 +56,12 @@ spontaneous activity but remain in dialogue. The exact command
 acknowledged without being sent to the model.
 
 Every twenty minutes Jimbo may comment from accumulated activity plus a live
-research/progress/queue snapshot. Only `dlbattle` may force this with
+research/progress/queue snapshot and a grouped game-alerts snapshot
+(`surface|type:count`). Active alerts can also break the already-announced
+research-stall silence so a new attack or shortage is not missed. A transient
+`no_platform_storage` alert is only surfaced after it persists across two
+snapshots, because Factorio can report it briefly while orbital requests are
+allocated even when the hub has usable space. Only `dlbattle` may force this with
 `Jimbo, chime in`; trailing text is a topic hint. A request to be quiet skips
 the next scheduled comment. Successful
 comments clear activity and reset the failure counter; skipped, failed, or unsent

@@ -721,6 +721,142 @@ class DialogueTests(unittest.TestCase):
         self.assertFalse(state["stall_announced"])
         self.assertEqual(state["research_progress"], 52.31)
 
+    def test_alerts_snapshot_queries_grouped_alerts(self):
+        client = Mock()
+        client.run.return_value = (
+            "nauvis|turret_enemy:1\n"
+            "fulgora|not_enough_construction_robots:2"
+        )
+
+        snapshot = jimbo.get_alerts_snapshot(client)
+
+        command = client.run.call_args.args[0]
+        self.assertIn("f.alerts", command)
+        self.assertIn("a.surface.name", command)
+        self.assertIn("groups[key]", command)
+        self.assertIn("nauvis|turret_enemy:1", snapshot)
+        self.assertIn("fulgora|not_enough_construction_robots:2", snapshot)
+        self.assertTrue(client.run.call_args.kwargs["retry"])
+
+    def test_alerts_snapshot_reports_no_active_alerts(self):
+        client = Mock()
+        client.run.return_value = ""
+
+        self.assertEqual(jimbo.get_alerts_snapshot(client), "(no active alerts)")
+
+    def test_prepare_alerts_for_prompt_debounces_platform_storage(self):
+        raw = "nauvis|no_platform_storage:1"
+
+        first, keys = jimbo.prepare_alerts_for_prompt(raw, set())
+        self.assertEqual(first, "(no active alerts)")
+        self.assertIn("nauvis|no_platform_storage", keys)
+
+        second, keys2 = jimbo.prepare_alerts_for_prompt(raw, keys)
+        self.assertIn("nauvis|no_platform_storage:1", second)
+        self.assertEqual(keys2, keys)
+
+    def test_prepare_alerts_for_prompt_keeps_real_alerts_immediately(self):
+        raw = "nauvis|turret_enemy:1\nfulgora|not_enough_construction_robots:2"
+
+        text, keys = jimbo.prepare_alerts_for_prompt(raw, set())
+
+        self.assertIn("nauvis|turret_enemy:1", text)
+        self.assertIn("fulgora|not_enough_construction_robots:2", text)
+        self.assertEqual(
+            keys,
+            {"nauvis|turret_enemy", "fulgora|not_enough_construction_robots"},
+        )
+
+    def test_spontaneous_prompt_includes_alerts_snapshot(self):
+        def run(command, retry=False):
+            if "#game.connected_players" in command:
+                return "1"
+            if "current=f.current_research" in command:
+                return "Current: mining-productivity-3\nProgress: 52.30%\nQueue:"
+            if "f.alerts" in command:
+                return "nauvis|turret_enemy:1"
+            return ""
+
+        client = Mock()
+        client.run.side_effect = run
+        state = {
+            "skip_next": False,
+            "failed_attempts": 0,
+            "research_name": None,
+            "research_progress": None,
+            "stall_announced": False,
+            "alerts_prev_keys": set(),
+        }
+
+        with patch.object(jimbo, "ask_ai", return_value="SKIP") as ask_ai:
+            with patch.object(jimbo.time, "time", return_value=1300):
+                jimbo.maybe_spontaneous(client, [], deque(), 0, state)
+
+        prompt = ask_ai.call_args.args[0]
+        self.assertIn("current game alerts snapshot", prompt)
+        self.assertIn("nauvis|turret_enemy:1", prompt)
+
+    def test_spontaneous_records_alerts_context_when_used(self):
+        def run(command, retry=False):
+            if "#game.connected_players" in command:
+                return "1"
+            if "current=f.current_research" in command:
+                return "Current: mining-productivity-3\nProgress: 52.30%\nQueue:"
+            if "f.alerts" in command:
+                return "nauvis|turret_enemy:1"
+            return ""
+
+        client = Mock()
+        client.run.side_effect = run
+        state = {
+            "skip_next": False,
+            "failed_attempts": 0,
+            "research_name": None,
+            "research_progress": None,
+            "stall_announced": False,
+            "alerts_prev_keys": set(),
+        }
+        dialogue = deque()
+
+        with patch.object(
+            jimbo, "ask_ai", return_value="There is a turret enemy alert near base."
+        ):
+            with patch.object(jimbo.time, "time", return_value=1300):
+                jimbo.maybe_spontaneous(client, [], dialogue, 0, state)
+
+        self.assertEqual(len(dialogue), 1)
+        self.assertEqual(dialogue[0]["rcon_command"], "alerts snapshot")
+        self.assertEqual(dialogue[0]["rcon_response"], "nauvis|turret_enemy:1")
+
+    def test_active_alerts_break_stalled_research_silence(self):
+        def run(command, retry=False):
+            if "#game.connected_players" in command:
+                return "1"
+            if "current=f.current_research" in command:
+                return "Current: mining-productivity-3\nProgress: 52.30%\nQueue:"
+            if "f.alerts" in command:
+                return "nauvis|turret_enemy:1"
+            return ""
+
+        client = Mock()
+        client.run.side_effect = run
+        state = {
+            "skip_next": False,
+            "failed_attempts": 0,
+            "research_name": "mining-productivity-3",
+            "research_progress": 52.3,
+            "stall_announced": True,
+            "alerts_prev_keys": set(),
+        }
+
+        with patch.object(jimbo, "ask_ai", return_value="SKIP") as ask_ai:
+            with patch.object(jimbo.time, "time", return_value=1300):
+                jimbo.maybe_spontaneous(client, [], deque(), 0, state)
+
+        ask_ai.assert_called_once()
+        prompt = ask_ai.call_args.args[0]
+        self.assertIn("nauvis|turret_enemy:1", prompt)
+
     def test_prompts_share_history_without_duplicating_current_message(self):
         history = (
             "NeedMoreChips: Jimbo, compare mining productivity 1 and 2\n"
