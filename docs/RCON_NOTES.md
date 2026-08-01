@@ -79,6 +79,38 @@ learnings here as briefly as possible.
 - Enumerate platforms via surfaces where `surface.platform` is set
   (`surface.platform.name`) and planets via `surface.planet.name`.
 
+## Chat Delivery And Print Sounds
+
+- A plain RCON message (`Jimbo says <line>`) is a real chat message from
+  `<server>` and plays the standard chat ding (`console_message`, which is
+  `__core__/sound/console-message.ogg`) to players — the same sound as any
+  player chat.
+- `LuaForce/LuaPlayer/LuaGameScript.print(message, print_settings?)` accepts
+  `PrintSettings`: `sound` (`defines.print_sound`), `sound_path` (SoundPath),
+  `volume_modifier` (0..1), `color`, `skip` (defaults `if_redundant`), and
+  `game_state`. `sound_path` defaults to `console_message` when omitted.
+- `defines.print_sound` values verified live on 2.1.12: `never=0`,
+  `always=1`, `use_player_settings=2`.
+- A SoundPath is `type/name`, e.g. `utility/console_message`,
+  `utility/research_completed`, `ambient/<name>`, `tile-walking/<tile>`,
+  `entity-build/<entity>`, `item-open/<item>`. Raw file paths like
+  `__core__/sound/console-message.ogg` are not valid SoundPaths on 2.1.12
+  (all returned false in a live probe). `LuaHelpers.is_valid_sound_path()`
+  exists per the docs but `LuaHelpers` is nil inside `/silent-command` on
+  2.1.12, so validate a chosen sound audibly once.
+- Sending chat via
+  `/silent-command game.forces.player.print("Jimbo says <line>", {sound=defines.print_sound.use_player_settings, sound_path="utility/research_completed"})`
+  prints the line and plays only the custom sound (no ding), respecting each
+  player's chat-sound setting; use `sound=defines.print_sound.always` to force
+  playback. `utility/research_completed` is the verified distinct chime Jimbo
+  uses (see `jimbo_chat_sound_path` in `jimbo.py`).
+- `game.print`/`force.print` output is NOT written to `server-console.log`
+  (verified: `/c game.print(false)` logged only the `[COMMAND]` line, not the
+  output). Jimbo therefore records every delivered chat line to the gitignored
+  `jimbo_says.log` in the same `[CHAT] <server>: Jimbo says ...` format, and
+  `hydrate_dialogue()` merges that file's tail with the server log by
+  timestamp so restart hydration still restores Jimbo's own messages.
+
 ## Factorio 2.1.12 API Facts
 
 - `find_entities_filtered{area=...}` bounds are **exclusive**: a `w x h` box

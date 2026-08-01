@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -12,7 +13,24 @@ def log_time(timestamp):
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def jimbo_cmd(text):
+    return (
+        "/silent-command game.forces.player.print("
+        + json.dumps(text)
+        + ", {sound=defines.print_sound.use_player_settings, "
+        + 'sound_path="utility/research_completed"})'
+    )
+
+
 class DialogueTests(unittest.TestCase):
+    def setUp(self):
+        self._says = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
+        self.addCleanup(lambda: os.unlink(self._says.name))
+        self._says.close()
+        self._says_patch = patch.object(jimbo, "jimbo_says_log_path", self._says.name)
+        self._says_patch.start()
+        self.addCleanup(self._says_patch.stop)
+
     def test_all_historical_ai_profiles_are_predefined(self):
         self.assertEqual(
             set(jimbo.ai_profiles),
@@ -269,22 +287,38 @@ class DialogueTests(unittest.TestCase):
                 self.commands.append(command)
 
         client = PartialClient()
-        sent, error = jimbo.send_jimbo_lines(
-            client, "first\n(Note: hidden)\nsecond\n(Corrected output)"
-        )
+        with patch.object(jimbo, "record_jimbo_says"):
+            sent, error = jimbo.send_jimbo_lines(
+                client, "first\n(Note: hidden)\nsecond\n(Corrected output)"
+            )
 
         self.assertEqual(sent, ["first"])
         self.assertIsInstance(error, BrokenPipeError)
-        self.assertEqual(client.commands, ["Jimbo says first"])
+        self.assertEqual(client.commands, [jimbo_cmd("Jimbo says first")])
 
     def test_chat_delivery_does_not_request_automatic_replay(self):
         client = Mock()
 
-        sent, error = jimbo.send_jimbo_lines(client, "hello")
+        with patch.object(jimbo, "record_jimbo_says"):
+            sent, error = jimbo.send_jimbo_lines(client, "hello")
 
         self.assertEqual(sent, ["hello"])
         self.assertIsNone(error)
-        client.run.assert_called_once_with("Jimbo says hello")
+        client.run.assert_called_once_with(jimbo_cmd("Jimbo says hello"))
+
+    def test_record_jimbo_says_appends_formatted_chat_line(self):
+        path = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
+        self.addCleanup(lambda: os.unlink(path.name))
+        path.close()
+
+        with patch.object(jimbo, "jimbo_says_log_path", path.name):
+            jimbo.record_jimbo_says("Jimbo says hello")
+
+        with open(path.name, encoding="utf-8") as f:
+            line = f.read().strip()
+        self.assertTrue(
+            line.endswith("[CHAT] <server>: Jimbo says hello")
+        )
 
     def test_direct_reply_clears_spontaneous_backlog_after_delivery(self):
         dialogue = deque()
@@ -318,12 +352,13 @@ class DialogueTests(unittest.TestCase):
         dialogue = deque()
         recent_chat = ["dlbattle: Jimbo check Fulgora logistics"]
 
-        sent, error = jimbo.report_request_failure(client, dialogue, recent_chat)
+        with patch.object(jimbo, "record_jimbo_says"):
+            sent, error = jimbo.report_request_failure(client, dialogue, recent_chat)
 
         self.assertEqual(sent, ["I tried, but I couldn't complete that request."])
         self.assertIsNone(error)
         client.run.assert_called_once_with(
-            "Jimbo says I tried, but I couldn't complete that request."
+            jimbo_cmd("Jimbo says I tried, but I couldn't complete that request.")
         )
         self.assertEqual(dialogue[-1]["text"], sent[0])
         self.assertEqual(recent_chat, [])
@@ -1169,6 +1204,38 @@ class HydrationTests(unittest.TestCase):
         self.assertEqual(len(dialogue), 2)
         self.assertEqual(dialogue[1]["speaker"], "Jimbo")
         self.assertEqual(dialogue[1]["text"], "Alice is online.")
+
+    def test_hydration_merges_jimbo_says_log_by_timestamp(self):
+        now = 1_800_000_000
+        player = log_time(now - 90)
+        reply = log_time(now - 80)
+        server_path = self.write_log([
+            f"{player} [CHAT] Alice: Jimbo who is online?",
+        ])
+        jimbo_path = self.write_log([
+            f"{reply} [CHAT] <server>: Jimbo says Alice is online.",
+        ])
+        dialogue = deque()
+
+        jimbo.hydrate_dialogue(server_path, dialogue, jimbo_path, now=now)
+
+        self.assertEqual(len(dialogue), 2)
+        self.assertEqual(dialogue[0]["speaker"], "Alice")
+        self.assertEqual(dialogue[1]["speaker"], "Jimbo")
+        self.assertEqual(dialogue[1]["text"], "Alice is online.")
+
+    def test_hydration_without_jimbo_log_ignores_missing_file(self):
+        now = 1_800_000_000
+        player = log_time(now - 90)
+        server_path = self.write_log([
+            f"{player} [CHAT] Alice: Jimbo who is online?",
+        ])
+        dialogue = deque()
+
+        jimbo.hydrate_dialogue(server_path, dialogue, "missing.log", now=now)
+
+        self.assertEqual(len(dialogue), 1)
+        self.assertEqual(dialogue[0]["speaker"], "Alice")
 
 
 class ProduceCellTests(unittest.TestCase):

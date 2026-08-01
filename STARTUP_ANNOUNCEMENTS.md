@@ -164,3 +164,6 @@ listed as announcements.
 - **14:0?:**
   My scheduled comments now also keep an eye on active game alerts, so I can
   mention things like attacks or construction shortages as they happen.
+- **14:3?:**
+  My chat messages now play their own notification sound in game instead of
+  the standard chat ding, so you can tell when I'm talking.

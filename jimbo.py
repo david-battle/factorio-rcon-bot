@@ -14,6 +14,12 @@ from rcon.source import Client
 
 # Chat log file path
 c_log_path = "/mnt/d/factorio-server/server-console.log"
+# Jimbo's delivered chat lines are recorded here in the same [CHAT] format so
+# restart hydration can restore his own messages even though game.forces.player
+# .print output is not written to the server console log.
+jimbo_says_log_path = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "jimbo_says.log"
+)
 server_owner = "dlbattle"
 ai_profile_name = "deepseek"
 ai_profiles = {
@@ -73,6 +79,7 @@ dialogue_max_turns = 12
 dialogue_max_age = 15 * 60
 dialogue_max_chars = 4000
 dialogue_log_tail_bytes = 256 * 1024
+jimbo_chat_sound_path = "utility/research_completed"
 safe_retry_commands = (
     "/players online", "/players", "/evolution", "/time", "/version",
 )
@@ -88,8 +95,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "My scheduled comments now also keep an eye on active game alerts, so I can "
-    "mention things like attacks or construction shortages as they happen."
+    "My chat messages now play their own notification sound in game instead of "
+    "the standard chat ding, so you can tell when I'm talking."
 )
 
 opencode_config = json.dumps({
@@ -318,12 +325,32 @@ def ensure_gps_ping(reply, rcon_command, rcon_response):
     return reply + f"\nRequested location: {match.group(0)}"
 
 
+def record_jimbo_says(text):
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} [CHAT] <server>: {text}"
+    try:
+        with open(jimbo_says_log_path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def send_jimbo_chat(client, text):
+    command = (
+        "/silent-command game.forces.player.print("
+        + json.dumps(text)
+        + ", {sound=defines.print_sound.use_player_settings, "
+        + "sound_path=" + json.dumps(jimbo_chat_sound_path) + "})"
+    )
+    client.run(command)
+    record_jimbo_says(text)
+
+
 def send_jimbo_lines(client, reply):
     sent_lines = []
     error = None
     try:
         for line in filtered_reply_lines(reply):
-            client.run(f"Jimbo says {line}")
+            send_jimbo_chat(client, f"Jimbo says {line}")
             sent_lines.append(line)
     except Exception as caught:
         error = caught
@@ -1513,22 +1540,32 @@ def parse_log_timestamp(line):
         return None
 
 
-def hydrate_dialogue(log_path, dialogue, now=None):
+def hydrate_dialogue(log_path, dialogue, jimbo_log_path=None, now=None):
     now = time.time() if now is None else now
     cutoff = now - dialogue_max_age
     pending_joins = deque()
-    with open(log_path, "rb") as log_file:
-        log_file.seek(0, os.SEEK_END)
-        start = max(0, log_file.tell() - dialogue_log_tail_bytes)
-        log_file.seek(start)
-        if start:
-            log_file.readline()
-        lines = log_file.read().decode("utf-8", errors="replace").splitlines()
-        end_position = log_file.tell()
+    entries = []
+    end_position = 0
+    for path, track_end in ((log_path, True), (jimbo_log_path, False)):
+        if not path or not os.path.exists(path):
+            continue
+        with open(path, "rb") as log_file:
+            log_file.seek(0, os.SEEK_END)
+            start = max(0, log_file.tell() - dialogue_log_tail_bytes)
+            log_file.seek(start)
+            if start:
+                log_file.readline()
+            lines = log_file.read().decode("utf-8", errors="replace").splitlines()
+            if track_end:
+                end_position = log_file.tell()
+        for line in lines:
+            timestamp = parse_log_timestamp(line)
+            if timestamp is not None:
+                entries.append((timestamp, line))
+    entries.sort(key=lambda pair: pair[0])
 
-    for line in lines:
-        timestamp = parse_log_timestamp(line)
-        if timestamp is None or timestamp < cutoff:
+    for timestamp, line in entries:
+        if timestamp < cutoff:
             continue
         while pending_joins and timestamp - pending_joins[0][0] > 120:
             pending_joins.popleft()
@@ -2199,7 +2236,7 @@ if __name__ == "__main__":
     dialogue = deque()
     resume_position = None
     try:
-        resume_position = hydrate_dialogue(c_log_path, dialogue)
+        resume_position = hydrate_dialogue(c_log_path, dialogue, jimbo_says_log_path)
         print(f"Hydrated {len(dialogue)} recent dialogue turns", flush=True)
     except OSError as e:
         print(f"Dialogue hydration error: {e}", flush=True)
@@ -2228,13 +2265,13 @@ if __name__ == "__main__":
             announcement = "Jimbo is online and listening."
             if startup_change_summary != last_summary:
                 announcement += f" {startup_change_summary}"
-            client.run(f"Jimbo says {announcement}")
+            send_jimbo_chat(client, f"Jimbo says {announcement}")
             with open(startup_summary_path, "w") as summary_file:
                 summary_file.write(startup_change_summary)
         except Exception as e:
             print(f"Startup announcement error: {e}", flush=True)
             try:
-                client.run("Jimbo says Jimbo is online and listening.")
+                send_jimbo_chat(client, "Jimbo says Jimbo is online and listening.")
             except Exception as fallback_error:
                 print(
                     f"Startup announcement fallback error: {fallback_error}",
@@ -2290,7 +2327,7 @@ if __name__ == "__main__":
                                 for greet_line in greeting.split("\n"):
                                     greet_line = greet_line.strip()
                                     if greet_line:
-                                        client.run(f"Jimbo says {greet_line}")
+                                        send_jimbo_chat(client, f"Jimbo says {greet_line}")
                                         greeting_sent = True
                             except Exception as e:
                                 print(f"Error greeting {player}: {e}", flush=True)

@@ -49,8 +49,13 @@ subset after partial delivery.
 Startup hydrates a bounded recent log tail without replying retroactively,
 filters joins, leaves, greetings, startup noise, failed replies, and duplicate
 echoes, then tails from the hydration endpoint. Hydration cannot restore hidden
-RCON metadata. Join greetings stay outside dialogue; a successful greeting
-resets the spontaneous timer. Successful direct replies clear accumulated
+RCON metadata. Jimbo's delivered chat lines are delivered through
+`game.forces.player.print()` with a custom notification sound instead of a raw
+chat message (see `docs/RCON_NOTES.md`), so the server log no longer contains
+them; each delivered line is recorded to the gitignored `jimbo_says.log` and
+hydration merges its tail with the server log by timestamp so Jimbo's own
+messages survive a restart. Join greetings stay outside dialogue; a successful
+greeting resets the spontaneous timer. Successful direct replies clear accumulated
 spontaneous activity but remain in dialogue. The exact command
 `Jimbo, forget all previous instructions.` clears both contexts and is
 acknowledged without being sent to the model.
