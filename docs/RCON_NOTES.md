@@ -67,6 +67,13 @@ learnings here as briefly as possible.
 - `LuaEntityPrototype` has no `heating_area_radius` (heating tower); probe
   prototype keys with `pcall` before use.
 - Embed strings in Lua with `json.dumps(...)`; never interpolate raw input.
+- Use `json.dumps(value, ensure_ascii=False)` when embedding text that may
+  contain non-ASCII characters (emoji, accents) into a Lua string literal.
+  Python's default `ensure_ascii=True` emits `\uXXXX`, and Factorio's Lua 5.1
+  has no `\u` escape, so the whole `/silent-command` fails with "invalid escape
+  sequence" — and `client.run()` returns that error text instead of raising, so
+  the failure is silent unless the response is checked. Raw UTF-8 bytes inside a
+  Lua string literal are fine.
 - Probe unknown keys with `pcall(function() return obj[key] end)`: Factorio
   raises `"...doesn't contain key X"` on unknown keys, and `pcall` cleanly
   distinguishes present-but-nil from absent.
@@ -99,11 +106,17 @@ learnings here as briefly as possible.
   exists per the docs but `LuaHelpers` is nil inside `/silent-command` on
   2.1.12, so validate a chosen sound audibly once.
 - Sending chat via
-  `/silent-command game.forces.player.print("Jimbo says <line>", {sound=defines.print_sound.use_player_settings, sound_path="utility/research_completed"})`
+  `/silent-command game.forces.player.print("Jimbo says <line>", {sound=defines.print_sound.use_player_settings, sound_path="item-move/logistic-robot"})`
   prints the line and plays only the custom sound (no ding), respecting each
   player's chat-sound setting; use `sound=defines.print_sound.always` to force
-  playback. `utility/research_completed` is the verified distinct chime Jimbo
-  uses (see `jimbo_chat_sound_path` in `jimbo.py`).
+  playback. `item-move/logistic-robot` (the robotic rattle when you move a stack
+  of logistic robots into an inventory) is the verified chat sound Jimbo
+  uses (see `jimbo_chat_sound_path` in `jimbo.py`). Per the 2.1.12 SoundPath
+  docs, item sound paths map to specific prototype fields: `item-open`/`open_sound`,
+  `item-close`/`close_sound`, `item-pick`/`pick_sound`, `item-drop`/`drop_sound`,
+  `item-move`/`inventory_move_sound`. For logistic-robot the move and drop fields
+  both point to `robotic-inventory-move.ogg`; it has no `open_sound`, so
+  `item-open/logistic-robot` silently fell back to a wrong sound.
 - `game.print`/`force.print` output is NOT written to `server-console.log`
   (verified: `/c game.print(false)` logged only the `[COMMAND]` line, not the
   output). Jimbo therefore records every delivered chat line to the gitignored

@@ -13,12 +13,16 @@ def log_time(timestamp):
     return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
 
+"""jimbo.py's send_jimbo_chat builds the print command; keep the sound path here in
+sync with the jimbo_chat_sound_path constant."""
+
+
 def jimbo_cmd(text):
     return (
         "/silent-command game.forces.player.print("
-        + json.dumps(text)
+        + json.dumps(text, ensure_ascii=False)
         + ", {sound=defines.print_sound.use_player_settings, "
-        + 'sound_path="utility/research_completed"})'
+        + "sound_path=" + json.dumps(jimbo.jimbo_chat_sound_path, ensure_ascii=False) + "})"
     )
 
 
@@ -305,6 +309,18 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(sent, ["hello"])
         self.assertIsNone(error)
         client.run.assert_called_once_with(jimbo_cmd("Jimbo says hello"))
+
+    def test_chat_delivery_passes_non_ascii_as_raw_utf8(self):
+        client = Mock()
+
+        with patch.object(jimbo, "record_jimbo_says"):
+            sent, error = jimbo.send_jimbo_lines(client, "steady hum \U0001F604")
+
+        self.assertEqual(sent, ["steady hum \U0001F604"])
+        self.assertIsNone(error)
+        command = client.run.call_args.args[0]
+        self.assertIn("steady hum \U0001F604", command)
+        self.assertNotIn("\\u", command)
 
     def test_record_jimbo_says_appends_formatted_chat_line(self):
         path = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)

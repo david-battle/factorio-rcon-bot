@@ -21,7 +21,7 @@ jimbo_says_log_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "jimbo_says.log"
 )
 server_owner = "dlbattle"
-ai_profile_name = "deepseek"
+ai_profile_name = "nemotron"
 ai_profiles = {
     "openai": {
         "provider": "opencode",
@@ -79,7 +79,7 @@ dialogue_max_turns = 12
 dialogue_max_age = 15 * 60
 dialogue_max_chars = 4000
 dialogue_log_tail_bytes = 256 * 1024
-jimbo_chat_sound_path = "utility/research_completed"
+jimbo_chat_sound_path = "item-move/logistic-robot"
 safe_retry_commands = (
     "/players online", "/players", "/evolution", "/time", "/version",
 )
@@ -95,8 +95,9 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "My chat messages now play their own notification sound in game instead of "
-    "the standard chat ding, so you can tell when I'm talking."
+    "I've switched my AI model to Nemotron 3 Ultra (free, via OpenRouter). "
+    "My chat messages also play a new notification sound — the one you hear "
+    "when you move a stack of logistic robots into your inventory."
 )
 
 opencode_config = json.dumps({
@@ -337,9 +338,9 @@ def record_jimbo_says(text):
 def send_jimbo_chat(client, text):
     command = (
         "/silent-command game.forces.player.print("
-        + json.dumps(text)
+        + json.dumps(text, ensure_ascii=False)
         + ", {sound=defines.print_sound.use_player_settings, "
-        + "sound_path=" + json.dumps(jimbo_chat_sound_path) + "})"
+        + "sound_path=" + json.dumps(jimbo_chat_sound_path, ensure_ascii=False) + "})"
     )
     client.run(command)
     record_jimbo_says(text)

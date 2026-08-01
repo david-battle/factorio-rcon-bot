@@ -106,9 +106,11 @@ Available profiles:
 | `nemotron` | OpenAI-compatible OpenRouter API | `nvidia/nemotron-3-ultra-550b-a55b:free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `deepseek`. It uses the OpenAI-compatible adapter against
-`https://opencode.ai/zen/v1`, reading the `opencode` credential from
-`~/.local/share/opencode/auth.json`; never read or print the token. The `openai`
+The current profile is `nemotron`. It uses the OpenAI-compatible adapter against
+`https://openrouter.ai/api/v1`, reading the key from the gitignored
+`openrouter.key`; it caps replies at 256 tokens. The `deepseek` profile instead
+reads the `opencode` credential from
+`~/.local/share/opencode/auth.json`; never read or print a token. The `openai`
 profile instead launches an isolated, tool-denied
 `opencode run --pure --agent jimbo --format json` from `/tmp/opencode`, with
 project configuration and external skills disabled. The built-in OpenAI auth
