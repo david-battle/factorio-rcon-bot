@@ -10,12 +10,14 @@ learnings here as briefly as possible.
 - `rcon.source.Client.run()` takes no `retry` kwarg. Jimbo's wrapper adds
   `retry=True`; direct callers must use `client.run(cmd)` only.
 - Never inline Lua into a `python3 -c "..."` string: shell and Python both
-  mangle quotes, and `\n` inside `rcon.print` breaks. Instead write the Lua to a
-  temp file, read it in Python, and pass it to `/silent-command` in one call.
-- `rcon.print` accepts one string; join output with a separator (e.g. `##`)
-  rather than relying on embedded newlines.
-- RCON delivers only the first line of a multi-line command; send remaining
-  lines through separate commands.
+  mangle quotes. Instead write the Lua to a temp file, read it in Python, and
+  pass it to `/silent-command` in one call.
+- `rcon.print` accepts one string. Embedded `\n` is delivered intact over RCON
+  (verified live), so `rcon.print(table.concat(out,"\n"))` works for lists.
+- Keep a single RCON response under ~4 KB: a ~6 KB response hung the
+  `rcon.source` client, while ~4 KB returned fine. Aggregate counts in Lua and
+  split large reports into several commands. Multi-line Lua commands themselves
+  run fully.
 
 ## Connection
 
@@ -46,6 +48,24 @@ learnings here as briefly as possible.
 
 ## Query Idioms
 
+- Current recipe of a crafting machine: `entity.get_recipe()` returns the recipe
+  prototype (nil when unset); `crafting_progress` is 0..1. Machines are found by
+  name (e.g. `find_entities_filtered{name="cryogenic-plant"}`) — do not assume a
+  shared `type`.
+- To find which technology unlocks a recipe, iterate `prototypes.technology` and
+  match effects with `type=="unlock-recipe"` and `recipe==name`, then read
+  researched/prerequisites from `game.forces.player.technologies[tech]`.
+- Machine status is numeric. `defines.entity_status` maps name->number, so the
+  value `e.status` cannot be indexed back by number (`defines.entity_status[28]`
+  is nil); compare against a named constant (`e.status ==
+  defines.entity_status.item_ingredient_shortage`) or reverse-map with
+  `for k,v in pairs(defines.entity_status) do if v==e.status then ... end end`.
+  `defines.status` is nil on 2.1.12. Example observed: `28 ==
+  item_ingredient_shortage` (an assembler waiting on a missing item ingredient).
+- `LuaEntity` has no `fluid_boxes` key; read fluids with
+  `e.get_fluid_contents()` / `get_fluid_count(name)`.
+- `LuaEntityPrototype` has no `heating_area_radius` (heating tower); probe
+  prototype keys with `pcall` before use.
 - Embed strings in Lua with `json.dumps(...)`; never interpolate raw input.
 - Probe unknown keys with `pcall(function() return obj[key] end)`: Factorio
   raises `"...doesn't contain key X"` on unknown keys, and `pcall` cleanly
@@ -61,6 +81,9 @@ learnings here as briefly as possible.
 
 ## Factorio 2.1.12 API Facts
 
+- `find_entities_filtered{area=...}` bounds are **exclusive**: a `w x h` box
+  anchored at tile `(x,y)` is `{{x,y},{x+w,y+h}}`, and a single tile is
+  `{{x,y},{x+1,y+1}}`. A zero-area `{{x,y},{x,y}}` always returns nothing.
 - `LuaSurface` has **no** `orbit` key. The old `surface.orbit` assumption is
   gone.
 - `LuaSpacePlatform` has **no** `location` key. The correct members are
@@ -124,6 +147,9 @@ learnings here as briefly as possible.
   `LuaLogisticSection.filters` or `set_slot()`.
 - `LogisticFilter.min=0,max=0` requests and retains nothing. A nonzero minimum
   requires an exact quality and `=` comparator; use one filter per quality.
+- Logistic filter slots expose `min`/`max` (no `count` field). A filter whose
+  signal is a platform/space import has `name=nil`, `value` as a table, and an
+  `import_from` field; don't assume `name`/`count` always exist.
 - Recipe paste onto a requester ghost: `requester_ghost.copy_settings(
   assembler_ghost, player)`; validate via
   `get_logistic_sections().sections` filters.

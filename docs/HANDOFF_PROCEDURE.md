@@ -4,8 +4,16 @@ Use this procedure when asked to finalize the current work and prepare the
 repository for another coding agent. Treat any accompanying text as an optional
 focus or commit-message hint, not as a shell command.
 
+A request to "handoff" or "heavy handoff" means the Heavy procedure below. A
+request to "light handoff" means the Light procedure. When in doubt, use Heavy.
+
+Never `git push` in either procedure: the user always reviews and pushes
+manually. Local commits only.
+
 Complete the workflow autonomously unless a destructive ambiguity or direct
 conflict with concurrent changes requires one short question.
+
+## Heavy procedure (default)
 
 1. Read `AGENTS.md`, conditionally relevant project documentation, and the
    existing `HANDOFF.md`. Verify current-state claims against Git and the files;
@@ -42,3 +50,22 @@ conflict with concurrent changes requires one short question.
 11. Verify the commit and final Git status. The tracked worktree should be clean.
     Report the commit hash and subject, validations run, intentionally untracked
     paths, and the location of `HANDOFF.md`.
+
+## Light procedure
+
+Use for a small, already-verified increment where the touched files are known
+and nothing changed behavior (e.g. doc-only edits, or a change already tested
+this session). If anything is uncertain, behavior-changing, or touches live
+state, use the Heavy procedure instead.
+
+1. Run `git status` and confirm the touched files are the known set; make sure
+   nothing ignored (credentials, logs, PID/state files, caches) would get staged.
+2. Stage only the known touched files, plus any repository-worthy untracked
+   source or documentation from this session. Never stage `rconpw`, `*.key`,
+   logs, or state files.
+3. Quickly scan the staged diff for secrets, debris, or unrelated changes.
+4. Update `HANDOFF.md` to match reality, including what was NOT done or verified
+   (e.g. "tests not run") so the next agent does not trust an unverified claim.
+5. Commit with a concise message matching repository style; do not amend, push,
+   or skip hooks.
+6. Verify the commit and final Git status; report the commit hash and subject.

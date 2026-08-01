@@ -307,8 +307,10 @@ file`. Jimbo catches both `OSError` and `ValueError` and reopens the file.
 
 ### RCON Multi-line Messages
 
-RCON only delivers the first line of a multi-line command. Jimbo must continue
-sending filtered reply lines separately through `send_jimbo_lines()`.
+Jimbo sends each filtered chat reply line separately through
+`send_jimbo_lines()` (one `Jimbo says <line>` command per line). RCON responses
+keep embedded newlines, but keep any single response under ~4 KB (see
+`docs/RCON_NOTES.md`).
 
 ### Platform Names
 

@@ -2,32 +2,50 @@
 
 ## Verified State
 
-- Branch: `main`.
-- Jimbo is running in the background (`python -u jimbo.py`, PID 311730); single instance.
-- The `deepseek` profile (`deepseek-v4-flash-free` via the OpenCode AI API) is currently used.
+- Branch: `main`; local commits only (the user pushes manually).
+- Jimbo's running state was NOT verified this session (no `jimbo.py` process was
+  found when checked; the server itself was up, since RCON probes succeeded).
+- The `deepseek` profile (`deepseek-v4-flash-free` via the OpenCode AI API) is used.
 - `last_startup_summary.txt` matches the current `startup_change_summary`.
-- See `AGENTS.md` and `docs/OPERATIONS.md` for architecture and running procedures. `docs/BOT_CONTRACTS.md` holds behavioral contracts.
+- See `AGENTS.md` and `docs/OPERATIONS.md` for architecture and running procedures.
+  `docs/BOT_CONTRACTS.md` holds behavioral contracts.
 
 ## Completed Work
 
-- **RCON/Lua knowledge consolidated** (uncommitted, this handoff): `docs/RCON_NOTES.md` is now the canonical RCON/Lua reference. It gained Connection, Command Reference, Map Pings, Query Idioms, Verified Runtime Facts, and Built-in Jimbo Queries sections. Facts were moved from `docs/OPERATIONS.md` (command reference, map pings) and summarized from `docs/FUTURE_DIRECTIONS.md` live findings and `jimbo.py`'s query implementations. `AGENTS.md` now requires reading it before composing new RCON/Lua queries and adding learnings back to it.
-- Doc-only work; `jimbo.py` and behavior unchanged. No startup-change announcement needed (no code change).
+- **RCON/Lua facts corrected in `docs/RCON_NOTES.md`** (live-verified against the
+  running server):
+  - `defines.entity_status` maps name->number; `defines.entity_status[e.status]`
+    returns nil, so compare against a named constant or reverse-map with `pairs()`.
+  - Embedded `\n` in `rcon.print` output IS delivered intact; the real limit is a
+    ~4 KB single response (~6 KB hung the `rcon.source` client). The old
+    "only the first line" claims were removed from Tooling and `docs/OPERATIONS.md`.
+  - Yesterday's uncommitted learnings (recipe/tech/status/area/logistic-filter
+    idioms) reviewed against probe files in `/tmp/opencode` and committed.
+- **Light handoff procedure** added to `docs/HANDOFF_PROCEDURE.md`; both procedures
+  now state the user always pushes manually.
+- Doc-only work; `jimbo.py` and behavior unchanged. No startup-change announcement
+  needed (no code change).
 
 ## Validation
 
-- Ran `python -m unittest test_jimbo`: all 108 tests passed.
-- Ran `python -m py_compile` on `jimbo.py` and `test_jimbo.py`; clean.
-- Ran `git diff --check`; clean. `test_ollama.py` was not run (live, needs the GPU).
+- Live RCON probes: newline survival, ~4 KB response boundary, `defines.entity_status`
+  numeric-index nil check.
+- `git diff --check` clean.
+- NOT run: `python -m unittest test_jimbo` and `py_compile` (light handoff; no code
+  changes this session).
 
 ## Remaining Work
 
-- None pending from this session. `docs/RCON_NOTES.md` is untracked until this handoff's commit; it will be committed along with the doc edits.
+- None pending. All three doc edits are committed in this handoff's commit.
 
 ## Operational Caveats
 
-- Ensure only one instance of Jimbo is running. If restarting, kill the old process first (see `docs/OPERATIONS.md`).
-- Only stage intentional changes. `*.key` files, `rconpw`, `groq-api-key.txt`, `jimbo.log`, `jimbo.pid`, and state files remain ignored/untracked.
-- The old repository (`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`) used the deprecated `mcrcon` library; do not import its RCON code.
+- Ensure only one instance of Jimbo is running. If restarting, kill the old process
+  first (see `docs/OPERATIONS.md`).
+- Only stage intentional changes. `*.key` files, `rconpw`, `groq-api-key.txt`,
+  `jimbo.log`, `jimbo.pid`, and state files remain ignored/untracked.
+- The old repository (`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`) used
+  the deprecated `mcrcon` library; do not import its RCON code.
 
 ## Natural Next Action
 
