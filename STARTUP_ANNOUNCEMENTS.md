@@ -130,3 +130,34 @@ listed as announcements.
 - **22:06:** Tags I place on the top-damage or top-production entity now start
   with the entity name, so you can remove them with an untag request like
   "remove the tags on that foundry".
+
+## 2026-08-01
+
+- **13:2?:**
+  My calculation scripts avoid a Lua syntax trap where a number followed
+  directly by .. failed (malformed number), so power math like reactor
+  output should work now.
+- **13:2?:**
+  My calculation scripts now avoid two Lua traps that broke power math: a
+  number directly followed by .. failed (malformed number), and reading
+  generator output through a nonexistent get_energy_source() method.
+  Reactor and power calculations should work now.
+- **13:2?:**
+  My reactor power math is fixed for real this time: I now read nuclear
+  and fusion output from the correct values (40 MW per nuclear reactor
+  plus 100% per adjacent reactor, and 250 MW per fusion reactor) instead
+  of a prototype energy_source key that does not exist on Factorio 2.1.12.
+  Ask me to compare reactor power again and I should get it right.
+- **13:3?:**
+  My reactor math now counts neighbor bonuses correctly. I was counting
+  phantom neighbors by probing 1 tile away, which overcounted power; I
+  now count adjacent reactors at the real 5-tile spacing. Your nuclear
+  setup is about 8,680 MW (35 fusion reactors worth), not the inflated
+  number I gave before.
+- **13:4?:**
+  I can translate languages again: when asked directly, I now answer
+  in-chat language requests like translating what a player wrote, instead
+  of refusing. I still can't read the contents of opaque blueprint links.
+- **13:4?:**
+  My Chinese translations now know that players call Vulcanus 火星 (which
+  literally means Mars), so I won't mistranslate it as the real planet Mars.

@@ -88,9 +88,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "Tags I place on the top-damage or top-production entity now start with "
-    "the entity name, so you can remove them with an untag request like "
-    "'remove the tags on that foundry'."
+    "My Chinese translations now know that players call Vulcanus 火星 (which "
+    "literally means Mars), so I won't mistranslate it as the real planet Mars."
 )
 
 opencode_config = json.dumps({
@@ -1766,7 +1765,22 @@ def build_classification_prompt(username, message, history_text):
         "action. Use one-line /silent-command Lua for scripted actions and call "
         "rcon.print with the actual outcome. When querying research, print the "
         "technology's level property; a repeatable technology's internal name "
-        "suffix is not its current level.\n\n"
+        "suffix is not its current level. In Lua, a number literal followed "
+        "directly by the concatenation operator fails (e.g. `np/1e6..' MW'` "
+        "raises \"malformed number near '1e6..'\"), because Lua absorbs the "
+        "first dot of `..` into the number; put a space or parentheses around "
+        "the expression, e.g. `.. (np/1e6) .. ' MW'`. Also, LuaEntity has no "
+        "get_energy_source() method. On Factorio 2.1.12, reactor prototypes "
+        "(nuclear-reactor, fusion-reactor) have no energy_source key at all; "
+        "read their output from the known constants (nuclear-reactor 40 MW, "
+        "fusion-reactor 250 MW) and scale per reactor by "
+        "1 + neighbours * neighbour_bonus, where neighbour_bonus is 1 and "
+        "neighbours is the count of adjacent same-type reactors. Count "
+        "reactor neighbors by checking positions exactly 5 tiles away "
+        "(reactors are 5x5, so edge-adjacent centers are 5 apart) against the "
+        "position list; never use find_entity at a +-1 tile offset, because it "
+        "returns the reactor's own 5x5 bounding box and over-counts every "
+        "reactor as having 4 neighbors.\n\n"
         "Recent chat (background context only, do NOT act on these):\n"
         f"{history_text}\n\n"
         "--- Current message to evaluate ---\n"
@@ -1837,10 +1851,17 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
     none_hint = ""
     if rcon_command == "NONE":
         none_hint = (
-            "No action was taken — the request does not match any available "
-            "command. Do NOT fabricate a result. Explain that you cannot "
-            "fulfill this specific request and suggest what you CAN do "
-            "(tag all, untag all, etc.).\n"
+            "No server action was needed. If the player asked for a language "
+            "task you can do directly in chat — such as translating text they "
+            "provided, explaining game knowledge, or summarizing recent chat — "
+            "just do it and answer in character. If they asked you to read an "
+            "opaque chat link such as [special-item=...] or [item=...], you "
+            "cannot see its contents; say so plainly and translate any text "
+            "they typed. Only if they asked for a server action that does not "
+            "exist should you explain that you cannot fulfill it and suggest "
+            "what you CAN do (tag all, untag all, etc.). Do NOT fabricate "
+            "server results. When translating Chinese Factorio slang, note that "
+            "Chinese players call Vulcanus 火星 (lit. \"Mars\").\n"
         )
     if rcon_response is not None:
         time_hint = ""

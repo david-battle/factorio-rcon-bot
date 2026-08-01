@@ -101,6 +101,24 @@ learnings here as briefly as possible.
   `prototypes.get_entity_filtered{crafting-category=...}`; never assume the
   recipe's product entity is its machine.
 - Lua has no `chr()`; use `string.char(...)`.
+- On 2.1.12, reactor prototypes (`nuclear-reactor`, `fusion-reactor`) have **no**
+  `energy_source` at all — that key is absent from both `LuaEntity` and
+  `LuaEntityPrototype`, and `LuaEntity` has no `get_energy_source()` method.
+  They expose `neighbour_bonus` (=1, i.e. +100% per
+  neighbor) and `burner_prototype` (LuaBurnerPrototype, `effectivity`=1,
+  `fuel_categories`={nuclear}/{fusion}); `pairs()` on prototype userdata raises
+  "bad argument to pairs", so probe keys with `pcall`. Base output is not
+  readable from those keys on 2.1.12; use the known constants (nuclear-reactor
+  40 MW, fusion-reactor 250 MW) and scale by `1 + neighbours*neighbour_bonus`.
+- Reactor adjacency must be probed at a **±5 tile offset** (reactors are 5x5,
+  edge-adjacent centers are 5 apart). `find_entity(name, pos±1)` returns the
+  reactor's own bounding box and over-counts neighbors: a 61-reactor farm
+  reported 244 phantom neighbors (40x5x61=12200 MW) vs the real 156
+  (8680 MW). Count neighbors against the position list at ±5, not ±1.
+- Concatenating right after a numeric literal is a syntax trap: `np/1e6..' MW'`
+  fails with `malformed number near '1e6..'` because Lua's lexer absorbs the
+  first `.` of `..` into the number. Put a space or parentheses around it:
+  `.. (np/1e6) .. ' MW'`.
 
 ## Verified Runtime Facts
 
