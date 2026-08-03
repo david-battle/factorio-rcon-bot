@@ -3,70 +3,91 @@
 ## Verified State
 
 - Branch: `main`; local commits only (the user pushes manually).
-- **Jimbo was NOT running when this session started.** The previous handoff's
-  pid was stale; the process had died ~2026-08-02 08:15 with no traceback in
-  `jimbo.log`. He was restarted this session on 2026-08-03 04:15 under pid
-  `343716` (see `jimbo.pid`) per `docs/OPERATIONS.md` and verified alive: the
-  startup announcement rendered, and a live "Jimbo ping" probe drew the reply
-  "Pong! 🏓 What's up?" through the sound-path print mechanism.
-- `last_startup_summary.txt` still matches the current `startup_change_summary`
-  (Nemotron + robot-insert sound), so the restart was a generic "online"
-  announcement; no new `STARTUP_ANNOUNCEMENTS.md` entry was needed.
-- **Uncommitted change committed as part of this handoff:** a defensive guard in
-  `ask_openai_compatible()` that returns `""` when a provider returns empty
-  `choices` or a null message/content instead of crashing on
-  `choices[0].message.content`.
-- See `AGENTS.md` (now with a `## Key paths` section noting the server log
-  path), `docs/OPERATIONS.md`, and `docs/RCON_NOTES.md`. Behavioral contracts
-  live in `docs/BOT_CONTRACTS.md`.
+- **Jimbo is running** under pid `346199` (see `jimbo.pid`), started 2026-08-03
+  05:51 per `docs/OPERATIONS.md`, verified alive and processing chat. Single
+  instance only.
+- `last_startup_summary.txt` matches the current `startup_change_summary` ("I was
+  occasionally failing to answer..."), so the current running process already
+  announced the latest change and no further `STARTUP_ANNOUNCEMENTS.md` entry is
+  needed for another restart of this same code.
+- This session's changes are uncommitted but staged for commit below
+  (jimbo.py, test_jimbo.py, STARTUP_ANNOUNCEMENTS.md, docs/OPERATIONS.md).
 
 ## Completed Work
 
-- **Restored Jimbo to a running state.** Diagnosed the downtime (no process, no
-  crash traceback), restarted under pid `343716`, and live-verified startup
-  announcement plus a chat reply with the distinct notification sound.
-- **Documented the server log path in `AGENTS.md`.** Added a `## Key paths`
-  section so every future context sees
-  `/mnt/d/factorio-server/server-console.log` up front.
-- **Hardened `ask_openai_compatible()` against empty/absent choices.**
-- **Reviewed overnight logins** on request (Aug 2 22:13 → Aug 3 04:01):
-  `838345250`, `Kyrgyz_bala_from_Bishkek`, `FrozenLeaf21`, `darklich14`,
-  `Mrbai233`, `synergy_029`, `zscomyj`; `darklich14` and
-  `Kyrgyz_bala_from_Bishkek` were still online at the current login.
+Fixed Jimbo's recurring "I couldn't complete that request" failures, diagnosed
+from `jimbo.log` (three occurrences 2026-08-03 05:22–05:29):
+
+- **Truncation root cause.** Nemotron 3 Ultra is a reasoning model; it spends
+  ~150–260 tokens on internal "thinking" before answering. The profile's
+  `max_completion_tokens: 256` left almost no budget for the visible reply, so
+  replies got cut mid-sentence ("Threevee dropping blue science at"). Bumped to
+  1024 in the `nemotron` profile.
+- **Reasoning leaking into classifier output.** The strict one-line chat
+  classifier sometimes returned its chain-of-thought as content (e.g. "The user
+  is asking for... The appropriate command is TAG...") instead of
+  `PRODUCE|...` / `TAG|...`, so it was treated as an unrecognized response.
+  Added `extra_body: {"reasoning": {"exclude": True}}` to the `nemotron`
+  profile; verified it returns only the final answer.
+- **Classifier hardening.** Added `_is_recognized_classification()` and a
+  one-shot retry in `classify_current_message()` that nudges the model once when
+  its output is unrecognized prose, empty, or malformed (mirrors the existing
+  SKIP-retry). Also makes the step-3 reply path non-empty more often.
+- Updated `startup_change_summary` to a player-facing "replies complete more
+  reliably" line and appended a `## 2026-08-03` entry to
+  `STARTUP_ANNOUNCEMENTS.md` (both restart-summary and announcement entry for
+  this change; the earlier truncation-fix entry from this same date is retained).
+- Recorded the Nemotron reasoning behavior in `docs/OPERATIONS.md` (AI Provider
+  section) so future providers keep a generous completion cap and reason
+  exclusion.
 
 ## Validation
 
 - `python -m py_compile jimbo.py` clean; `git diff --check` clean.
-- `python -m unittest test_jimbo` ran 119 tests, all passing.
-- Live-verified: startup announcement and the probe reply both appear in
-  `jimbo_says.log`; process still alive after ~6 minutes.
+- `python -m unittest test_jimbo` — 121 tests, all passing (2 added for the
+  classifier retry, plus an assertion for the `reasoning.exclude` config).
+- Live: restart at 05:51 announced the change; a multi-sentence direct reply
+  completed without truncation. Empirically reproduced the classifier leak and
+  confirmed `reasoning: {exclude: true}` cleans it up (documented in
+  OPERATIONS.md).
+- Not run: `test_ollama.py` (per operations guidance, avoid while the Factorio
+  client uses the GPU).
 
 ## Remaining Work
 
-- None pending. Jimbo is live on pid `343716`. Note the overnight crash cause
-  is unconfirmed (no traceback, no OOM record); if he dies again without a
-  traceback, check whether the WSL session itself was shut down and consider
-  a startup supervisor. Not adding one unless the user asks.
+- None pending. The `reasoning: {exclude: true}` path is live for the current
+  save; watch a few more direct/classifier requests to confirm the fallback
+  rate drops. The overnight crash cause from the prior handoff remains
+  unconfirmed; no startup supervisor unless the user asks.
+- Residual limitation: `TAG` cannot filter assembling machines by their current
+  recipe ("Jimbo ping the assembling machine making X"). `exclude` + the retry
+  improve but do not fully solve that ambiguous case. See
+  `docs/FUTURE_DIRECTIONS.md` for broader intent work.
 
 ## Current Model
 
 - Jimbo runs on `nemotron` (`nvidia/nemotron-3-ultra-550b-a55b:free` via
-  OpenRouter, `openrouter.key`). No changes made this session.
+  OpenRouter, `openrouter.key`), `max_completion_tokens: 1024`, with
+  `reasoning: {exclude: True}`. Changed this session.
 
 ## Operational Caveats
 
-- Ensure only one instance of Jimbo is running. If restarting, kill the old
-  process first (see `docs/OPERATIONS.md`).
-- Only stage intentional changes. `*.key` files, `rconpw`, `groq-api-key.txt`,
+- Ensure only one Jimbo instance. If restarting, kill the old process first
+  (see `docs/OPERATIONS.md`). The launcher via `setsid` forks, so confirm the
+  recorded PID with `ps` from a fresh session (the `$!` name is the wrapper).
+- Only stage intentional changes. `*.key`, `rconpw`, `groq-api-key.txt`,
   `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, `last_*.txt`, and
   `known_players.txt` remain ignored/untracked.
 - The old repository (`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`)
   used the deprecated `mcrcon` library; do not import its RCON code.
-- 2026-08-01 learnings still apply: chat delivery uses
+- 2026-08-01 learnings apply: chat delivery uses
   `/silent-command game.forces.player.print(...)` with
   `sound_path="item-move/logistic-robot"` and `ensure_ascii=False` (Factorio's
   Lua 5.1 rejects `\uXXXX` escapes). See `docs/RCON_NOTES.md`.
 
 ## Natural Next Action
 
-- Wait for the user's next request.
+- Review the staged commit (below), or wait for the user's next request. If the
+  "I couldn't complete" fallback still appears for hard requests, consider
+  classifier-prompt work for recipe-filtering requests (see
+  `docs/FUTURE_DIRECTIONS.md`).

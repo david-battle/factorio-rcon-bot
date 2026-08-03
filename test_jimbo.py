@@ -88,7 +88,11 @@ class DialogueTests(unittest.TestCase):
         )
         self.assertEqual(
             jimbo.ai_profiles["nemotron"]["request_options"]["max_completion_tokens"],
-            256,
+            1024,
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["nemotron"]["request_options"]["extra_body"],
+            {"reasoning": {"exclude": True}},
         )
         self.assertIs(jimbo.ai_profile, jimbo.ai_profiles[jimbo.ai_profile_name])
         self.assertEqual(jimbo.model_name, jimbo.ai_profile["model"])
@@ -994,6 +998,41 @@ class DialogueTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "SKIP")
+        ask_ai.assert_called_once()
+
+    def test_unrecognized_prose_classification_is_retried(self):
+        with patch.object(
+            jimbo,
+            "ask_ai",
+            side_effect=[
+                (
+                    "The user is asking for small power poles. This is a direct "
+                    "request to Jimbo. The appropriate command is LOGISTICS."
+                ),
+                "LOGISTICS|all|small-electric-pole,medium-electric-pole",
+            ],
+        ) as ask_ai:
+            result = jimbo.classify_current_message(
+                "Threevee", "Jimbo i need small power poles", "(none)"
+            )
+
+        self.assertEqual(
+            result,
+            "LOGISTICS|all|small-electric-pole,medium-electric-pole",
+        )
+        self.assertEqual(ask_ai.call_count, 2)
+        self.assertIn(
+            "reply with exactly one line",
+            ask_ai.call_args_list[1].args[0].lower(),
+        )
+
+    def test_recognized_classification_is_not_retried(self):
+        with patch.object(jimbo, "ask_ai", return_value="NONE") as ask_ai:
+            result = jimbo.classify_current_message(
+                "Alice", "Jimbo thanks", "(none)"
+            )
+
+        self.assertEqual(result, "NONE")
         ask_ai.assert_called_once()
 
     def test_classifier_requests_executable_commands_for_server_actions(self):

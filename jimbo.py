@@ -68,7 +68,10 @@ ai_profiles = {
             os.path.dirname(os.path.abspath(__file__)), "openrouter.key"
         ),
         "request_options": {
-            "max_completion_tokens": 256,
+            "max_completion_tokens": 1024,
+            "extra_body": {
+                "reasoning": {"exclude": True},
+            },
         },
     },
 }
@@ -95,9 +98,10 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I've switched my AI model to Nemotron 3 Ultra (free, via OpenRouter). "
-    "My chat messages also play a new notification sound — the one you hear "
-    "when you move a stack of logistic robots into your inventory."
+    "I was occasionally failing to answer and had to fall back to 'I couldn't "
+    "complete that request'. I've tightened how I respond so I give a real, "
+    "finished answer instead of trailing off into half-finished thinking, so "
+    "your requests should complete more reliably now."
 )
 
 opencode_config = json.dumps({
@@ -403,6 +407,26 @@ def loosely_refers_to_jimbo(message):
     return False
 
 
+def _is_recognized_classification(raw):
+    line = (raw or "").strip()
+    if line in ("SKIP", "NONE", "PLATFORMS", "PLANETS"):
+        return True
+    if line.upper().startswith("NONE"):
+        return True
+    if line.startswith("/"):
+        return True
+    return any(
+        parser is not None
+        for parser in (
+            parse_logistics_decision(line),
+            parse_produce_decision(line),
+            parse_tag_decision(line),
+            parse_untag_decision(line),
+            parse_top_damage_decision(line),
+        )
+    )
+
+
 def classify_current_message(username, message, history_text):
     prompt = build_classification_prompt(username, message, history_text)
     raw = ask_ai(prompt).split("\n")[0].strip()
@@ -417,6 +441,20 @@ def classify_current_message(username, message, history_text):
             "addresses Jimbo. Under the rules above it must be classified as NONE, "
             "a structured request, or an executable slash command. Classify the "
             "current message again with exactly one line."
+        )
+        raw = ask_ai(retry_prompt).split("\n")[0].strip()
+    if not _is_recognized_classification(raw):
+        print(
+            "Classifier returned an unrecognized response; retrying",
+            flush=True,
+        )
+        retry_prompt = (
+            prompt
+            + "\n\nYour previous reply was not a single recognized output. "
+            "It contained reasoning or explanation instead of one of the "
+            "required forms. Reply with exactly one line: SKIP, NONE, "
+            "PLATFORMS, PLANETS, or one of the exact structured command "
+            "formats listed above."
         )
         raw = ask_ai(retry_prompt).split("\n")[0].strip()
     return raw

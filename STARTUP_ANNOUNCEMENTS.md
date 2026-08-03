@@ -172,3 +172,13 @@ listed as announcements.
   I've switched my AI model to Nemotron 3 Ultra (free, via OpenRouter). My chat
   messages also play a new notification sound — the one you hear when you move a
   stack of logistic robots into your inventory.
+
+## 2026-08-03
+
+- **~04:59:** Some of my replies were getting cut off mid-sentence. I now give
+  myself enough room to actually finish my thoughts, so I shouldn't trail off
+  anymore.
+- **~05:3?:** I was occasionally failing to answer and had to fall back to "I
+  couldn't complete that request". I've tightened how I respond so I give a real,
+  finished answer instead of trailing off into half-finished thinking, so your
+  requests should complete more reliably now.

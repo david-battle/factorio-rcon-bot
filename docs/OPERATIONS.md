@@ -108,7 +108,15 @@ Available profiles:
 
 The current profile is `nemotron`. It uses the OpenAI-compatible adapter against
 `https://openrouter.ai/api/v1`, reading the key from the gitignored
-`openrouter.key`; it caps replies at 256 tokens. The `deepseek` profile instead
+`openrouter.key`; it allows up to 1024 completion tokens and excludes the
+model's reasoning from the response. Nemotron 3 Ultra is a reasoning model, so
+it spends a large share of its completion budget on internal thinking before
+answering; a `max_completion_tokens` of 256 starved the visible reply and cut
+it off mid-sentence, and reasoning occasionally leaked into the content of the
+strict one-line chat classifier. Use a generous completion cap and
+`extra_body: {"reasoning": {"exclude": True}}` so only the final answer is
+returned; the classifier additionally retries once when a reply is not a
+recognized command line. The `deepseek` profile instead
 reads the `opencode` credential from
 `~/.local/share/opencode/auth.json`; never read or print a token. The `openai`
 profile instead launches an isolated, tool-denied
