@@ -4,14 +4,18 @@
 
 - Branch: `main`; local commits only (the user pushes manually).
 - **Jimbo is running** under pid `346199` (see `jimbo.pid`), started 2026-08-03
-  05:51 per `docs/OPERATIONS.md`, verified alive and processing chat. Single
-  instance only.
+  05:51 per `docs/OPERATIONS.md`, verified alive. Single instance only.
+- **Jimbo is muted by the OpenRouter free-tier rate limit as of ~07:14**
+  (`429 free-models-per-day`, 50/day, `X-RateLimit-Remaining: 0`). All AI calls
+  — greetings and replies — fail with `Temporary AI error; retrying`. Reset at
+  midnight UTC (per user). No code fix; either wait for reset or top up
+  credits.
 - `last_startup_summary.txt` matches the current `startup_change_summary` ("I was
   occasionally failing to answer..."), so the current running process already
   announced the latest change and no further `STARTUP_ANNOUNCEMENTS.md` entry is
   needed for another restart of this same code.
-- This session's changes are uncommitted but staged for commit below
-  (jimbo.py, test_jimbo.py, STARTUP_ANNOUNCEMENTS.md, docs/OPERATIONS.md).
+- This session's code changes are committed in `be69ab3` (jimbo.py,
+  test_jimbo.py, STARTUP_ANNOUNCEMENTS.md, docs/OPERATIONS.md).
 
 ## Completed Work
 
@@ -87,7 +91,8 @@ from `jimbo.log` (three occurrences 2026-08-03 05:22–05:29):
 
 ## Natural Next Action
 
-- Review the staged commit (below), or wait for the user's next request. If the
-  "I couldn't complete" fallback still appears for hard requests, consider
-  classifier-prompt work for recipe-filtering requests (see
-  `docs/FUTURE_DIRECTIONS.md`).
+- Watch for the rate-limit reset (midnight UTC) and confirm Jimbo resumes
+  replying; if the 429 persists, the OpenRouter account needs a credit top-up.
+  Otherwise wait for the user's next request. If the "I couldn't complete"
+  fallback still appears for hard requests, consider classifier-prompt work for
+  recipe-filtering requests (see `docs/FUTURE_DIRECTIONS.md`).
