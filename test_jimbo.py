@@ -251,7 +251,7 @@ class DialogueTests(unittest.TestCase):
     def test_dialogue_expires_and_keeps_latest_twelve_turns(self):
         now = 1_800_000_000
         dialogue = deque()
-        jimbo.add_dialogue_turn(dialogue, "Old", "expired", timestamp=now - 901)
+        jimbo.add_dialogue_turn(dialogue, "Old", "expired", timestamp=now - 2401)
         for index in range(14):
             jimbo.add_dialogue_turn(
                 dialogue, f"Player{index}", f"message {index}", timestamp=now + index
@@ -456,12 +456,36 @@ class DialogueTests(unittest.TestCase):
         client.run.return_value = "Tagged 12 artillery-turret on nauvis"
         result = jimbo.run_tag_command(client, "nauvis", "artillery-turret", "")
         command = client.run.call_args.args[0]
-        self.assertIn('game.surfaces["nauvis"]', command)
+        self.assertIn('local scope="nauvis"', command)
+        self.assertIn("game.surfaces[scope]", command)
         self.assertIn("add_chart_tag", command)
         self.assertIn("name=et", command)
         self.assertIn("type=et", command)
         self.assertIn("icon={type='entity',name=et}", command)
         self.assertTrue(client.run.call_args.kwargs["retry"])
+        self.assertIn("Tagged", result)
+
+    def test_tag_command_scans_all_surfaces(self):
+        client = Mock()
+        client.run.return_value = "Tagged 4 character-corpse on nauvis:4"
+        result = jimbo.run_tag_command(client, "all", "character-corpse", "")
+        command = client.run.call_args.args[0]
+        self.assertIn('local scope="all"', command)
+        self.assertIn("scope=='all'", command)
+        self.assertIn("pairs(game.surfaces)", command)
+        self.assertIn("table.concat(res,',')", command)
+        self.assertIn("add_chart_tag", command)
+        self.assertIn("Tagged", result)
+
+    def test_tag_command_tags_player_corpses(self):
+        client = Mock()
+        client.run.return_value = "Tagged 4 character-corpse on nauvis:4"
+        result = jimbo.run_tag_command(client, "nauvis", "character-corpse", "")
+        command = client.run.call_args.args[0]
+        self.assertIn('local et="character-corpse"', command)
+        self.assertIn("name=et", command)
+        self.assertIn("type=et", command)
+        self.assertIn("add_chart_tag", command)
         self.assertIn("Tagged", result)
 
     def test_tag_command_with_label(self):
@@ -582,12 +606,33 @@ class DialogueTests(unittest.TestCase):
             client, "nauvis", "foundry", "foundry 771429"
         )
         command = client.run.call_args.args[0]
-        self.assertIn('game.surfaces["nauvis"]', command)
+        self.assertIn('local scope="nauvis"', command)
         self.assertIn("find_chart_tags", command)
         self.assertIn("tag.text:lower():match('^'..label_text", command)
         self.assertIn("tag.text:lower():match('^'..et", command)
         self.assertTrue(client.run.call_args.kwargs["retry"])
         self.assertIn("Removed", result)
+
+    def test_untag_command_scans_all_surfaces(self):
+        client = Mock()
+        client.run.return_value = "Removed 4 tags on nauvis:4"
+        result = jimbo.run_untag_command(client, "all", "character-corpse", "")
+        command = client.run.call_args.args[0]
+        self.assertIn('local scope="all"', command)
+        self.assertIn("scope=='all'", command)
+        self.assertIn("pairs(game.surfaces)", command)
+        self.assertIn("find_chart_tags", command)
+        self.assertIn("Removed", result)
+
+    def test_classifier_guidance_for_corpse_tagging(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo please tag all player corpses",
+            "(none)",
+        )
+        self.assertIn("character-corpse", prompt)
+        self.assertIn("TAG|all|character-corpse|", prompt)
+        self.assertIn("scan every surface", prompt)
 
     def test_untag_classifier_guidance_for_just_tagged_entity(self):
         prompt = jimbo.build_classification_prompt(
@@ -1239,7 +1284,7 @@ class HydrationTests(unittest.TestCase):
 
     def test_hydration_filters_noise_and_groups_multiline_replies(self):
         now = 1_800_000_000
-        old = log_time(now - 1000)
+        old = log_time(now - 2500)
         joined = log_time(now - 100)
         greeting = log_time(now - 95)
         player = log_time(now - 90)

@@ -7,7 +7,7 @@ work should preserve the bot's simple architecture and favor useful context,
 natural interaction, and restrained behavior.
 
 1. **Refine shared conversational context.** The first bounded server-wide
-   dialogue is implemented: 12 turns, 15 minutes, about 4,000 characters, Jimbo's
+   dialogue is implemented: 12 turns, 40 minutes, about 4,000 characters, Jimbo's
    delivered replies, relevant RCON facts, and restart hydration. Future work
    should tune those limits only from observed chat and consider richer context
    only when a concrete failure remains. See `docs/BOT_CONTRACTS.md` for

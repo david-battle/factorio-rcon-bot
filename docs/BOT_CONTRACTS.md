@@ -39,7 +39,7 @@ recipe shortfall and must not be replaced by ad hoc
 ## Shared Dialogue and Spontaneous Comments
 
 Jimbo keeps one public, server-wide conversation: the newest 12 logical turns,
-15 minutes, and roughly 4,000 rendered characters. Record player messages,
+40 minutes, and roughly 4,000 rendered characters. Record player messages,
 successfully delivered Jimbo replies, relevant spontaneous comments, and exact
 RCON facts associated with replies. Keep the current message outside history;
 history may clarify a reference but cannot revive an old request. Multiline
@@ -265,22 +265,27 @@ during classification. Python validates the fields and builds the Lua command:
 TAG|nauvis|artillery-turret|My Guns
 ```
 
-- `surface` — lowercase internal surface name.
+- `surface` — lowercase internal surface name, or `all` to scan every surface
+  (the classifier uses `all` for requests such as "tag all player corpses").
 - `entity-type` — lowercase internal entity type name such as
-  `artillery-turret`, `electric-pole`, `rocket-silo`, or `roboport`.
+  `artillery-turret`, `electric-pole`, `rocket-silo`, `roboport`, or
+  `character-corpse` (player corpses; their name and type are both
+  `character-corpse`).
 - `optional-label` — free text shown on each tag; when omitted the tag text is
   the entity type and unit number.
 
 The Python command `run_tag_command()` builds a `/silent-command` that iterates
-`find_entities_filtered{type=..., force='player'}` on the named surface and
-calls `force.add_chart_tag()` for each valid entity. It reports the count or a
-not-found message. The model never writes Lua for this action — it names the
-entity type and Python handles the rest.
+`find_entities_filtered{type=..., force='player'}` on the named surface (or
+every surface when `surface` is `all`) and calls `force.add_chart_tag()` for
+each valid entity. It reports the count or a not-found message. The model never
+writes Lua for this action — it names the entity type and Python handles the
+rest.
 
 Removal uses a structured `UNTAG|surface|entity-type|optional-label` line.
 `run_untag_command()` matches chart tags whose text starts with the entity type
 (or its prototype type) when the label is empty, and tags whose text starts with
-the exact label when one is given. Because every Jimbo tag starts with the
+the exact label when one is given. As with tagging, `surface` may be `all` to
+scan every surface. Because every Jimbo tag starts with the
 entity name — the `TOP_DAMAGE` tag text is
 `<entity-name> <unit-number> highest <stat>: <value>` — "remove the tags on
 that foundry I just pinged" is `UNTAG|nauvis|foundry|` with an empty label.

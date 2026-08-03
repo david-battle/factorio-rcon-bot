@@ -89,7 +89,7 @@ ai_profile = ai_profiles[ai_profile_name]
 model_name = ai_profile["model"]
 model_identity = ai_profile["identity"]
 dialogue_max_turns = 12
-dialogue_max_age = 15 * 60
+dialogue_max_age = 40 * 60
 dialogue_max_chars = 4000
 dialogue_log_tail_bytes = 256 * 1024
 jimbo_chat_sound_path = "item-move/logistic-robot"
@@ -108,10 +108,8 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can now read equipment power and buffer values straight from the server "
-    "— for example the exoskeleton has no internal buffer, while the personal "
-    "roboport holds 35 MJ — and I'll only state values I actually read, not "
-    "guessed ones."
+    "I now remember about 40 minutes of recent chat instead of 15, so I can "
+    "pick up the thread of a conversation after a longer pause."
 )
 
 opencode_config = json.dumps({
@@ -518,22 +516,37 @@ def run_tag_command(client, surface, entity_type, label):
     entity_lua = json.dumps(entity_type)
     label_lua = json.dumps(label)
     cmd = (
-        f"/silent-command local s=game.surfaces[{surface_lua}];"
-        f"if not s then rcon.print('Surface not found') return end;"
+        f"/silent-command local scope={surface_lua};"
         f"local et={entity_lua};"
         f"local label_text={label_lua};"
         f"local icon={{type='entity',name=et}};"
-        f"local count=0;"
+        f"local surfaces={{}};"
+        f"if scope=='all' then "
+        f"for _,candidate in pairs(game.surfaces) do "
+        f"surfaces[#surfaces+1]=candidate end "
+        f"else "
+        f"local s=game.surfaces[scope];"
+        f"if not s then rcon.print('Surface not found') return end;"
+        f"surfaces[1]=s end;"
+        f"local count=0;local res={{}};"
+        f"for _,s in ipairs(surfaces) do "
         f"local list=s.find_entities_filtered{{name=et}};"
         f"if #list==0 then list=s.find_entities_filtered{{type=et}} end;"
+        f"local c=0;"
         f"for _,e in ipairs(list) do "
         f"if e.valid then "
         f"local tag_label=label_text~='' and label_text or e.name;"
         f"game.forces.player.add_chart_tag(s,{{position=e.position,"
         f"icon=icon,text=tag_label}});"
-        f"count=count+1 end end;"
-        f"if count==0 then rcon.print('No '..et..' found on '..s.name) "
-        f"else rcon.print('Tagged '..count..' '..et..' on '..s.name) end"
+        f"c=c+1 end end;"
+        f"if c>0 then res[#res+1]=s.name..':'..c end;"
+        f"count=count+c end;"
+        f"if count==0 then rcon.print('No '..et..' found on '..scope) "
+        f"else "
+        f"local out='Tagged '..count..' '..et..' on ';"
+        f"if scope=='all' then out=out..table.concat(res,',') "
+        f"else out=out..surfaces[1].name end;"
+        f"rcon.print(out) end"
     )
     response = client.run(cmd, retry=True)
     return response.strip() if response else "ERROR: empty response"
@@ -564,14 +577,23 @@ def run_untag_command(client, surface, entity_type, label):
     entity_lua = json.dumps(entity_type)
     label_lua = json.dumps(label)
     cmd = (
-        f"/silent-command local s=game.surfaces[{surface_lua}];"
-        f"if not s then rcon.print('Surface not found') return end;"
+        f"/silent-command local scope={surface_lua};"
         f"local et={entity_lua};"
         f"local label_text={label_lua};"
         f"local pt=prototypes.entity[et];"
         f"local type_name=pt and pt.type or nil;"
+        f"local surfaces={{}};"
+        f"if scope=='all' then "
+        f"for _,candidate in pairs(game.surfaces) do "
+        f"surfaces[#surfaces+1]=candidate end "
+        f"else "
+        f"local s=game.surfaces[scope];"
+        f"if not s then rcon.print('Surface not found') return end;"
+        f"surfaces[1]=s end;"
+        f"local count=0;local res={{}};"
+        f"for _,s in ipairs(surfaces) do "
         f"local tags=game.forces.player.find_chart_tags(s);"
-        f"local count=0;"
+        f"local c=0;"
         f"for _,tag in ipairs(tags) do "
         f"if (label_text~='' and "
         f"tag.text:lower():match('^'..label_text:lower():gsub('%-','%%-'))) or "
@@ -580,9 +602,15 @@ def run_untag_command(client, surface, entity_type, label):
         f"(type_name and "
         f"tag.text:lower():match('^'..type_name:lower():gsub('%-','%%-'))))) then "
         f"tag.destroy();"
-        f"count=count+1 end end;"
-        f"if count==0 then rcon.print('No matching tags found on '..s.name) "
-        f"else rcon.print('Removed '..count..' tags from '..s.name) end"
+        f"c=c+1 end end;"
+        f"if c>0 then res[#res+1]=s.name..':'..c end;"
+        f"count=count+c end;"
+        f"if count==0 then rcon.print('No matching tags found on '..scope) "
+        f"else "
+        f"local out='Removed '..count..' tags ';"
+        f"if scope=='all' then out=out..'on '..table.concat(res,',') "
+        f"else out=out..'from '..surfaces[1].name end;"
+        f"rcon.print(out) end"
     )
     response = client.run(cmd, retry=True)
     return response.strip() if response else "ERROR: empty response"
@@ -1893,12 +1921,16 @@ def build_classification_prompt(username, message, history_text):
         "- TAG|surface|entity-type|optional-label — find every entity of a given "
         "type on a surface and add a chart tag at each position. Use lowercase "
         "internal entity type names such as artillery-turret, electric-pole, "
-        "rocket-silo, or roboport. The optional label is free text; when omitted, "
+        "rocket-silo, or roboport. Player corpses use the entity type "
+        "character-corpse. Use surface 'all' to scan every surface, for example "
+        "TAG|all|character-corpse| for 'tag all player corpses'. The optional "
+        "label is free text; when omitted, "
         "each tag shows the entity type and unit number. Examples: "
         "TAG|nauvis|artillery-turret, TAG|nauvis|artillery-turret|My Guns.\n"
         "- UNTAG|surface|entity-type|optional-label — find every chart tag on a "
         "surface whose text starts with the given entity type (or starts with "
-        "the exact label) and remove it. Jimbo's own tags start with the entity "
+        "the exact label) and remove it. Surface 'all' scans every surface. "
+        "Jimbo's own tags start with the entity "
         "name, so 'remove the tags on that foundry I just pinged' is "
         "UNTAG|nauvis|foundry| with an empty label. Examples: "
         "UNTAG|nauvis|artillery-turret, UNTAG|nauvis|artillery-turret|My Guns.\n"
@@ -1978,17 +2010,19 @@ def build_classification_prompt(username, message, history_text):
         "backward-compatible view-relative direction, or an empty fourth field "
         "as described above.\n"
         "- TAG|surface|entity-type|optional-label — the current player asks Jimbo "
-        "to tag, ping, or mark entities of a specific type on a named surface, "
-        "such as nauvis or fulgora. Use a real surface name — "
-        "\"current\" is not valid. Examples: TAG|nauvis|artillery-turret, "
-        "TAG|nauvis|rocket-silo.\n"
+        "to tag, ping, or mark entities of a specific type, such as "
+        "artillery-turret, rocket-silo, or player corpses (entity type "
+        "character-corpse). Use a real surface name — "
+        "\"current\" is not valid — or 'all' to scan every surface. "
+        "Examples: TAG|nauvis|artillery-turret, TAG|all|character-corpse|.\n"
         "- UNTAG|surface|entity-type|optional-label — the current player asks Jimbo "
-        "to remove chart tags for entities of a specific type from a surface. "
+        "to remove chart tags for entities of a specific type. "
         "When label is empty, matches tags whose text starts with the entity type "
         "name. When label is provided, matches tags whose text starts with that "
         "label. For 'the X I just tagged or pinged', use the entity type with an "
         "empty label (UNTAG|nauvis|foundry|); do not build a label from a unit "
-        "number or ping coordinates. Examples: UNTAG|nauvis|artillery-turret, "
+        "number or ping coordinates. Surface 'all' scans every surface. "
+        "Examples: UNTAG|nauvis|artillery-turret, "
         "UNTAG|nauvis|artillery-turret|My Guns.\n"
         "- TOP_DAMAGE|surface|entity-type — the current player asks Jimbo to find "
         "the entity with the highest stat (damage_dealt for turrets, "
@@ -2075,16 +2109,18 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
         tag_hint = ""
         if rcon_command == "RCON: map tags":
             tag_hint = (
-                "This response reports how many entities were tagged on the "
-                "surface. If it found none, say so clearly. If it succeeded, "
-                "tell the player how many were tagged and of what type.\n"
+                "This response reports how many entities were tagged and, when "
+                "the request scanned all surfaces, a per-surface breakdown. If "
+                "it found none, say so clearly. If it succeeded, tell the "
+                "player how many were tagged and of what type.\n"
             )
         untag_hint = ""
         if rcon_command == "RCON: remove tags":
             untag_hint = (
-                "This response reports how many chart tags were removed from "
-                "the surface. If it found no matching tags, say so clearly. "
-                "If it succeeded, tell the player how many were removed.\n"
+                "This response reports how many chart tags were removed and, "
+                "when the request scanned all surfaces, a per-surface "
+                "breakdown. If it found no matching tags, say so clearly. If "
+                "it succeeded, tell the player how many were removed.\n"
             )
         top_damage_hint = ""
         if rcon_command == "RCON: top damage":

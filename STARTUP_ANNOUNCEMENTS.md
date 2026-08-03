@@ -192,3 +192,9 @@ listed as announcements.
   server — for example the exoskeleton has no internal buffer, while the
   personal roboport holds 35 MJ — and I'll only state values I actually read,
   not guessed ones.
+- **~11:??:** I can now tag all player corpses — just ask me to tag all player
+  corpses and I'll put a chart tag on every one across the whole world — and
+  tag and untag requests can now scan every surface instead of only one named
+  surface.
+- **~11:??:** I now remember about 40 minutes of recent chat instead of 15, so I
+  can pick up the thread of a conversation after a longer pause.

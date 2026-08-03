@@ -100,6 +100,12 @@ learnings here as briefly as possible.
   `{type=et}`. Prefer `find_entities_filtered()` scans over direct unit-number
   lookup; unit numbers are evidence for the current entity only and go stale
   after rebuilding.
+- Player corpses are entity type `character-corpse` (the internal name and type
+  are the same), so `find_entities_filtered{name="character-corpse"}` and
+  `{type="character-corpse"}` both find them. `game.create_chart_tag` does NOT
+  exist on 2.1.12; chart tags are created only through
+  `game.forces.player.add_chart_tag(surface, {position=..., icon=..., text=...})`.
+  Iterate every surface with `pairs(game.surfaces)` when a request says "all".
 - Enumerate platforms via surfaces where `surface.platform` is set
   (`surface.platform.name`) and planets via `surface.planet.name`.
 
