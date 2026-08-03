@@ -3,82 +3,97 @@
 ## Verified State
 
 - Branch: `main`; local commits only (the user pushes manually).
-- **Jimbo is running** under pid `346199` (see `jimbo.pid`), started 2026-08-03
-  05:51 per `docs/OPERATIONS.md`, verified alive. Single instance only.
-- **Jimbo is muted by the OpenRouter free-tier rate limit as of ~07:14**
-  (`429 free-models-per-day`, 50/day, `X-RateLimit-Remaining: 0`). All AI calls
-  — greetings and replies — fail with `Temporary AI error; retrying`. Reset at
-  midnight UTC (per user). No code fix; either wait for reset or top up
-  credits.
-- `last_startup_summary.txt` matches the current `startup_change_summary` ("I was
-  occasionally failing to answer..."), so the current running process already
-  announced the latest change and no further `STARTUP_ANNOUNCEMENTS.md` entry is
-  needed for another restart of this same code.
-- This session's code changes are committed in `be69ab3` (jimbo.py,
-  test_jimbo.py, STARTUP_ANNOUNCEMENTS.md, docs/OPERATIONS.md).
+- **Jimbo is running** under pid `351221` (see `jimbo.pid`), started 2026-08-03
+  10:09, verified alive (single instance). The launcher via `setsid` forks, so
+  re-confirm the recorded PID with `ps` from a fresh session.
+- **Jimbo runs on `big-pickle`** via OpenCode Zen (OpenAI-compatible,
+  `https://opencode.ai/zen/v1`, `auth_provider=opencode` reading
+  `~/.local/share/opencode/auth.json`; never read or print a token),
+  `max_completion_tokens: 4096`. Big Pickle is free; reasoning stays in
+  `usage.reasoning_tokens` and does not leak into `message.content` (verified),
+  so no reasoning-exclusion extra body is needed.
+- `last_startup_summary.txt` matches the current `startup_change_summary`
+  ("I can now read equipment power and buffer values straight from the
+  server..."), so the running process already announced the latest change and no
+  further `STARTUP_ANNOUNCEMENTS.md` entry is needed for another restart of this
+  same code.
+- This session's code changes are **uncommitted** (jimbo.py, test_jimbo.py,
+  STARTUP_ANNOUNCEMENTS.md, docs/OPERATIONS.md, docs/RCON_NOTES.md); the last
+  commits are `be69ab3` and `f9b6e30`.
 
 ## Completed Work
 
-Fixed Jimbo's recurring "I couldn't complete that request" failures, diagnosed
-from `jimbo.log` (three occurrences 2026-08-03 05:22–05:29):
+### Provider switch to Big Pickle via OpenCode Zen
 
-- **Truncation root cause.** Nemotron 3 Ultra is a reasoning model; it spends
-  ~150–260 tokens on internal "thinking" before answering. The profile's
-  `max_completion_tokens: 256` left almost no budget for the visible reply, so
-  replies got cut mid-sentence ("Threevee dropping blue science at"). Bumped to
-  1024 in the `nemotron` profile.
-- **Reasoning leaking into classifier output.** The strict one-line chat
-  classifier sometimes returned its chain-of-thought as content (e.g. "The user
-  is asking for... The appropriate command is TAG...") instead of
-  `PRODUCE|...` / `TAG|...`, so it was treated as an unrecognized response.
-  Added `extra_body: {"reasoning": {"exclude": True}}` to the `nemotron`
-  profile; verified it returns only the final answer.
-- **Classifier hardening.** Added `_is_recognized_classification()` and a
-  one-shot retry in `classify_current_message()` that nudges the model once when
-  its output is unrecognized prose, empty, or malformed (mirrors the existing
-  SKIP-retry). Also makes the step-3 reply path non-empty more often.
-- Updated `startup_change_summary` to a player-facing "replies complete more
-  reliably" line and appended a `## 2026-08-03` entry to
-  `STARTUP_ANNOUNCEMENTS.md` (both restart-summary and announcement entry for
-  this change; the earlier truncation-fix entry from this same date is retained).
-- Recorded the Nemotron reasoning behavior in `docs/OPERATIONS.md` (AI Provider
-  section) so future providers keep a generous completion cap and reason
-  exclusion.
+- New `big-pickle` profile in `jimbo.py` (top-level config block) and
+  `ai_profile_name = "big-pickle"`. Same Zen endpoint as `deepseek`, which stays
+  defined.
+- `docs/OPERATIONS.md`: updated profile table, current-profile paragraph
+  (reasoning stays in `usage.reasoning_tokens`, 4096-token cap, no
+  `reasoning.exclude` needed unlike OpenRouter Nemotron), and provider history.
+- Tests assert the new profile's config and adapter wiring; live-verified a Zen
+  call before restarting.
+
+### Prototype lookup improvements (equipment / buffers)
+
+Motivated by Jimbo's guessed exoskeleton buffer (~20 MJ) being wrong. Live
+fact-finding (2.1.12 + space-age mods):
+
+- Equipment lives under `prototypes.equipment`, not `prototypes.entity`; names
+  are `personal-roboport-equipment`, `personal-roboport-mk2-equipment`,
+  `exoskeleton-equipment`. Blind guessed keys fail with "attempt to index field
+  ... (a nil value)".
+- Buffer = `p.energy_source.buffer_capacity` in joules: personal roboport =
+  35,000,000 (35 MJ), exoskeleton = 0 (no internal buffer; draws from armor
+  grid). Re-verified twice at the user's request.
+- 2.1.12 Lua wrappers do NOT expose `energy_consumption`, `movement_bonus`,
+  `consumption`, or `input_flow_limit` on equipment/energy-source prototypes
+  (`LuaEquipmentPrototype doesn't contain key X`); `pairs()` also fails on
+  them, so field reads must be `pcall`-wrapped.
+
+Changes:
+
+- Hardened the classifier prompt (jimbo.py ~1913-1942): internal names vs
+  player-facing names, enumerate with `pairs()` + `:find()` when uncertain,
+  buffer semantics, `pcall` per field, never invent unread values.
+- Added 2 tests (`test_classifier_knows_equipment_prototypes_and_enumeration`,
+  `test_classifier_knows_equipment_buffer_reading_and_pcall`).
+- `docs/RCON_NOTES.md`: added equipment facts and the unexposed-key gotchas.
+- Updated `startup_change_summary` and appended three `STARTUP_ANNOUNCEMENTS.md`
+  entries (2026-08-03 ~08:?? model switch, ~09:?? lookups, ~10:?? equipment
+  values).
+- Verified live: a question about the exoskeleton buffer produced a
+  `/silent-command` pcall query returning `0.0 MJ`, and Jimbo's reply cited the
+  live value instead of guessing.
 
 ## Validation
 
 - `python -m py_compile jimbo.py` clean; `git diff --check` clean.
-- `python -m unittest test_jimbo` — 121 tests, all passing (2 added for the
-  classifier retry, plus an assertion for the `reasoning.exclude` config).
-- Live: restart at 05:51 announced the change; a multi-sentence direct reply
-  completed without truncation. Empirically reproduced the classifier leak and
-  confirmed `reasoning: {exclude: true}` cleans it up (documented in
-  OPERATIONS.md).
+- `python -m unittest test_jimbo` — 123 tests, all passing (5 added this
+  session: 3 profile-config assertions + 2 equipment-prompt tests).
 - Not run: `test_ollama.py` (per operations guidance, avoid while the Factorio
   client uses the GPU).
 
 ## Remaining Work
 
-- None pending. The `reasoning: {exclude: true}` path is live for the current
-  save; watch a few more direct/classifier requests to confirm the fallback
-  rate drops. The overnight crash cause from the prior handoff remains
-  unconfirmed; no startup supervisor unless the user asks.
-- Residual limitation: `TAG` cannot filter assembling machines by their current
-  recipe ("Jimbo ping the assembling machine making X"). `exclude` + the retry
-  improve but do not fully solve that ambiguous case. See
-  `docs/FUTURE_DIRECTIONS.md` for broader intent work.
+- None pending. The exoskeleton fix is live; if a future question needs a
+  different equipment prototype, the enumeration guidance should cover it. The
+  OpenRouter 429 rate-limit issue from the prior handoff is moot (provider is
+  now Big Pickle via Zen, free).
+- Residual limitation (from prior handoff, unchanged): `TAG` cannot filter
+  assembling machines by current recipe. See `docs/FUTURE_DIRECTIONS.md`.
 
 ## Current Model
 
-- Jimbo runs on `nemotron` (`nvidia/nemotron-3-ultra-550b-a55b:free` via
-  OpenRouter, `openrouter.key`), `max_completion_tokens: 1024`, with
-  `reasoning: {exclude: True}`. Changed this session.
+- `big-pickle` (free) via OpenCode Zen, OpenAI-compatible adapter,
+  `max_completion_tokens: 4096`, auth via OpenCode's `opencode` credential.
+  Changed this session.
 
 ## Operational Caveats
 
 - Ensure only one Jimbo instance. If restarting, kill the old process first
-  (see `docs/OPERATIONS.md`). The launcher via `setsid` forks, so confirm the
-  recorded PID with `ps` from a fresh session (the `$!` name is the wrapper).
+  (see `docs/OPERATIONS.md`); `setsid` forks so the recorded `$!` may be the
+  wrapper — re-check with `ps`.
 - Only stage intentional changes. `*.key`, `rconpw`, `groq-api-key.txt`,
   `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, `last_*.txt`, and
   `known_players.txt` remain ignored/untracked.
@@ -91,8 +106,5 @@ from `jimbo.log` (three occurrences 2026-08-03 05:22–05:29):
 
 ## Natural Next Action
 
-- Watch for the rate-limit reset (midnight UTC) and confirm Jimbo resumes
-  replying; if the 429 persists, the OpenRouter account needs a credit top-up.
-  Otherwise wait for the user's next request. If the "I couldn't complete"
-  fallback still appears for hard requests, consider classifier-prompt work for
-  recipe-filtering requests (see `docs/FUTURE_DIRECTIONS.md`).
+- Wait for the user's next request. The handoff commit below should be pushed
+  only when the user asks.

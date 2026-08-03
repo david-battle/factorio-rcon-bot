@@ -102,22 +102,21 @@ Available profiles:
 | --- | --- | --- | --- |
 | `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
 | `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
+| `big-pickle` | OpenAI-compatible OpenCode API | `big-pickle` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
 | `groq` | OpenAI-compatible Groq API | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1`, ignored `groq-api-key.txt` |
 | `nemotron` | OpenAI-compatible OpenRouter API | `nvidia/nemotron-3-ultra-550b-a55b:free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `nemotron`. It uses the OpenAI-compatible adapter against
-`https://openrouter.ai/api/v1`, reading the key from the gitignored
-`openrouter.key`; it allows up to 1024 completion tokens and excludes the
-model's reasoning from the response. Nemotron 3 Ultra is a reasoning model, so
-it spends a large share of its completion budget on internal thinking before
-answering; a `max_completion_tokens` of 256 starved the visible reply and cut
-it off mid-sentence, and reasoning occasionally leaked into the content of the
-strict one-line chat classifier. Use a generous completion cap and
-`extra_body: {"reasoning": {"exclude": True}}` so only the final answer is
-returned; the classifier additionally retries once when a reply is not a
-recognized command line. The `deepseek` profile instead
-reads the `opencode` credential from
+The current profile is `big-pickle`. It uses the OpenAI-compatible adapter
+against `https://opencode.ai/zen/v1` (OpenCode Zen), reading the same `opencode`
+credential from `~/.local/share/opencode/auth.json` that the `deepseek` profile
+uses; never read or print a token. Big Pickle is a reasoning model, so it spends
+part of its completion budget on internal thinking before answering; the profile
+allows up to 4096 completion tokens. Verified that the Zen endpoint keeps
+reasoning in `usage.reasoning_tokens` rather than leaking it into `message
+.content`, so no reasoning-exclusion extra body is needed (unlike OpenRouter's
+Nemotron, which required `extra_body: {"reasoning": {"exclude": True}}`). The
+`deepseek` profile instead reads the `opencode` credential from
 `~/.local/share/opencode/auth.json`; never read or print a token. The `openai`
 profile instead launches an isolated, tool-denied
 `opencode run --pure --agent jimbo --format json` from `/tmp/opencode`, with
@@ -162,7 +161,9 @@ the smallest working path.
 
 Jimbo began on local Ollama, moved to hosted DeepSeek because the local model
 competed with the Factorio client for GPU memory, and moved to OpenAI after the
-free DeepSeek quota was exhausted. The predefined profiles retain these working
+free DeepSeek quota was exhausted. It later moved through Groq, Nemotron 3 Ultra
+via OpenRouter, DeepSeek V4 Flash via OpenCode Zen, and now runs on Big Pickle
+via OpenCode Zen. The predefined profiles retain these working
 paths for manual selection; there is no automatic fallback.
 
 ### Groq

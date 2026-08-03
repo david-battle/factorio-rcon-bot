@@ -77,6 +77,23 @@ learnings here as briefly as possible.
 - Probe unknown keys with `pcall(function() return obj[key] end)`: Factorio
   raises `"...doesn't contain key X"` on unknown keys, and `pcall` cleanly
   distinguishes present-but-nil from absent.
+- Equipment (armor-grid) prototypes live under `prototypes.equipment`, not
+  `prototypes.entity`. The personal roboport is `personal-roboport-equipment`
+  and MK2 is `personal-roboport-mk2-equipment`; both report
+  `energy_source.buffer_capacity` = 35,000,000 (35 MJ). Never index a guessed
+  prototype key blind: `prototypes.equipment["personal-roboport"]` returns nil
+  with `attempt to index field 'personal-roboport' (a nil value)`. When the
+  exact internal name is uncertain, enumerate matches in the same command with
+  `pairs()` and a substring `:find()`, printing each name and the needed field.
+- On 2.1.12, an equipment's energy storage is `p.energy_source.buffer_capacity`
+  in joules; 0 means no internal buffer (draws directly from the armor grid).
+  The exoskeleton (`exoskeleton-equipment`) reports 0. Its raw prototype
+  definition lists `energy_consumption = "200kW"` and `movement_bonus = 0.3`,
+  but the Lua wrappers do not expose those keys: reading `energy_consumption`,
+  `movement_bonus`, `consumption`, or `input_flow_limit` on an equipment or
+  electric-energy-source prototype raises `LuaEquipmentPrototype doesn't
+  contain key ...`. `pairs()` also fails on these prototypes, so probe each
+  field with `pcall` and report only fields that actually read.
 - `rcon.print(table.concat(out,"\n"))` for lists; prefer joining on a separator
   like `##` or `;` when the line must stay intact.
 - Entity lookup: `find_entities_filtered{name=et}`, falling back to

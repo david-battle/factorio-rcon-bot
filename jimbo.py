@@ -21,7 +21,7 @@ jimbo_says_log_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "jimbo_says.log"
 )
 server_owner = "dlbattle"
-ai_profile_name = "nemotron"
+ai_profile_name = "big-pickle"
 ai_profiles = {
     "openai": {
         "provider": "opencode",
@@ -36,6 +36,16 @@ ai_profiles = {
         ),
         "base_url": "https://opencode.ai/zen/v1",
         "auth_provider": "opencode",
+    },
+    "big-pickle": {
+        "provider": "openai-compatible",
+        "model": "big-pickle",
+        "identity": "You run as Big Pickle (free) via OpenCode Zen.",
+        "base_url": "https://opencode.ai/zen/v1",
+        "auth_provider": "opencode",
+        "request_options": {
+            "max_completion_tokens": 4096,
+        },
     },
     "groq": {
         "provider": "openai-compatible",
@@ -98,10 +108,10 @@ production_cell_search_max_candidates = 256
 # IMPORTANT: Update this player-facing summary whenever a code change will cause
 # Jimbo to restart. Describe why the behavior changed, not implementation details.
 startup_change_summary = (
-    "I was occasionally failing to answer and had to fall back to 'I couldn't "
-    "complete that request'. I've tightened how I respond so I give a real, "
-    "finished answer instead of trailing off into half-finished thinking, so "
-    "your requests should complete more reliably now."
+    "I can now read equipment power and buffer values straight from the server "
+    "— for example the exoskeleton has no internal buffer, while the personal "
+    "roboport holds 35 MJ — and I'll only state values I actually read, not "
+    "guessed ones."
 )
 
 opencode_config = json.dumps({
@@ -1902,7 +1912,32 @@ def build_classification_prompt(username, message, history_text):
 
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
-        "rcon.print with the actual outcome. When querying research, print the "
+        "rcon.print with the actual outcome. Prototype tables use Factorio "
+        "internal names, which often differ from player-facing names: the "
+        "personal roboport equipment is prototypes.equipment[\"personal-roboport-"
+        "equipment\"] (MK2: \"personal-roboport-mk2-equipment\"), and equipment "
+        "lives under prototypes.equipment, not prototypes.entity. Never index a "
+        "guessed prototype key: a wrong key fails with \"attempt to index "
+        "field '...' (a nil value)\" even inside pcall, so unless you are "
+        "certain of the exact internal name you MUST enumerate matches in the "
+        "same query with pairs() and a substring :find(), printing each name "
+        "and the needed field. Known internal names include the exoskeleton "
+        "equipment \"exoskeleton-equipment\". Example enumeration: local out={};"
+        "for "
+        "name,p in pairs(prototypes.equipment) do if name:find(\"roboport\") then "
+        "out[#out+1]=name..\": \"..tostring(p.energy_source and "
+        "p.energy_source.buffer_capacity) end end;rcon.print(table.concat(out,\"\\n\"))"
+        ". An equipment's energy storage is p.energy_source.buffer_capacity in "
+        "joules; a value of 0 means it has no internal buffer and draws directly "
+        "from the armor grid (the exoskeleton is 0, the personal roboport is "
+        "35,000,000). Never guess a prototype field name: a read that raises "
+        "\"doesn't contain key X\" means that field is not exposed, so wrap each "
+        "field read in pcall and report only what actually read — on 2.1.12 "
+        "energy_consumption, movement_bonus, consumption, and input_flow_limit "
+        "are not readable equipment or energy-source keys even though the raw "
+        "prototype definition lists some of them. Never invent a value for a "
+        "field you could not read; say the live value was not available. "
+        "When querying research, print the "
         "technology's level property; a repeatable technology's internal name "
         "suffix is not its current level. In Lua, a number literal followed "
         "directly by the concatenation operator fails (e.g. `np/1e6..' MW'` "

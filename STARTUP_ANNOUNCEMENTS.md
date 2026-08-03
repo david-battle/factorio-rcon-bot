@@ -182,3 +182,13 @@ listed as announcements.
   couldn't complete that request". I've tightened how I respond so I give a real,
   finished answer instead of trailing off into half-finished thinking, so your
   requests should complete more reliably now.
+- **~08:??:** I've switched my AI model to Big Pickle (free) via OpenCode Zen. My
+  reasoning and Factorio knowledge may differ slightly.
+- **~09:??:** I can now look up exact game values more reliably: when I don't
+  know an item's internal name I search the live game data instead of guessing,
+  so answers like how much charge a personal roboport needs come straight from
+  the server.
+- **~10:??:** I can now read equipment power and buffer values straight from the
+  server — for example the exoskeleton has no internal buffer, while the
+  personal roboport holds 35 MJ — and I'll only state values I actually read,
+  not guessed ones.

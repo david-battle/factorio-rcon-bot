@@ -38,13 +38,26 @@ class DialogueTests(unittest.TestCase):
     def test_all_historical_ai_profiles_are_predefined(self):
         self.assertEqual(
             set(jimbo.ai_profiles),
-            {"openai", "deepseek", "groq", "ollama", "nemotron"},
+            {"openai", "deepseek", "big-pickle", "groq", "ollama", "nemotron"},
         )
         self.assertEqual(
             jimbo.ai_profiles["openai"]["model"], "openai/gpt-5.4-mini"
         )
         self.assertEqual(
             jimbo.ai_profiles["deepseek"]["model"], "deepseek-v4-flash-free"
+        )
+        self.assertEqual(jimbo.ai_profiles["big-pickle"]["model"], "big-pickle")
+        self.assertEqual(jimbo.ai_profiles["big-pickle"]["provider"], "openai-compatible")
+        self.assertEqual(
+            jimbo.ai_profiles["big-pickle"]["base_url"],
+            "https://opencode.ai/zen/v1",
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["big-pickle"]["auth_provider"], "opencode"
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["big-pickle"]["request_options"]["max_completion_tokens"],
+            4096,
         )
         self.assertEqual(
             jimbo.ai_profiles["ollama"]["model"], "qwen2.5-32b-ctx32k"
@@ -102,6 +115,7 @@ class DialogueTests(unittest.TestCase):
         cases = (
             ("openai", "ask_opencode"),
             ("deepseek", "ask_openai_compatible"),
+            ("big-pickle", "ask_openai_compatible"),
             ("groq", "ask_openai_compatible"),
             ("ollama", "ask_ollama"),
             ("nemotron", "ask_openai_compatible"),
@@ -1056,6 +1070,33 @@ class DialogueTests(unittest.TestCase):
 
         self.assertIn('prototypes.recipe["internal-name"].ingredients', prompt)
         self.assertIn("does not have game.recipe_prototypes", prompt)
+
+    def test_classifier_knows_equipment_prototypes_and_enumeration(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo how much energy does a personal roboport need to charge?",
+            "(none)",
+        )
+
+        self.assertIn('prototypes.equipment["personal-roboport-', prompt)
+        self.assertIn("personal-roboport-mk2-equipment", prompt)
+        self.assertIn("prototypes.equipment, not prototypes.entity", prompt)
+        self.assertIn("attempt to index field", prompt)
+        self.assertIn("pairs() and a substring :find()", prompt)
+
+    def test_classifier_knows_equipment_buffer_reading_and_pcall(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo how many MJ is the exoskeleton internal buffer?",
+            "(none)",
+        )
+
+        self.assertIn("p.energy_source.buffer_capacity", prompt)
+        self.assertIn("has no internal buffer", prompt)
+        self.assertIn("exoskeleton is 0", prompt)
+        self.assertIn("doesn't contain key X", prompt)
+        self.assertIn("wrap each field read in pcall", prompt)
+        self.assertIn("Never invent a value", prompt)
 
     def test_planet_list_does_not_imply_material_sources(self):
         classifier = jimbo.build_classification_prompt(
