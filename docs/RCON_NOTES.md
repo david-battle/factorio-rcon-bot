@@ -163,6 +163,14 @@ learnings here as briefly as possible.
 - `game.item_prototypes` does not exist; item prototypes live at
   `prototypes.item` (same 2.1 rename as `prototypes.recipe`). Enumerate with
   `ip.type == "ammo"` instead of hardcoding names.
+- `LuaInventory.get_contents()` changed in 2.1: it returns an array of
+  `ItemWithQualityCount` (each `{name=..., quality=..., count=...}`), keyed by
+  slot index, NOT the 2.0 `{name=count}` dictionary. Verified on a wooden
+  chest and a platform hub. Read counts with `get_item_count(name)` or the new
+  `get_item_quality_counts(name)` instead. New 2.1 inventory methods:
+  `transfer_from_stack(source)` and `transfer_from_inventory(source, filter?)`.
+- `game.active_mods` no longer exists on 2.1.12 (raised `LuaGameScript
+  doesn't contain key active_mods`); do not rely on it.
 - `game.recipe_prototypes` is gone; recipes are `prototypes.recipe`. In 2.1 a
   recipe exposes plural `categories`; do not use the nonexistent
   `LuaRecipePrototype.category`. Resolve compatible crafting machines with
@@ -279,8 +287,41 @@ than copying the Lua here.
 - Platform cargo lives on the `hub` entity inventories
   `defines.inventory.hub_main` (cargo) and `defines.inventory.hub_trash`.
   `space_platform_hub` is not a valid inventory index in 2.1.
+- `defines.inventory` on 2.1.12 has `hub_main=1` and `hub_trash=2`, but NO
+  `cargo_bay` constant: reading `defines.inventory.cargo_bay` is nil and
+  `entity.get_inventory(nil)` raises `'inventory index': real number expected
+  got nil`. Probe a cargo-bay entity's inventory indices with `pcall` rather
+  than guessing.
 - Identify platforms in a given orbit:
   `for _,s in pairs(game.surfaces) do if s.platform and s.platform.space_location and s.platform.space_location.name == "nauvis" then ... end end`
+
+## Space Platform Requests (2.1.12)
+
+- `LuaSpacePlatform.get_imports()` and `get_requesting()` (the 2.0 API) DO NOT
+  exist on 2.1.12 — they raised `LuaSpacePlatform doesn't contain key ...`.
+  Platform import/build requests now live on the hub entity's logistic
+  sections: `platform.hub.get_logistic_sections().sections`.
+- Each `LuaLogisticSection` has a `.filters` array. Filters are plain Lua
+  tables (`pairs()` works) with NO `signal` or `name` key — item identity is
+  `value` (internal item name string). Observed fields: `value` (string),
+  `min`, `max` (nil when unset), `import_from` (`LuaSpaceLocationPrototype` or
+  nil; `.name` is the planet name, e.g. `nauvis`; prints as
+  `[LuaSpaceLocationPrototype: nauvis (planet)]`), `request_from` (string;
+  observed `all` and `platforms`, absent/nil when unset). This differs from
+  logistic-group filter slots (see Verified Runtime Facts), where `value` is a
+  table.
+- `LuaLogisticSection` has no `name` key on 2.1.12 (`sec.name` raises
+  `doesn't contain key name`).
+- The hub's "Provide materials to other platforms" checkbox has no read/write
+  API on 2.1.12 (a `LuaEntity.provides_to_other_platforms` attribute was only
+  added in a later release per the forums); trust the player's GUI state.
+- Platform-to-platform providing gotcha: a platform will NOT dispatch an item
+  to another platform in the same orbit while the provider itself has an
+  active import request for that item — its stock is reserved for its own
+  request. Diagnose by reading the provider's hub sections: any filter whose
+  `value` is the item with a nonzero `min` blocks sharing, so the requester
+  never shows it "on the way". The fix is removing or disabling the provider's
+  own request for that item.
 
 ## Ammo Item Names (2.1.12)
 
