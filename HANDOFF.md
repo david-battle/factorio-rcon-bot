@@ -3,9 +3,9 @@
 ## Verified State
 
 - Branch: `main`; local commits only (the user pushes manually).
-- **Jimbo is running** under pid `353102` (see `jimbo.pid`), started 2026-08-03
-  11:03, verified alive (single instance). The launcher via `setsid` forks, so
-  re-confirm the recorded PID with `ps` from a fresh session.
+- **Jimbo is running** under pid `353102` (see `jimbo.pid`), verified alive.
+  The launcher via `setsid` forks, so re-confirm the recorded PID with `ps`
+  from a fresh session.
 - **Jimbo runs on `big-pickle`** via OpenCode Zen (OpenAI-compatible,
   `https://opencode.ai/zen/v1`, `auth_provider=opencode` reading
   `~/.local/share/opencode/auth.json`; never read or print a token),
@@ -15,62 +15,50 @@
   running process already announced the latest change and no further
   `STARTUP_ANNOUNCEMENTS.md` entry is needed for another restart of this same
   code.
-- This session's changes are **uncommitted** (jimbo.py, test_jimbo.py,
-  STARTUP_ANNOUNCEMENTS.md, docs/BOT_CONTRACTS.md, docs/RCON_NOTES.md,
-  docs/FUTURE_DIRECTIONS.md). Last commit: `b6729fb`.
+- All changes to date are committed; the tracked worktree is clean. This
+  session's doc change (handoff procedure) is committed separately pending the
+  user's manual push.
 
 ## Completed Work
 
-### Map-tag `all` surfaces + corpse tagging (root cause fix)
+### Handoff procedure: next context expects committed state
 
-Moon-O-Cronic's "Jimbo please tag all player corpses" failed with
-`LuaGameScript doesn't contain key create_chart_tag`: the structured
-`TAG|surface|entity-type|label` flow only accepted a named surface, so the
-model improvised raw Lua across all surfaces with a nonexistent API.
+The prior handoff's note said "This session's changes are uncommitted", but
+`HANDOFF.md` is committed together with the code and a fresh context reads it
+only after the user reviews and pushes. That framing was therefore stale by the
+time it was verified.
 
-- `run_tag_command` / `run_untag_command` (jimbo.py) now accept
-  `surface="all"` and iterate `pairs(game.surfaces)`, mirroring LOGISTICS'
-  existing `all` handling. Single-surface output format is unchanged.
-  All-surface output reports `per-surface:count` chunks, e.g.
-  `Tagged 4 character-corpse on nauvis:4`.
-- Classifier prompt (both the available-commands list and the decision list)
-  now teaches that player corpses use entity type `character-corpse` and that
-  TAG/UNTAG accept surface `all`.
-- Reply prompts now hint at per-surface breakdowns when `all` was scanned.
-- Verified live (read-only): `character-corpse` is a valid entity prototype;
-  4 corpses on nauvis found by both `name` and `type` filters. The chart-tag
-  API is `game.forces.player.add_chart_tag`, not `game.create_chart_tag`.
-- After the restart, Moon's re-request succeeded: "Tagged all 4 player corpses
-  on Nauvis."
+- `docs/HANDOFF_PROCEDURE.md` (both Heavy step 8 and Light step 4) now
+  instructs the handoff note to describe the repository as it will be at
+  handoff time: changes committed, tracked worktree clean, pending the user's
+  manual push. Never label work "uncommitted". A preamble paragraph explains
+  why (the note is read after the user's push; if a hash is needed, reference
+  the previous commit since the note is written before its own commit).
+- This session's earlier `HANDOFF.md` stale-line fix is folded into the rewrite
+  below.
 
-### Dialogue memory window: 15 -> 40 minutes
+### Map-tag `all` surfaces + corpse tagging (prior session, committed `112dd28`)
 
-dlbattle noticed the corpse request was outside Jimbo's 15-minute dialogue
-window at restart, so hydration dropped it (by design). With sparse in-game
-chat, the owner asked to widen it:
-
-- `dialogue_max_age = 40 * 60` (jimbo.py config block).
-- Updated `docs/BOT_CONTRACTS.md` and `docs/FUTURE_DIRECTIONS.md` (12 turns,
-  40 minutes, ~4000 chars).
-- Updated two test boundaries that assumed the old 900s cutoff
-  (`now - 901` -> `now - 2401`; `now - 1000` -> `now - 2500`).
-- After restart, hydration restored 12 recent turns (the corpse exchange was
-  back in reach).
+- TAG/UNTAG accept `surface="all"` and iterate `pairs(game.surfaces)`;
+  classifier prompt teaches `character-corpse` and the `all` surface.
+- Chart-tag API is `game.forces.player.add_chart_tag`, not
+  `game.create_chart_tag`. See `docs/RCON_NOTES.md`.
+- Dialogue memory window widened 15 -> 40 minutes (`dialogue_max_age`), 12
+  turns, ~4000 chars.
 
 ## Validation
 
-- `python -m py_compile jimbo.py` clean; `git diff --check` clean.
-- `python -m unittest test_jimbo` — 127 tests, all passing (4 added this
-  session for corpse/all-surface tagging, 2 updated command assertions, 2
-  age-boundary updates).
-- Not run: `test_ollama.py` (per operations guidance, avoid while the Factorio
-  client uses the GPU).
+- This session: doc-only change; `git diff --check` clean. No tests rerun
+  (nothing behavior-changing). Not run: `test_ollama.py` (per operations
+  guidance, avoid while the Factorio client uses the GPU).
+- Prior session (`112dd28`): `python -m py_compile jimbo.py` clean;
+  `python -m unittest test_jimbo` — 127 tests passing.
 
 ## Remaining Work
 
-- None pending. If a future request needs a different entity type with an
-  uncertain internal name, the `pairs()` + `:find()` enumeration guidance in
-  the classifier prompt should cover it.
+- None pending. If a future request needs an entity type with an uncertain
+  internal name, the `pairs()` + `:find()` enumeration guidance in the
+  classifier prompt should cover it.
 - Residual limitation (from prior handoffs, unchanged): `TAG` cannot filter
   assembling machines by current recipe. See `docs/FUTURE_DIRECTIONS.md`.
 
@@ -78,7 +66,7 @@ chat, the owner asked to widen it:
 
 - `big-pickle` (free) via OpenCode Zen, OpenAI-compatible adapter,
   `max_completion_tokens: 4096`, auth via OpenCode's `opencode` credential.
-  Unchanged this session.
+  Unchanged.
 
 ## Operational Caveats
 
