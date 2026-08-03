@@ -193,7 +193,12 @@ def ask_openai_compatible(prompt, profile):
     }
     request.update(profile.get("request_options", {}))
     result = client.chat.completions.create(**request)
-    return result.choices[0].message.content.strip()
+    if not result.choices:
+        return ""
+    message = result.choices[0].message
+    if message is None or message.content is None:
+        return ""
+    return message.content.strip()
 
 
 def ask_ollama(prompt, profile):

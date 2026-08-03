@@ -20,6 +20,10 @@ configuration frameworks.
 - Before planning a Jimbo feature based on live experiments, read
   `docs/FUTURE_DIRECTIONS.md`.
 
+## Key paths
+
+- Server console log (source of all server activity): `/mnt/d/factorio-server/server-console.log`.
+
 ## Always preserve
 
 - Keep owner, model, and provider choices in `jimbo.py`'s one top-level

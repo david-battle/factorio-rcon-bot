@@ -3,87 +3,69 @@
 ## Verified State
 
 - Branch: `main`; local commits only (the user pushes manually).
-- Jimbo is running under pid `331588` (check `jimbo.pid`), restarted this session
-  after killing the previous pid per `docs/OPERATIONS.md`. The Factorio server
-  was up; RCON reachable.
-- `last_startup_summary.txt` matches the current `startup_change_summary` and the
-  startup announcement was sent through the new print mechanism (recorded in
-  `jimbo_says.log`).
-- See `AGENTS.md`, `docs/OPERATIONS.md`, and `docs/RCON_NOTES.md`. Behavioral
-  contracts live in `docs/BOT_CONTRACTS.md`.
+- **Jimbo was NOT running when this session started.** The previous handoff's
+  pid was stale; the process had died ~2026-08-02 08:15 with no traceback in
+  `jimbo.log`. He was restarted this session on 2026-08-03 04:15 under pid
+  `343716` (see `jimbo.pid`) per `docs/OPERATIONS.md` and verified alive: the
+  startup announcement rendered, and a live "Jimbo ping" probe drew the reply
+  "Pong! 🏓 What's up?" through the sound-path print mechanism.
+- `last_startup_summary.txt` still matches the current `startup_change_summary`
+  (Nemotron + robot-insert sound), so the restart was a generic "online"
+  announcement; no new `STARTUP_ANNOUNCEMENTS.md` entry was needed.
+- **Uncommitted change committed as part of this handoff:** a defensive guard in
+  `ask_openai_compatible()` that returns `""` when a provider returns empty
+  `choices` or a null message/content instead of crashing on
+  `choices[0].message.content`.
+- See `AGENTS.md` (now with a `## Key paths` section noting the server log
+  path), `docs/OPERATIONS.md`, and `docs/RCON_NOTES.md`. Behavioral contracts
+  live in `docs/BOT_CONTRACTS.md`.
 
 ## Completed Work
 
-- **Distinct chat notification sound for Jimbo.** Jimbo now delivers every chat
-  line through `/silent-command game.forces.player.print(...)` with
-  `sound_path="item-move/logistic-robot"` and
-  `sound=defines.print_sound.use_player_settings` instead of a raw RCON chat
-  message, so his messages play only the inventory-move sound (no standard
-  chat ding) and respect each player's chat-sound setting. `send_jimbo_chat()`
-  is the single choke point (replies, spontaneous, greetings, startup,
-  forget-ack); the sound path is the `jimbo_chat_sound_path` constant.
-- **Restart hydration preserved.** `game.print`/`force.print` output is not
-  written to `server-console.log`, so every delivered line is appended to the
-  gitignored `jimbo_says.log` in the `[CHAT] <server>: Jimbo says ...` format,
-  and `hydrate_dialogue()` merges that file's tail with the server log by
-  timestamp.
-- `docs/RCON_NOTES.md` gained the PrintSettings/SoundPath/`console_message`
-  findings; `docs/BOT_CONTRACTS.md` notes the new delivery and hydration
-  mechanism; `STARTUP_ANNOUNCEMENTS.md` has the new summary verbatim.
+- **Restored Jimbo to a running state.** Diagnosed the downtime (no process, no
+  crash traceback), restarted under pid `343716`, and live-verified startup
+  announcement plus a chat reply with the distinct notification sound.
+- **Documented the server log path in `AGENTS.md`.** Added a `## Key paths`
+  section so every future context sees
+  `/mnt/d/factorio-server/server-console.log` up front.
+- **Hardened `ask_openai_compatible()` against empty/absent choices.**
+- **Reviewed overnight logins** on request (Aug 2 22:13 → Aug 3 04:01):
+  `838345250`, `Kyrgyz_bala_from_Bishkek`, `FrozenLeaf21`, `darklich14`,
+  `Mrbai233`, `synergy_029`, `zscomyj`; `darklich14` and
+  `Kyrgyz_bala_from_Bishkek` were still online at the current login.
 
 ## Validation
 
 - `python -m py_compile jimbo.py` clean; `git diff --check` clean.
-- `python -m unittest test_jimbo` ran 118 tests, all passing (3 new: recorded
-  `jimbo_says.log` format, hydration merge by timestamp, missing-jimbo-log).
-- Live-verified before committing: the `research_completed` chime was audible
-  (distinct from the chat ding), and `force.print` output does not appear in
-  `server-console.log`.
+- `python -m unittest test_jimbo` ran 119 tests, all passing.
+- Live-verified: startup announcement and the probe reply both appear in
+  `jimbo_says.log`; process still alive after ~6 minutes.
 
 ## Remaining Work
 
-- None pending. The chat sound is `item-move/logistic-robot` (the robotic rattle
-  when you move a stack of logistic robots into an inventory) and it is now LIVE:
-  Jimbo was restarted on 2026-08-01 ~18:07 under pid `337688` (see `jimbo.pid`)
-  and the startup announcement confirmed it. The target sound was confirmed
-  audibly this session via a live probe (user confirmed "that it"); note that
-  `item-open/logistic-robot` was a dead end because logistic-robot has no
-  `open_sound`.
+- None pending. Jimbo is live on pid `343716`. Note the overnight crash cause
+  is unconfirmed (no traceback, no OOM record); if he dies again without a
+  traceback, check whether the WSL session itself was shut down and consider
+  a startup supervisor. Not adding one unless the user asks.
 
 ## Current Model
 
 - Jimbo runs on `nemotron` (`nvidia/nemotron-3-ultra-550b-a55b:free` via
-  OpenRouter, `openrouter.key`). Switched from `deepseek` (out of quota) on
-  request. `openai` (gpt-5.4-mini via OpenCode) failed a live probe with an
-  upstream "Unexpected server error"; `nemotron` responded. No token settings
-  were changed.
+  OpenRouter, `openrouter.key`). No changes made this session.
 
 ## Operational Caveats
-
-- **2026-08-01 "unresponsive in game" — resolved.** dlbattle reported Jimbo
-  "hasn't responded in game". Root cause found and fixed live: `send_jimbo_chat`
-  built the `/silent-command game.forces.player.print(...)` command with
-  `json.dumps(text)`, whose default `ensure_ascii=True` escapes any emoji/
-  non-ASCII character as `\uXXXX`; Factorio's Lua 5.1 has no `\u` escape, so the
-  whole print command errored ("invalid escape sequence near '\u'") and nothing
-  rendered. `record_jimbo_says()` still logged the line because `client.run()`
-  returns the error text as a response instead of raising, masking the failure.
-  dlbattle's 14:41:33 reply contained a 😄, so it never displayed. Fix:
-  `json.dumps(..., ensure_ascii=False)` (raw UTF-8 is fine in a Lua string
-  literal), live-verified with the user seeing the emoji message and hearing the
-  chime. 119 unit tests pass (1 new regression test). Requires a restart to take
-  effect; `startup_change_summary`/`STARTUP_ANNOUNCEMENTS.md` updated. Note
-  `docs/RCON_NOTES.md` documents the `\u`/`ensure_ascii=False` rule. The follow-up
-  sound switch to `item-move/logistic-robot` and the `nemotron` model switch are
-  now live on pid `337688`.
 
 - Ensure only one instance of Jimbo is running. If restarting, kill the old
   process first (see `docs/OPERATIONS.md`).
 - Only stage intentional changes. `*.key` files, `rconpw`, `groq-api-key.txt`,
-  `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, and state files remain
-  ignored/untracked.
+  `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, `last_*.txt`, and
+  `known_players.txt` remain ignored/untracked.
 - The old repository (`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`)
   used the deprecated `mcrcon` library; do not import its RCON code.
+- 2026-08-01 learnings still apply: chat delivery uses
+  `/silent-command game.forces.player.print(...)` with
+  `sound_path="item-move/logistic-robot"` and `ensure_ascii=False` (Factorio's
+  Lua 5.1 rejects `\uXXXX` escapes). See `docs/RCON_NOTES.md`.
 
 ## Natural Next Action
 
