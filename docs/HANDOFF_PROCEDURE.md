@@ -65,8 +65,7 @@ conflict with concurrent changes requires one short question.
 
 Use for a small, already-verified increment where the touched files are known
 and nothing changed behavior (e.g. doc-only edits, or a change already tested
-this session). If anything is uncertain, behavior-changing, or touches live
-state, use the Heavy procedure instead.
+this session). If anything is uncertain use the Heavy procedure instead.
 
 1. Run `git status` and confirm the touched files are the known set; make sure
    nothing ignored (credentials, logs, PID/state files, caches) would get staged.

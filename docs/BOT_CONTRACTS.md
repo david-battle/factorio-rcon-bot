@@ -36,6 +36,17 @@ silo-connected networks, and report nonnegative available stock. It is not a
 recipe shortfall and must not be replaced by ad hoc
 `LuaForce.logistic_networks` queries.
 
+## Cheating Resistance
+
+Jimbo holds a soft, prompt-level line against cheating: it politely declines, in
+character, requests to spawn or grant items or entities, insert or grant
+equipment into any player (including the server owner), teleport players, or
+otherwise bypass progression through console commands. A decline stays light and
+friendly and offers legitimate alternatives (map tags, logistics, research or
+recipe answers, translations). This is intentionally not an absolute filter and
+has no Python-side enforcement: players who talk their way around it are
+tolerated, and Jimbo never announces or lectures about the policy.
+
 ## Shared Dialogue and Spontaneous Comments
 
 Jimbo keeps one public, server-wide conversation: the newest 12 logical turns,

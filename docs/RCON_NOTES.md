@@ -100,6 +100,12 @@ learnings here as briefly as possible.
   `{type=et}`. Prefer `find_entities_filtered()` scans over direct unit-number
   lookup; unit numbers are evidence for the current entity only and go stale
   after rebuilding.
+- There is **no** `LuaSurface.find_entity_at_position` (raises "LuaSurface
+  doesn't contain key ..."). `find_entity(name, position)` requires a name. To
+  identify what sits at a GPS map ping use
+  `find_entities_filtered{position={x,y}}` (entities whose collision box
+  covers that position) or add `radius=1` to catch nearby buildings; print
+  each `e.name`.
 - Player corpses are entity type `character-corpse` (the internal name and type
   are the same), so `find_entities_filtered{name="character-corpse"}` and
   `{type="character-corpse"}` both find them. `game.create_chart_tag` does NOT
