@@ -37,9 +37,10 @@ conflict with concurrent changes requires one short question.
    use one model per provider where practical, keep Groq optional, do not add
    Mistral, and do not introduce automatic fallback merely because it is
    documented as a possibility.
-6. If code changes will take effect when Jimbo restarts, ensure
-   `startup_change_summary` contains a short player-facing explanation. Do not
-   restart Jimbo, Factorio, or another service unless explicitly requested.
+6. If a change will alter player-visible behavior when Jimbo restarts — code or
+   prompt — ensure `startup_change_summary` contains a short player-facing
+   explanation. Do not restart Jimbo, Factorio, or another service unless
+   explicitly requested.
 7. Run relevant deterministic tests, syntax checks, and `git diff --check`. Do
    not run live `test_ollama.py` while the Factorio client is using the GPU.
    Record anything that could not be run and why.

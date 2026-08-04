@@ -8,9 +8,10 @@ say only that Jimbo is online.
 ## Maintenance
 
 Whenever `startup_change_summary` changes, append its exact new text here in the
-same edit, under the current date. Record each distinct change summary once; do
-not add generic unchanged-summary restarts. The always-loaded requirement is
-also in `AGENTS.md`.
+same edit, under the current date. Update the summary for every change that will
+alter player-visible behavior after restart — code or prompt — not only code.
+Record each distinct change summary once; do not add generic unchanged-summary
+restarts. The always-loaded requirement is also in `AGENTS.md`.
 
 The entries through 2026-07-29 were recovered from the live Factorio server log.
 Times are the observed server-chat timestamps. Two early entries predate the
@@ -198,3 +199,8 @@ listed as announcements.
   surface.
 - **~11:??:** I now remember about 40 minutes of recent chat instead of 15, so I
   can pick up the thread of a conversation after a longer pause.
+
+## 2026-08-04
+
+- I now read location links properly: when you share one from another planet, I
+  use the planet it names instead of assuming it's where you're standing.

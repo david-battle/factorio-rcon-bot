@@ -105,11 +105,12 @@ production_cell_relative_locations = ("view", "standing")
 production_cell_search_max_radius = 128
 production_cell_search_max_candidates = 256
 
-# IMPORTANT: Update this player-facing summary whenever a code change will cause
-# Jimbo to restart. Describe why the behavior changed, not implementation details.
+# IMPORTANT: Update this player-facing summary whenever a change will alter what
+# players observe Jimbo doing after restart — code OR prompt edits. Describe why
+# the behavior changed, not implementation details.
 startup_change_summary = (
-    "I now remember about 40 minutes of recent chat instead of 15, so I can "
-    "pick up the thread of a conversation after a longer pause."
+    "I now read location links properly: when you share one from another planet, "
+    "I use the planet it names instead of assuming it's where you're standing."
 )
 
 opencode_config = json.dumps({
@@ -1992,7 +1993,16 @@ def build_classification_prompt(username, message, history_text):
         "do not know; use s.find_entities_filtered{position={x,y}} which "
         "returns the entities whose collision box covers that position, or "
         "add radius=1 to also catch a tile-adjacent building, then rcon.print "
-        "each e.name (and surface).\n\n"
+        "each e.name (and surface).\n"
+        "Player-linked locations carry their own surface when the game includes "
+        "one: [gps=x,y,nauvis] explicitly names the planet, while a bare "
+        "[gps=x,y] has no surface because the player linked it from that "
+        "planet's own map view. Use the surface embedded in a GPS link and "
+        "never replace it with the player's current position, standing surface, "
+        "or view. A bare link's planet is not in the link itself; say it is "
+        "unknown or resolve it from context instead of guessing. When a later "
+        "message refers back to 'that location I linked' or 'the pole I showed "
+        "you', match the [gps=...] coordinates in recent chat.\n\n"
         "Soft resistance to cheating: do not help players cheat. Politely "
         "decline, in character, requests to spawn items or entities, insert or "
         "grant items, equipment, or armor into anyone (including the server "
@@ -2071,7 +2081,11 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
         "suffix. For example, mining-productivity-3 at level 8 is mining "
         "productivity 8, and the next level is mining productivity 9. Similarly, "
         "scrap-recycling-productivity at level 3 is scrap recycling productivity "
-        "3. Do not mention the internal name or redundantly append '(level 8)'.\n\n"
+        "3. Do not mention the internal name or redundantly append '(level 8)'.\n"
+        "A [gps=x,y,surface] link the player shared earlier carries its own "
+        "planet; use that embedded surface and never substitute the player's "
+        "current position, standing surface, or view. A bare [gps=x,y] link has "
+        "no surface; say the planet is unknown rather than guessing.\n\n"
     )
     none_hint = ""
     if rcon_command == "NONE":

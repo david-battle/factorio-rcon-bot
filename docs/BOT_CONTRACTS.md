@@ -90,9 +90,10 @@ once, then suppress repeat notices until it changes or the technology changes.
 
 Jimbo announces every startup. If `startup_change_summary` differs from the
 gitignored `last_startup_summary.txt`, include that handcrafted, player-facing
-summary; otherwise use the generic greeting. Every changed summary must be
-recorded verbatim in `STARTUP_ANNOUNCEMENTS.md`. Do not record unchanged generic
-restarts.
+summary; otherwise use the generic greeting. Update the summary for every change
+that will alter player-visible behavior after restart — code or prompt — not
+only code. Every changed summary must be recorded verbatim in
+`STARTUP_ANNOUNCEMENTS.md`. Do not record unchanged generic restarts.
 
 ## Production Cell Placement
 
@@ -146,6 +147,11 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
   actual force spawn when an omitted location has no matching online view;
 - strictly validates the GPS coordinates, requires its surface when present to
   match the requested surface, and floors the coordinates to a bottom-left tile;
+- uses the surface embedded in a player-linked `[gps=x,y,surface]` ping and never
+  substitutes the player's current position, standing surface, or view; a bare
+  `[gps=x,y]` has no planet in the link (the game omits it for the current
+  surface), so Jimbo says the planet is unknown or resolves it from context
+  rather than guessing;
 - rejects locked recipes, fluid ingredients or products, and recipe/surface
   mismatches before mutation;
 - resolves compatible placeable crafting machines through

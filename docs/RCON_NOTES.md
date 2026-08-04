@@ -43,6 +43,12 @@ learnings here as briefly as possible.
 
 - Factorio chat recognizes `[gps=x,y,surface]` as a clickable map location; send
   it as raw RCON chat including Jimbo's normal prefix.
+- The game omits the surface from a linked location when it matches the
+  player's current surface: a link to another planet or platform arrives as
+  `[gps=x,y,fulgora]`, while a link on the current surface arrives as a bare
+  `[gps=46.8,-78.6]` with no planet. Jimbo must not guess a planet for a bare
+  link and must not substitute the player's current location for the embedded
+  surface of a qualified one (see the prompt contracts in `jimbo.py`).
 - World chunks are 32 x 32 tiles, with boundaries and corners at coordinates
   divisible by 32.
 
@@ -239,6 +245,32 @@ learnings here as briefly as possible.
   one network. Switch wiring: `get_wire_connectors(false)` exposes
   `power_switch_left_copper` and `power_switch_right_copper`, each with its own
   `electric_network` and `real_connections`.
+- On 2.1.12 `LuaEntity.electric_network` returns a `LuaElectricSubNetwork`, not
+  a `LuaElectricNetwork`. The subnetwork is nearly bare: only `.id` reads.
+  `statistics`, `supply_area_statistics`, `get_entity_suppliers()`,
+  `get_entity_consumers()`, `network_id`, `network`, and `wire_count` all raise
+  "LuaElectricSubNetwork doesn't contain key ...". `game.electric_networks` is
+  not a usable accessor for full-network statistics either.
+- Use `LuaEntity.electric_networks` (plural) to test whether two subnetwork ids
+  are really one merged network: an entity bridging them lists every id, e.g. a
+  solar panel on a bridge row and the rocket silo both reported `{137,2898}`.
+  Poles expose only the singular `electric_network`; their plural list is empty.
+- A pole whose in-game electric-network GUI shows nothing is the symptom of an
+  isolated subnetwork. Diagnose by reading the pole's subnetwork id, then the
+  plural `electric_networks` of nearby generators/consumers; a consumer listing
+  only a different id means a wiring gap (pole out of wire reach) split the
+  networks.
+- `find_entities_filtered{area=...}` bounding boxes are a two-element list of
+  Positions: `area={{x1,y1},{x2,y2}}`. The nested `{{{x1,y1}},{{x2,y2}}}` form
+  raises "real number expected got table", aborts the whole command, and spams
+  the in-game console with errors.
+- Empty network statistics are `nil`, not `{}`: guard with
+  `for k,v in pairs(n.statistics.input_counts or {})` or the loop raises
+  "bad argument #1 to 'pairs'".
+- `pole.prototype.get_wire_reach_distance(pole.quality)` raises
+  "LuaEntityPrototype doesn't contain key get_wire_reach_distance" on 2.1.12;
+  `get_supply_area_distance(pole.quality)` works. Detect a pole gap by comparing
+  subnetwork ids of neighboring poles instead of wire reach.
 - Power coverage: `pole.prototype.get_supply_area_distance(pole.quality)`;
   `assembler.is_connected_to_electric_network()` is the definitive check.
 - Logistic groups belong to a force: `LuaForce.create_logistic_group()`,
