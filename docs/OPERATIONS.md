@@ -10,6 +10,13 @@ seeding, or one of the documented runtime pitfalls.
   under `/mnt/c` or `/mnt/d`.
 - The Factorio dedicated server runs natively on Windows at
   `D:\factorio-server`, started via `ss.bat`, and cannot be moved into WSL.
+- Restart procedure: in the RCON console in the server's window run `/quit` to
+  stop the server cleanly, then `:q` to exit the RCON console, then
+  `D:\ss.bat` to relaunch.
+- Automated restart from WSL: send `/quit` over RCON, reap the old console
+  with `powershell.exe -Command "Stop-Process -Name rcon"`, launch
+  `powershell.exe -Command "Start-Process -FilePath D:\ss.bat"` (opens a fresh
+  console window), then verify the log reopened and RCON answers.
 - The bot reaches RCON at `127.0.0.1:27015` across the WSL/Windows boundary.
 - The server log is available to WSL at
   `/mnt/d/factorio-server/server-console.log`.
@@ -272,7 +279,34 @@ confirmation immediately before stopping the server, then:
 Stop and ask if no checkpoint exists, validation fails, stop/start is unclear, or
 the live save changes unexpectedly. Report both archive paths and verification.
 
+### Start A New Game
+
+Starting fresh replaces the live world; preserve the old save first. Obtain
+explicit confirmation before stopping the server, then:
+
+1. Stop Factorio cleanly with its existing Windows procedure and verify exit. Its
+   final save updates the live file.
+2. Move the live save `New Space Age Server.zip` to
+   `archive/pre-newgame-YYYY-MM-DD_HH-mm-ss.zip`. Never overwrite an existing
+   archive file. Verify nothing remains at the live path.
+3. Run `D:\ss.bat`; its `if not exist` guard generates a fresh world at the live
+   path.
+4. Reseed `known_players.txt` from `/players` (see the seeding section); the old
+   roster no longer applies to a fresh world.
+5. Verify the new save exists, the log reopened, and RCON answers.
+
 ## Runtime Pitfalls
+
+### Server Pauses With No Players Online
+
+The dedicated server intentionally pauses its simulation when no player is
+connected. With zero players online, expect: game time frozen, no autosaves, a
+log that records only RCON connections and join attempts, and `game.tick`
+advancing by roughly one tick per ten seconds. This is normal idle behavior,
+not a hang or a performance problem. A `[JOIN]` resumes the simulation. When
+checking whether the server is down, rely on whether RCON responds and whether
+the world resumes when a player connects; do not treat frozen time or missing
+autosaves as evidence of a fault.
 
 ### Production Cell Search Traces
 

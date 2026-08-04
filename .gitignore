@@ -1,5 +1,7 @@
 jimbo.log
 jimbo.pid
+restart_server.py
+new_game.py
 jimbo_says.log
 last_commit.txt
 last_startup_summary.txt

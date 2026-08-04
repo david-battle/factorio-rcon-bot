@@ -3,69 +3,73 @@
 ## Verified State
 
 - Branch: `main`; local commits only (the user pushes manually).
-- **Jimbo is running** under pid `357147` (see `jimbo.pid`), verified alive.
-  The launcher via `setsid` forks, so re-confirm the recorded PID with `ps`
-  from a fresh session.
+- **Jimbo is running** under pid `357147` (see `jimbo.pid`), verified alive
+  (uptime 09:00:29). The launcher via `setsid` forks, so re-confirm the
+  recorded PID with `ps` from a fresh session.
 - **Jimbo runs on `big-pickle`** via OpenCode Zen (OpenAI-compatible,
   `https://opencode.ai/zen/v1`, `auth_provider=opencode` reading
   `~/.local/share/opencode/auth.json`; never read or print a token),
   `max_completion_tokens: 4096`.
 - `last_startup_summary.txt` matches the current `startup_change_summary`
   ("I now remember about 40 minutes of recent chat instead of 15..."), so no
-  further `STARTUP_ANNOUNCEMENTS.md` entry is needed. The two prompt-only
-  fixes below take effect on the next message, not on restart, so no startup
-  announcement was warranted for them.
-- All tracked changes are committed; the worktree is clean. Pending the
-  user's manual push.
+  further `STARTUP_ANNOUNCEMENTS.md` entry is needed. `jimbo.py` was not
+  edited this session, so no startup-summary bump was warranted.
+- All tracked changes are committed; the tracked worktree is clean. Pending
+  the user's manual push.
 
 ## Completed Work
 
-### GPS entity-lookup fix (prompt + notes, this session)
+### Server ops tooling (this session)
 
-A player asked "what is this work of art at [gps=-125.5,143.4]?" and Jimbo
-replied that it could not run the lookup because the model invented
-`LuaSurface.find_entity_at_position`, which does not exist on 2.1.12. The
-classification prompt now teaches the correct pattern:
-`find_entities_filtered{position={x,y}}` (entities whose collision box covers
-that position) or with `radius=1`; `find_entity(name, position)` requires a
-name. Recorded in `docs/RCON_NOTES.md`. The player later confirmed the fix
-worked ("Interesting.").
+Requested to help run the server from WSL and prepare restart / fresh-world
+scripts.
 
-### Soft resistance to cheating (prompt + contract, this session)
-
-After BSG_G, darklich14, and SilentLog repeatedly talked Jimbo into cheats —
-spawning an infinity-chest and a behemoth-biter, inserting legendary mech
-armor/exoskeletons into players, teleporting a player to Vulcanus lava, and
-giving items — the user asked for **soft, prompt-level resistance**: no Python
-enforcement, no absolute filter, tolerating players who talk around it, and no
-owner exemption.
-
-- Classification prompt (`build_classification_prompt`): decline in character
-  requests to spawn/grant items or entities, insert equipment into anyone,
-  teleport players, or bypass progression; offer legitimate alternatives
-  (tags, untags, logistics, research/recipes, translations). Explicitly soft,
-  no lecturing, never announces the policy.
-- `NONE` reply hint (`build_reply_prompt`): same decline guidance for chat-only
-  replies.
-- Documented in `docs/BOT_CONTRACTS.md` ("Cheating Resistance" section).
-- Live behavior verified in `jimbo.log`: Jimbo now declines teleport requests
-  from `dlbattle`, `BSG_G`, and others, offering map tags instead.
+- Added `restart_server.py` and `new_game.py` (repo root, **intentionally
+  untracked** and gitignored — see below). Both are local operator scripts,
+  not repository source.
+  - `restart_server.py`: sends `/quit` over RCON, waits for shutdown, reaps
+    the old `rcon.exe` console via PowerShell, relaunches `D:\ss.bat`,
+    verifies RCON answers. Prompts for confirmation; `-y` skips prompts.
+  - `new_game.py`: stops the server, moves the live save
+    `New Space Age Server.zip` to
+    `archive/pre-newgame-YYYY-MM-DD_HH-mm-ss.zip` (never overwrites;
+    auto-suffixes on collision), launches `D:\ss.bat` to auto-create a fresh
+    world, reseeds `known_players.txt`, verifies the new save and RCON.
+  - Neither script prints the RCON password (read from
+    `/mnt/d/factorio-server/config/rconpw`); both use the `/mnt/d/.venv`
+    `rcon` package (system python3 has no rcon).
+  - **Not yet executed.** The user said "Don't do it now" for the restart;
+  `new_game.py` was requested but never run. Both are still to be tested
+  against the live server.
+- `.gitignore`: added `restart_server.py` and `new_game.py` (durable ignore
+  rule for these local artifacts).
+- `docs/OPERATIONS.md` additions:
+  - Restart procedure (RCON `/quit` → `:q` → `D:\ss.bat`) plus the automated
+    WSL variant (RCON quit, reap `rcon.exe`, `Start-Process D:\ss.bat`,
+    verify).
+  - "Start A New Game" section: clean stop → archive live save (never
+    overwrite) → verify live path empty → `D:\ss.bat` auto-creates fresh
+    world → reseed `known_players.txt` from `/players` → verify.
+  - "Server Pauses With No Players Online" runtime pitfall: zero-player idle
+    pause (time frozen, no autosaves, ~1 tick/10s) is normal, not a hang;
+    judge liveness by RCON + resumed world on `[JOIN]`, not frozen time.
 
 ## Validation
 
 - `python -m py_compile jimbo.py` clean; `git diff --check` clean.
-- `python -m pytest test_jimbo.py -q`: **127 passed, 43 subtests passed**
-  (run after all prompt edits).
+- `python -m py_compile restart_server.py new_game.py` clean (venv python).
+- `python -m pytest test_jimbo.py -q`: **127 passed, 43 subtests passed**.
 - Not run: `test_ollama.py` (per operations guidance, avoid while the Factorio
   client uses the GPU).
-- The GPS fix and the soft-resistance behavior were both confirmed live in
-  chat/logs after the edits.
+- Not run: the restart/new-game scripts themselves — never executed, pending
+  the user's go-ahead.
 
 ## Remaining Work
 
-- None pending in code. The soft resistance is intentionally porous by design
-  (players may talk around it); if the user later wants stronger enforcement,
-  that would be a deliberate escalation, not a bug.
+- **Test the scripts live** when the user allows. Run `restart_server.py` and
+  confirm the old RCON console is reaped and a fresh one opens; then, if the
+  user wants, test `new_game.py` (destructive — requires archiving the current
+  world; only with explicit confirmation).
 - Residual limitation (from prior handoffs, unchanged): `TAG` cannot filter
   assembling machines by current recipe. See `docs/FUTURE_DIRECTIONS.md`.
 
@@ -83,8 +87,12 @@ owner exemption.
 - Prompt edits take effect immediately (the prompt is rebuilt per message);
   only code that matters at startup warrants a `startup_change_summary` bump.
 - Only stage intentional changes. `*.key`, `rconpw`, `groq-api-key.txt`,
-  `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, `last_*.txt`, and
-  `known_players.txt` remain ignored/untracked.
+  `jimbo.log`, `jimbo.pid`, `jimbo_says.log`, `last_*.txt`,
+  `known_players.txt`, `restart_server.py`, and `new_game.py` remain
+  ignored/untracked.
+- `restart_server.py` / `new_game.py` are gitignored on purpose: they are
+  machine-local operator scripts. If they are later generalized, move reusable
+  logic into the repo and keep the local wrappers ignored.
 - The old repository (`/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`)
   used the deprecated `mcrcon` library; do not import its RCON code.
 - `LuaSpacePlatform.get_imports()`/`get_requesting()` are gone in 2.1.12; use
@@ -93,5 +101,6 @@ owner exemption.
 
 ## Natural Next Action
 
-- Wait for the user's next request. The handoff commit below should be pushed
-  only when the user asks.
+- Run `restart_server.py` (and, with explicit user confirmation, `new_game.py`)
+  to validate them against the live server. Otherwise wait for the user's next
+  request. The handoff commit below should be pushed only when the user asks.
