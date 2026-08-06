@@ -38,7 +38,7 @@ class DialogueTests(unittest.TestCase):
     def test_all_historical_ai_profiles_are_predefined(self):
         self.assertEqual(
             set(jimbo.ai_profiles),
-            {"openai", "deepseek", "big-pickle", "groq", "ollama", "nemotron"},
+            {"openai", "deepseek", "big-pickle", "free-models-router", "ollama", "nemotron"},
         )
         self.assertEqual(
             jimbo.ai_profiles["openai"]["model"], "openai/gpt-5.4-mini"
@@ -63,7 +63,7 @@ class DialogueTests(unittest.TestCase):
             jimbo.ai_profiles["ollama"]["model"], "qwen2.5-32b-ctx32k"
         )
         self.assertEqual(
-            jimbo.ai_profiles["groq"]["model"], "openai/gpt-oss-120b"
+            jimbo.ai_profiles["free-models-router"]["model"], "openrouter/free"
         )
         self.assertEqual(
             jimbo.ai_profiles["deepseek"]["provider"], "openai-compatible"
@@ -73,14 +73,26 @@ class DialogueTests(unittest.TestCase):
             "https://opencode.ai/zen/v1",
         )
         self.assertEqual(jimbo.ai_profiles["deepseek"]["auth_provider"], "opencode")
-        self.assertEqual(jimbo.ai_profiles["groq"]["provider"], "openai-compatible")
         self.assertEqual(
-            jimbo.ai_profiles["groq"]["base_url"],
-            "https://api.groq.com/openai/v1",
+            jimbo.ai_profiles["free-models-router"]["provider"], "openai-compatible"
         )
         self.assertEqual(
-            os.path.basename(jimbo.ai_profiles["groq"]["api_key_path"]),
-            "groq-api-key.txt",
+            jimbo.ai_profiles["free-models-router"]["base_url"],
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(
+            os.path.basename(jimbo.ai_profiles["free-models-router"]["api_key_path"]),
+            "openrouter.key",
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["free-models-router"]["request_options"][
+                "max_completion_tokens"
+            ],
+            256,
+        )
+        self.assertEqual(
+            jimbo.ai_profiles["free-models-router"]["request_options"]["extra_body"],
+            {"include_reasoning": False, "reasoning_effort": "low"},
         )
         self.assertEqual(jimbo.ai_profiles["ollama"]["provider"], "ollama")
         self.assertEqual(
@@ -116,7 +128,7 @@ class DialogueTests(unittest.TestCase):
             ("openai", "ask_opencode"),
             ("deepseek", "ask_openai_compatible"),
             ("big-pickle", "ask_openai_compatible"),
-            ("groq", "ask_openai_compatible"),
+            ("free-models-router", "ask_openai_compatible"),
             ("ollama", "ask_ollama"),
             ("nemotron", "ask_openai_compatible"),
         )
@@ -184,12 +196,12 @@ class DialogueTests(unittest.TestCase):
             messages=[{"role": "user", "content": "prompt"}],
         )
 
-    def test_groq_adapter_uses_key_file_and_hides_reasoning(self):
-        profile = jimbo.ai_profiles["groq"]
+    def test_free_models_router_adapter_uses_key_file_and_hides_reasoning(self):
+        profile = jimbo.ai_profiles["free-models-router"]
         result = Mock()
         result.choices = [Mock(message=Mock(content=" response "))]
         with patch("builtins.open", mock_open(
-            read_data="groq-secret"
+            read_data="router-secret"
         )), patch("openai.OpenAI") as constructor:
             constructor.return_value.chat.completions.create.return_value = result
 
@@ -197,13 +209,13 @@ class DialogueTests(unittest.TestCase):
 
         self.assertEqual(response, "response")
         constructor.assert_called_once_with(
-            api_key="groq-secret",
-            base_url="https://api.groq.com/openai/v1",
+            api_key="router-secret",
+            base_url="https://openrouter.ai/api/v1",
             timeout=120,
             max_retries=0,
         )
         constructor.return_value.chat.completions.create.assert_called_once_with(
-            model="openai/gpt-oss-120b",
+            model="openrouter/free",
             messages=[{"role": "user", "content": "prompt"}],
             max_completion_tokens=256,
             extra_body={

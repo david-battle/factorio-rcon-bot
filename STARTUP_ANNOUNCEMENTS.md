@@ -204,3 +204,8 @@ listed as announcements.
 
 - I now read location links properly: when you share one from another planet, I
   use the planet it names instead of assuming it's where you're standing.
+
+## 2026-08-05
+
+- I now use Free Models Router via OpenRouter, which picks a free model
+  automatically instead of being locked to one.

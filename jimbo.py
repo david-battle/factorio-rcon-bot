@@ -21,7 +21,7 @@ jimbo_says_log_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "jimbo_says.log"
 )
 server_owner = "dlbattle"
-ai_profile_name = "big-pickle"
+ai_profile_name = "free-models-router"
 ai_profiles = {
     "openai": {
         "provider": "opencode",
@@ -47,13 +47,13 @@ ai_profiles = {
             "max_completion_tokens": 4096,
         },
     },
-    "groq": {
+    "free-models-router": {
         "provider": "openai-compatible",
-        "model": "openai/gpt-oss-120b",
-        "identity": "You run as OpenAI GPT-OSS 120B via Groq.",
-        "base_url": "https://api.groq.com/openai/v1",
+        "model": "openrouter/free",
+        "identity": "You run via OpenRouter's Free Models Router (openrouter/free), which picks a currently-free model automatically.",
+        "base_url": "https://openrouter.ai/api/v1",
         "api_key_path": os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "groq-api-key.txt"
+            os.path.dirname(os.path.abspath(__file__)), "openrouter.key"
         ),
         "request_options": {
             "max_completion_tokens": 256,
@@ -62,12 +62,6 @@ ai_profiles = {
                 "reasoning_effort": "low",
             },
         },
-    },
-    "ollama": {
-        "provider": "ollama",
-        "model": "qwen2.5-32b-ctx32k",
-        "identity": "You run locally as qwen2.5-32b-ctx32k via Ollama.",
-        "host": "http://127.0.0.1:11434",
     },
     "nemotron": {
         "provider": "openai-compatible",
@@ -83,6 +77,12 @@ ai_profiles = {
                 "reasoning": {"exclude": True},
             },
         },
+    },
+    "ollama": {
+        "provider": "ollama",
+        "model": "qwen2.5-32b-ctx32k",
+        "identity": "You run locally as qwen2.5-32b-ctx32k via Ollama.",
+        "host": "http://127.0.0.1:11434",
     },
 }
 ai_profile = ai_profiles[ai_profile_name]
@@ -109,8 +109,8 @@ production_cell_search_max_candidates = 256
 # players observe Jimbo doing after restart — code OR prompt edits. Describe why
 # the behavior changed, not implementation details.
 startup_change_summary = (
-    "I now read location links properly: when you share one from another planet, "
-    "I use the planet it names instead of assuming it's where you're standing."
+    "I now use Free Models Router via OpenRouter, which picks a free model "
+    "automatically instead of being locked to one."
 )
 
 opencode_config = json.dumps({

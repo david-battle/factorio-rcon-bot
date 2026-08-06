@@ -184,9 +184,7 @@ replies.
 
 `game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields are
 the alert `type`, `target`, `surface`, `icon`, `ticks_to_live`, custom `message`,
-and `show_on_map`. A future `get_alerts_snapshot(client)` should mirror
-`get_research_snapshot()` and return a compact summary grouped by surface and
-type, with sample target GPS positions only when useful.
+and `show_on_map`.
 
 The read-only query can group alerts as follows:
 
@@ -208,11 +206,11 @@ spontaneous commentary and, when a `NONE` reply concerns attacks, damage,
 warnings, or a problem, in the reply prompt. An empty snapshot should explicitly
 say that there are no active alerts.
 
-Implement in this order: test and add the snapshot function; add it to the
-spontaneous prompt; add classifier parsing and dispatch; then selectively add it
-to alert-related direct replies. Keep data transient, output compact, and avoid
-replaying old alerts. Tests should cover empty and multi-surface snapshots,
-valid/invalid `ALERTS` decisions, and prompt inclusion.
+Implement in this order: ~~test and add the snapshot function~~ (done);
+~~add it to the spontaneous prompt~~ (done); add classifier parsing and dispatch;
+then selectively add it to alert-related direct replies. Keep data transient,
+output compact, and avoid replaying old alerts. Tests should cover empty and
+multi-surface snapshots, valid/invalid `ALERTS` decisions, and prompt inclusion.
 
 ## Tested Implementation Findings
 

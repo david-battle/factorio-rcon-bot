@@ -21,9 +21,16 @@ seeding, or one of the documented runtime pitfalls.
 - The server log is available to WSL at
   `/mnt/d/factorio-server/server-console.log`.
 - Python dependencies use the shared `/mnt/d/.venv`, auto-activated by `.bashrc`.
-- The live server last reported Factorio `2.1.12` through `/version` on
-  2026-07-29. Recheck `/version` before relying on version-sensitive runtime API
-  behavior.
+- `unzip` is not installed on the WSL PATH. It is available at
+  `~/.local/usr/bin/unzip`, installed without root via `apt-get download unzip`
+  into `/tmp/opencode` and `dpkg -x` into `~/.local` (keep those pieces if the
+  binary is ever lost). The 4.6 GB Factorio downloads are extracted with
+  Windows `tar.exe` instead; `unzip` is only used for quick `-l`/`-t` checks.
+- The standalone install under `/mnt/d/factorio-standalone/` was upgraded to
+  Factorio `2.1.14` on 2026-08-06; `current` is a Windows junction to the
+  version directory (see "Upgrade The Game Version" below). `/version` was
+  rechecked on 2026-08-06 and reports `2.1.14`. Recheck `/version` before
+  relying on version-sensitive runtime API behavior.
 
 When the user says the "old repository," they mean
 `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints`. It contains historical
@@ -107,28 +114,29 @@ Available profiles:
 
 | Profile | Provider path | Model | Provider-specific setting |
 | --- | --- | --- | --- |
+| `free-models-router` | OpenAI-compatible OpenRouter API | `openrouter/free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
 | `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
 | `big-pickle` | OpenAI-compatible OpenCode API | `big-pickle` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
-| `groq` | OpenAI-compatible Groq API | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1`, ignored `groq-api-key.txt` |
 | `nemotron` | OpenAI-compatible OpenRouter API | `nvidia/nemotron-3-ultra-550b-a55b:free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `big-pickle`. It uses the OpenAI-compatible adapter
-against `https://opencode.ai/zen/v1` (OpenCode Zen), reading the same `opencode`
-credential from `~/.local/share/opencode/auth.json` that the `deepseek` profile
-uses; never read or print a token. Big Pickle is a reasoning model, so it spends
-part of its completion budget on internal thinking before answering; the profile
-allows up to 4096 completion tokens. Verified that the Zen endpoint keeps
-reasoning in `usage.reasoning_tokens` rather than leaking it into `message
-.content`, so no reasoning-exclusion extra body is needed (unlike OpenRouter's
-Nemotron, which required `extra_body: {"reasoning": {"exclude": True}}`). The
-`deepseek` profile instead reads the `opencode` credential from
-`~/.local/share/opencode/auth.json`; never read or print a token. The `openai`
-profile instead launches an isolated, tool-denied
-`opencode run --pure --agent jimbo --format json` from `/tmp/opencode`, with
-project configuration and external skills disabled. The built-in OpenAI auth
-plugin must remain enabled, so do not set
+The current profile is `free-models-router`. It uses the OpenAI-compatible
+adapter against `https://openrouter.ai/api/v1` (OpenRouter), reading
+`openrouter.key`; never read or print a key. The router picks a free model
+automatically; the profile limits replies to 256 completion tokens and requests
+low reasoning effort with reasoning excluded from the response. The `deepseek`
+and `big-pickle` profiles instead use `https://opencode.ai/zen/v1` (OpenCode
+Zen), reading the `opencode` credential from
+`~/.local/share/opencode/auth.json`; never read or print a token. Big Pickle is
+a reasoning model and allows up to 4096 completion tokens; the Zen endpoint keeps
+reasoning in `usage.reasoning_tokens` rather than leaking it into
+`message.content`, so no reasoning-exclusion extra body is needed (unlike
+OpenRouter's Nemotron, which required
+`extra_body: {"reasoning": {"exclude": True}}`). The `openai` profile instead
+launches an isolated, tool-denied `opencode run --pure --agent jimbo --format
+json` from `/tmp/opencode`, with project configuration and external skills
+disabled. The built-in OpenAI auth plugin must remain enabled, so do not set
 `OPENCODE_DISABLE_DEFAULT_PLUGINS=1`. Transient timeouts, rate limits, and common
 HTTP 5xx failures get three total attempts; permanent failures fail immediately.
 Model identity is derived from the selected profile.
@@ -169,17 +177,18 @@ the smallest working path.
 Jimbo began on local Ollama, moved to hosted DeepSeek because the local model
 competed with the Factorio client for GPU memory, and moved to OpenAI after the
 free DeepSeek quota was exhausted. It later moved through Groq, Nemotron 3 Ultra
-via OpenRouter, DeepSeek V4 Flash via OpenCode Zen, and now runs on Big Pickle
-via OpenCode Zen. The predefined profiles retain these working
-paths for manual selection; there is no automatic fallback.
+via OpenRouter, DeepSeek V4 Flash via OpenCode Zen, Big Pickle via OpenCode Zen,
+and now runs on Free Models Router via OpenRouter. The predefined profiles retain
+these working paths for manual selection; there is no automatic fallback.
 
 ### Groq
 
-The optional `groq` profile uses `openai/gpt-oss-120b` through the
-OpenAI-compatible adapter and gitignored `groq-api-key.txt`. It limits replies to
-256 tokens, requests low reasoning effort, and excludes reasoning from the
-response. Rate and account quotas are its main operational risk because Jimbo
-normally makes two model calls per handled request.
+The `groq` profile is no longer defined in `jimbo.py`. Historically it used
+`openai/gpt-oss-120b` through the OpenAI-compatible adapter with gitignored
+`groq-api-key.txt`, limited replies to 256 tokens, requested low reasoning effort,
+and excluded reasoning from the response. Rate and account quotas were its main
+operational risk. If re-adding this profile, keep `groq-api-key.txt` gitignored
+and restore those settings.
 
 ### Local Ollama Fallback
 
@@ -294,6 +303,45 @@ explicit confirmation before stopping the server, then:
 4. Reseed `known_players.txt` from `/players` (see the seeding section); the old
    roster no longer applies to a fresh world.
 5. Verify the new save exists, the log reopened, and RCON answers.
+
+### Upgrade The Game Version
+
+Each Factorio zip extracts to a version-named folder (e.g.
+`Factorio_2.1.14/`). The dedicated server always launches from
+`D:\factorio-standalone\current`, so an upgrade repoints that junction; all
+server data stays in `D:\factorio-server`. The server must be stopped.
+Downloads land in `/mnt/c/Users/dlbat/Downloads/` as
+`factorio-space-age_win_<version>.zip`; while a browser is still downloading,
+the file is a growing `Unconfirmed <id>.crdownload` and must not be touched.
+
+1. Verify the zip's integrity and root folder with `~/.local/usr/bin/unzip -l`
+   and `-t` (the binary is not on PATH; see Environment).
+2. Extract it into `/mnt/d/factorio-standalone/` (use Windows
+   `/mnt/c/Windows/System32/tar.exe -xf <zip> -C D:\factorio-standalone` from
+   WSL: it runs natively and is far faster than `unzip` over the 9P mounts).
+   Do not use WSL `unzip` for extraction: a 5.3 GB zip was still only ~60%
+   done after ten minutes, and its kill left a partial tree that had to be
+   overwritten.
+3. Confirm `bin/x64/factorio.exe` exists and `data/base/info.json` reports the
+   expected version; compare the file count against `unzip -l` (20,832 files
+   for 2.1.14).
+4. Confirm no `factorio.exe` is running, then replace the junction:
+   `cmd.exe /c "mklink /J D:\factorio-standalone\current D:\factorio-standalone\<version>"`.
+   (`current` is a Windows junction, not a WSL symlink; `mklink /J` needs no
+   admin. Delete the old junction first with `rm` from WSL.)
+5. Verify `cmd /c dir /a D:\factorio-standalone` shows the junction and that
+   `current/bin/x64/factorio.exe` resolves.
+6. Keep the immediate previous version directory in place as rollback; after
+   the new version is confirmed running (step 8), remove older trees, redundant
+   zips, and empty extraction debris (e.g. `_extract_temp`). The running server
+   is never affected: it launches only through `current`.
+7. On first run the new install dir generates its own write-data (`config/`,
+   `temp/`, `player-data.json`, `factorio-current.log`) because its
+   `config-path.cfg` sets `use-system-read-write-data-directories=false`;
+   nothing needs carrying over from the old version dir. All real server data
+   comes from `D:\factorio-server`.
+8. Restart via `D:\ss.bat` and recheck `/version`; update the version reference
+   at the top of this file.
 
 ## Runtime Pitfalls
 
