@@ -256,6 +256,42 @@ last player disconnects and on clean shutdown. Use these roles consistently:
 Do not use `server-save <filename>`: it resolves under Factorio's write-data
 directory, and a failed save terminates the multiplayer server.
 
+### Quick Backup Copy
+
+A routine request to "make a backup" means ask the server to flush its save
+first, then copy the live save into the archive with a timestamped name, leaving
+the live file untouched and the server running:
+
+1. Run `/server-save` through the verified RCON connection and require success
+   (this also makes the live save match the in-game world). Do not skip this
+   step even if the server appears idle.
+2. Copy the live save:
+
+```bash
+cp "/mnt/d/factorio-server/saves/New Space Age Server.zip" \
+   "/mnt/d/factorio-server/saves/archive/New Space Age Server backup $(date +%Y-%m-%d_%H-%M-%S).zip"
+```
+
+3. Verify the copy exists, is nonempty, and matches the live file's size, then
+   report its exact path. This is a snapshot of the save as currently written to
+   disk; it is not a checkpoint. For the guaranteed-safe-then-restorable
+   checkpoint procedure, use the next section.
+
+### Overnight Backup Loop
+
+`backup_loop.py` repeats the Quick Backup Copy steps every 15 minutes and keeps
+every archive file, for overnight unattended coverage. Launch detached with the
+standard pattern, then confirm the recorded PID from a separate session:
+
+```bash
+nohup setsid python -u backup_loop.py </dev/null >backup_loop.log 2>&1 & echo $! >backup_loop.pid
+```
+
+It saves immediately on launch, then every 15 minutes. Stop it with
+`kill "$(cat backup_loop.pid)"`. A `/server-save` or copy failure is logged to
+`backup_loop.log` and the loop keeps trying next interval; it never overwrites an
+existing archive file.
+
 ### Create A Checkpoint
 
 When asked to create a checkpoint:

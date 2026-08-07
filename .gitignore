@@ -2,6 +2,9 @@ jimbo.log
 jimbo.pid
 restart_server.py
 new_game.py
+backup_loop.py
+backup_loop.log
+backup_loop.pid
 jimbo_says.log
 last_commit.txt
 last_startup_summary.txt
