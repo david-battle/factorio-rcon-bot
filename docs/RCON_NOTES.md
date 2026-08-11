@@ -296,6 +296,47 @@ learnings here as briefly as possible.
 - Windows writes to the server log can invalidate WSL's open file descriptor;
   `f.tell()` may raise `ValueError`. Reopen the file on `OSError` or
   `ValueError`.
+- On 2.1.14, player personal logistics requests moved to
+  `player.character.get_logistic_sections()` (returns `LuaLogisticSections`).
+  `player.get_character_logistic_requests()`,
+  `player.get_logistic_requests()`, and `player.logistic_requests` are all gone
+  (raise "doesn't contain key"). Match item by filter `name`; `min` is the
+  request threshold and `max` may be nil. Empty slots print `name=nil`.
+  Use `pairs(game.players)` (includes offline players) not `game.get_player`
+  (online only). The equipment's internal name is `battery-mk2-equipment`, not
+  `personal-battery-mk2-equipment`.
+- On 2.1.14, requester-chest filter slots store `value` as a table (with
+  `import_from` and other keys), not the bare string seen on 2.1.12; probe
+  `type(f.value)` before treating it as a name. Also
+  `LuaInventory.get_item_count(name)` rejects the name argument on 2.1.14
+  ("Expected 0 or 1 arguments but 2 were given"); sum
+  `inv.get_contents()` entries (`name`/`count`) instead.
+
+### "Who Is Requesting Item X?" — Working Recipe (2.1.14)
+
+First-check player personal requests before scanning the map: bots snatching
+freshly crafted items out of the player's inventory almost always means another
+player (possibly AFK) has a personal logistics request open — requester chests
+and vehicle `item_requests` come back empty. Probe a player with:
+
+```lua
+local ls = player.character.get_logistic_sections()
+for _, sec in pairs(ls.sections) do
+  if sec.filters then
+    for _, f in pairs(sec.filters) do
+      if f.name == item then
+        -- match: player.character requests item, min=f.min, max=tostring(f.max)
+      end
+    end
+  end
+end
+```
+
+Do not scan every entity on a surface (`find_entities_filtered{}` then
+`get_logistic_sections()`/`item_requests` on each) — that hung the live server
+for over a minute. Target `type="logistic-container"`, `"car"`,
+`"spider-vehicle"`, and `"entity-ghost"` individually if a map-side requester is
+genuinely expected.
 
 ## Built-in Jimbo Queries
 

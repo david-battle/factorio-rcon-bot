@@ -4,62 +4,50 @@
 
 - Branch: `main`; local commits only (the user pushes manually).
 - **Jimbo is NOT running.** `jimbo.pid` is stale; no `jimbo.py` process is alive.
-  Factorio is up: RCON answers on `127.0.0.1:27015` and `/version` reports
-  `2.1.14`.
+  The user intends to leave Jimbo down until they need to test something. Factorio
+  is up: RCON answers on `127.0.0.1:27015` and `/version` reports `2.1.14`.
 - Jimbo's configured profile is still `free-models-router` (OpenRouter
   `openrouter/free` via `https://openrouter.ai/api/v1`, reading
   `openrouter.key`; never read or print a key). Nothing in `jimbo.py` changed
   this session.
-- The backup loop is stopped: no `backup_loop.py` process is alive. The two most
-  recent backups remain in `/mnt/d/factorio-server/saves/archive/` (`...06-50-22`
-  and `...06-39-37`); the other 30 were reaped on request.
+- The backup loop (`backup_loop.py`) is stopped; no process is alive. Its
+  handoff (commit `ba1c957`) is already committed.
 
 ## Completed Work
 
-### Overnight backup loop (this session)
+### RCON/Lua 2.1.14 learnings (this session, doc-only)
 
-- Added `backup_loop.py` (repo root): every 15 minutes it runs `/server-save`
-  via RCON, copies the live save to
-  `/mnt/d/factorio-server/saves/archive/New Space Age Server backup
-  <timestamp>.zip`, verifies the copy's size, and never overwrites an existing
-  archive file. Failures are logged and the loop keeps trying next interval.
-- Ran unattended overnight (first backup 01:09, last 06:39, ~24 archives), then
-  stopped on request.
-- `docs/OPERATIONS.md`: added "Quick Backup Copy" (run `/server-save` via RCON
-  first, then copy + verify) and "Overnight Backup Loop" (launch/stop commands)
-  under Save Checkpoints.
-- `.gitignore`: added `backup_loop.py`, `backup_loop.log`, `backup_loop.pid`
-  — machine-local operator tooling, matching the existing `restart_server.py` /
-  `new_game.py` treatment.
-
-### Other notes
-
-- Sent a server-wide in-game acknowledgment over direct RCON as "Big Pickle"
-  (assistant action, not Jimbo) using `/silent-command game.print(...)`, which
-  RCON_NOTES already documents as not appearing in `server-console.log`.
+- `docs/RCON_NOTES.md`: added 2.1.14 API drift notes:
+  - Player personal logistics requests moved to
+    `player.character.get_logistic_sections()`; the old
+    `player.get_character_logistic_requests()` /
+    `player.get_logistic_requests()` / `player.logistic_requests` APIs are gone.
+    `pairs(game.players)` includes offline players, unlike `game.get_player`.
+  - Requester-chest filter slot `value` is now a table, not the bare string seen
+    on 2.1.12; probe `type(f.value)` first. `LuaInventory.get_item_count(name)`
+    rejects the name argument on 2.1.14 — sum `inv.get_contents()` instead.
+  - New "Who Is Requesting Item X?" recipe: check personal logistics sections
+    first, and do not scan every entity on a surface (that hung the live server
+    for over a minute); target specific entity types instead.
 
 ## Validation
 
-- `python -m py_compile backup_loop.py` clean.
-- `python -m pytest test_jimbo.py -q`: **127 passed, 43 subtests passed**.
 - `git diff --check` clean.
-- Not run: `test_ollama.py` (per operations guidance, avoid while the Factorio
-  client uses the GPU).
+- No tests run: doc-only change, no Python or behavior touched. (The previous
+  session ran `python -m pytest test_jimbo.py -q`: 127 passed; nothing in that
+  area changed since.)
 
 ## Remaining Work
 
-- Restart Jimbo when the user asks (it is currently down). Follow
-  `docs/OPERATIONS.md`; ensure the stale process is gone before relaunching.
-- Re-verify 2.1.14-sensitive RCON/Lua API facts before relying on them;
-  `docs/RCON_NOTES.md` still documents 2.1.12-era behavior.
+- Restart Jimbo when the user asks; it is intentionally down and stays down
+  until they need to test something. Follow `docs/OPERATIONS.md`; ensure the
+  stale `jimbo.pid` process is gone before relaunching.
+- The prior handoff's "re-verify 2.1.14-sensitive RCON/Lua API facts" item is
+  partially addressed by the new RCON_NOTES entries; keep verifying live before
+  relying on them.
 
 ## Operational Caveats
 
-- `backup_loop.py` is gitignored like the other operator scripts but lives at
-  repo root; the docs reference it. Keep the script and OPERATIONS.md in sync if
-  paths or the interval change.
-- Factorio save backups and the overnight run are server-adjacent work; the bot
-  and its profile configuration are unchanged.
 - Only stage intentional changes. `*.key`, `rconpw`, `jimbo.log`, `jimbo.pid`,
   `jimbo_says.log`, `backup_loop.*`, `last_*.txt`, `known_players.txt`,
   `restart_server.py`, `new_game.py` remain ignored/untracked (machine-local
@@ -67,5 +55,5 @@
 
 ## Natural Next Action
 
-- Restart Jimbo (user-triggered; it is down). Then review and push the handoff
-  commit.
+- Leave Jimbo down. When the user next wants a live test, restart it per
+  `docs/OPERATIONS.md`, then review and push the handoff commit.
