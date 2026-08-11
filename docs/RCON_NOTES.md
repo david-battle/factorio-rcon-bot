@@ -5,6 +5,14 @@ Operational quirks learned from direct RCON/Lua work against the live server
 Consult this file before composing new RCON or Lua queries, and add new
 learnings here as briefly as possible.
 
+> # FIRST RULE: probe any entity field with `pcall` unless you are certain it
+> reads on that entity type. Factorio often **raises an error instead of
+> returning nil** for an accessor on the wrong kind of entity (e.g.
+> `e.ghost_name` on a non-ghost raises "Entity is not ghost", aborting the whole
+> `/silent-command`). Wrap every conditional read in
+> `pcall(function() return obj[key] end)` and check both return values; do not
+> assume nil means "not applicable".
+
 ## Tooling
 
 - `rcon.source.Client.run()` takes no `retry` kwarg. Jimbo's wrapper adds

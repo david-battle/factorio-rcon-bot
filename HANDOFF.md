@@ -15,7 +15,18 @@
 
 ## Completed Work
 
-### RCON/Lua 2.1.14 learnings (this session, doc-only)
+### RCON/Lua: prominent `pcall` first rule (this session, doc-only)
+
+- `docs/RCON_NOTES.md`: added a "FIRST RULE" callout near the top of the file:
+  probe entity fields with `pcall` because Factorio raises instead of returning
+  nil on the wrong entity kind. Learned live this session when `e.ghost_name` on
+  a non-ghost aborted a requester scan (`/silent-command` error "Entity is not
+  ghost").
+- Live RCON session this handoff (not committed, no repo impact): located the
+  only Aquilo requester of `quantum-processor` (requester-chest `#11056398` at
+  (19.5,-8.5), min=600) and tagged it in-game with a "Jimbo ping" chart tag.
+
+### RCON/Lua 2.1.14 learnings (prior session, doc-only)
 
 - `docs/RCON_NOTES.md`: added 2.1.14 API drift notes:
   - Player personal logistics requests moved to
@@ -45,6 +56,8 @@
 - The prior handoff's "re-verify 2.1.14-sensitive RCON/Lua API facts" item is
   partially addressed by the new RCON_NOTES entries; keep verifying live before
   relying on them.
+- The chart tag left at Aquilo (19.5,-8.5) is a map marker only; nothing to
+  remove or commit.
 
 ## Operational Caveats
 
