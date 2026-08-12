@@ -15,7 +15,16 @@
 
 ## Completed Work
 
-### RCON/Lua: prominent `pcall` first rule (this session, doc-only)
+### RCON/Lua: deconstruction API semantics (this session, doc-only)
+
+- `docs/RCON_NOTES.md` (Verified Runtime Facts): `order_deconstruction(force)`
+  returns `true` when newly marked, `false` when already marked/not
+  deconstructable — not an error string; `to_be_deconstructed` is a **method**
+  on 2.1.14. Learned live while marking all 16,005 lamps on Nauvis for
+  deconstruction (bots removed 2,861 immediately; the remaining 13,144 are all
+  marked). Live RCON action only; no repo impact.
+
+### RCON/Lua: prominent `pcall` first rule (prior session, doc-only)
 
 - `docs/RCON_NOTES.md`: added a "FIRST RULE" callout near the top of the file:
   probe entity fields with `pcall` because Factorio raises instead of returning

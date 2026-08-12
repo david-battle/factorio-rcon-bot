@@ -218,6 +218,14 @@ learnings here as briefly as possible.
 
 ## Verified Runtime Facts
 
+- On 2.1.14, `LuaEntity.order_deconstruction(force)` returns a boolean: `true`
+  means the entity was newly marked for deconstruction, `false` means it was
+  not (already marked or not deconstructable) — not an error string. It never
+  raises on an ordinary deconstructable entity, so a pcall-wrapped call that
+  returns `false` means "already handled", not failure.
+- On 2.1.14, `LuaEntity.to_be_deconstructed` is a **method**:
+  `e.to_be_deconstructed()`. Reading it as a property yields the function
+  itself (tostring prints "function"), silently defeating boolean checks.
 - `game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields:
   `type`, `target`, `surface`, `icon`, `ticks_to_live`, `message`,
   `show_on_map`.
