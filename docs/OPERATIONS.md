@@ -116,24 +116,26 @@ Available profiles:
 | --- | --- | --- | --- |
 | `free-models-router` | OpenAI-compatible OpenRouter API | `openrouter/free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `openai` | OpenCode CLI | `openai/gpt-5.4-mini` | OpenCode `openai` auth |
-| `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash-free` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
+| `deepseek` | OpenAI-compatible OpenCode API | `deepseek-v4-flash` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
 | `big-pickle` | OpenAI-compatible OpenCode API | `big-pickle` | `https://opencode.ai/zen/v1`, OpenCode `opencode` auth |
 | `nemotron` | OpenAI-compatible OpenRouter API | `nvidia/nemotron-3-ultra-550b-a55b:free` | `https://openrouter.ai/api/v1`, ignored `openrouter.key` |
 | `ollama` | Local Ollama | `qwen2.5-32b-ctx32k` | `http://127.0.0.1:11434` |
 
-The current profile is `free-models-router`. It uses the OpenAI-compatible
-adapter against `https://openrouter.ai/api/v1` (OpenRouter), reading
-`openrouter.key`; never read or print a key. The router picks a free model
-automatically; the profile limits replies to 256 completion tokens and requests
-low reasoning effort with reasoning excluded from the response. The `deepseek`
-and `big-pickle` profiles instead use `https://opencode.ai/zen/v1` (OpenCode
-Zen), reading the `opencode` credential from
-`~/.local/share/opencode/auth.json`; never read or print a token. Big Pickle is
-a reasoning model and allows up to 4096 completion tokens; the Zen endpoint keeps
+The current profile is `deepseek`. It uses the OpenAI-compatible adapter
+against `https://opencode.ai/zen/v1` (OpenCode Zen), reading the `opencode`
+credential from `~/.local/share/opencode/auth.json`; never read or print a
+token. It runs the paid DeepSeek V4 Flash so replies do not stop when free
+quota is exhausted. The model behaves as a reasoning model and reports its
 reasoning in `usage.reasoning_tokens` rather than leaking it into
 `message.content`, so no reasoning-exclusion extra body is needed (unlike
 OpenRouter's Nemotron, which required
-`extra_body: {"reasoning": {"exclude": True}}`). The `openai` profile instead
+`extra_body: {"reasoning": {"exclude": True}}`). The `big-pickle` profile uses
+the same Zen endpoint and credential; Big Pickle allows up to 4096 completion
+tokens. The `free-models-router` profile instead uses the OpenAI-compatible
+adapter against `https://openrouter.ai/api/v1` (OpenRouter), reading
+`openrouter.key`; never read or print a key. The router picks a free model
+automatically; that profile limits replies to 256 completion tokens and
+requests low reasoning effort with reasoning excluded from the response. The `openai` profile instead
 launches an isolated, tool-denied `opencode run --pure --agent jimbo --format
 json` from `/tmp/opencode`, with project configuration and external skills
 disabled. The built-in OpenAI auth plugin must remain enabled, so do not set
@@ -172,14 +174,27 @@ profile selection, retry behavior, tool isolation expectations, tests, and this
 reference during such a migration. Until then, the contained OpenCode adapter is
 the smallest working path.
 
+### Model Call Latency Findings
+
+Measured on 2026-08-23 against OpenCode Zen (`deepseek-v4-flash`): the first
+model call of a process pays a one-time penalty of roughly 7–19 seconds
+regardless of prompt size; later calls run ~1–5 seconds even after minutes of
+idle, reusing one OpenAI client does not help, and capping completion tokens
+does not help either (reasoning tokens count against such caps, risking
+truncated replies). Jimbo makes no model call during startup, so
+`warm_up_ai()` fires a throwaway call right after the online announcement to
+absorb the penalty while nobody is waiting. `ask_ai` logs each call duration
+to `jimbo.log`; check those timings before chasing perceived slowness.
+
 ### Provider History
 
 Jimbo began on local Ollama, moved to hosted DeepSeek because the local model
 competed with the Factorio client for GPU memory, and moved to OpenAI after the
 free DeepSeek quota was exhausted. It later moved through Groq, Nemotron 3 Ultra
 via OpenRouter, DeepSeek V4 Flash via OpenCode Zen, Big Pickle via OpenCode Zen,
-and now runs on Free Models Router via OpenRouter. The predefined profiles retain
-these working paths for manual selection; there is no automatic fallback.
+Free Models Router via OpenRouter, and now runs on the paid DeepSeek V4 Flash
+via OpenCode Zen after the owner added OpenCode credit. The predefined profiles
+retain these working paths for manual selection; there is no automatic fallback.
 
 ### Groq
 
@@ -378,6 +393,11 @@ the file is a growing `Unconfirmed <id>.crdownload` and must not be touched.
    comes from `D:\factorio-server`.
 8. Restart via `D:\ss.bat` and recheck `/version`; update the version reference
    at the top of this file.
+9. Regenerate the model-facing scripting reference from the new install with
+   `python generate_lua_reference.py` (reads
+   `doc-html/runtime-api.json` under `current`), then restart Jimbo so he
+   loads it. Commit the updated `lua_essentials.txt`; never commit the source
+   JSON.
 
 ## Runtime Pitfalls
 

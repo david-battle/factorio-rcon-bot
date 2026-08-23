@@ -209,3 +209,13 @@ listed as announcements.
 
 - I now use Free Models Router via OpenRouter, which picks a free model
   automatically instead of being locked to one.
+
+## 2026-08-23
+
+- I now use the paid DeepSeek V4 Flash via OpenCode Zen instead of the
+  free tier, so I shouldn't run out of quota mid-conversation anymore. My
+  first message after a restart no longer gets swallowed, I warm up at
+  startup so my first answer comes faster, I've studied this server's
+  exact Factorio version so my commands land more reliably, and I can now
+  dig into live server details on request. When I count things I say
+  exactly what I scanned instead of guessing at a grand total.

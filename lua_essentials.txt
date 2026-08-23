@@ -1,0 +1,71 @@
+FACTORIO 2.1.14 SCRIPTING REFERENCE (authoritative for this server; generated from runtime-api.json):
+
+GLOBAL OBJECTS:
+- commands :: LuaCommandProcessor — Allows registration of custom commands for the in-game console.
+- game :: LuaGameScript — The main scripting interface through which most of the API is accessed.
+- helpers :: LuaHelpers — Provides access to various helper and utility functions.
+- prototypes :: LuaPrototypes — Allows read-only access to prototypes.
+- rcon :: LuaRCON — Allows printing messages to the calling RCON instance, if any.
+- remote :: LuaRemote — Allows registration and use of functions to communicate between mods.
+- rendering :: LuaRendering — Allows rendering of geometric shapes, text and sprites in the game world.
+- script :: LuaBootstrap — Provides an interface for registering game event handlers.
+- settings :: LuaSettings — Provides access to the current mod settings.
+
+GLOBALS AS FUNCTIONS:
+- localised_print() — `localised_print()` allows printing [LocalisedString](runtime:LocalisedString) to stdout…
+- log() — `log()` can print [LocalisedStrings](runtime:LocalisedString) to the Factorio [log file](…
+- table_size() — Factorio provides the `table_size()` function as a simple way to determine the size of ta…
+
+ALL LUA CLASSES (members exist only if listed here; do not invent class or member names):
+LuaAISettings, LuaAccumulatorControlBehavior, LuaAchievementPrototype,
+  LuaActiveTriggerPrototype, LuaAgriculturalTowerControlBehavior, LuaAirbornePollutantPrototype,
+  LuaAmmoCategoryPrototype, LuaArithmeticCombinatorControlBehavior,
+  LuaArtilleryTurretControlBehavior, LuaAssemblingMachineControlBehavior,
+  LuaAsteroidChunkPrototype, LuaAsteroidCollectorControlBehavior, LuaAutoplaceControlPrototype,
+  LuaBoilerControlBehavior, LuaBootstrap, LuaBurner, LuaBurnerPrototype,
+  LuaBurnerUsagePrototype, LuaCargoHatch, LuaCargoLandingPadControlBehavior, LuaChunkIterator,
+  LuaCircuitNetwork, LuaCollisionLayerPrototype, LuaCombinatorControlBehavior,
+  LuaCommandProcessor, LuaCommandable, LuaConstantCombinatorControlBehavior,
+  LuaContainerControlBehavior, LuaControl, LuaControlBehavior, LuaCustomChartTag,
+  LuaCustomEventPrototype, LuaCustomInputPrototype, LuaCustomTable, LuaDamagePrototype,
+  LuaDebugAdapter, LuaDeciderCombinatorControlBehavior, LuaDecorativePrototype,
+  LuaDisplayPanelControlBehavior, LuaElectricEnergySourcePrototype, LuaElectricNetwork,
+  LuaElectricSubNetwork, LuaEntity, LuaEntityPrototype, LuaEquipment,
+  LuaEquipmentCategoryPrototype, LuaEquipmentGrid, LuaEquipmentGridPrototype,
+  LuaEquipmentPrototype, LuaFlowStatistics, LuaFluidBoxPrototype, LuaFluidEnergySourcePrototype,
+  LuaFluidPrototype, LuaFontPrototype, LuaForce, LuaFuelCategoryPrototype,
+  LuaFurnaceControlBehavior, LuaGameScript, LuaGenericOnOffControlBehavior, LuaGroup, LuaGui,
+  LuaGuiElement, LuaHeatBufferPrototype, LuaHeatEnergySourcePrototype,
+  LuaHeatPipeControlBehavior, LuaHelpers, LuaInserterControlBehavior, LuaInventory, LuaItem,
+  LuaItemCommon, LuaItemPrototype, LuaItemStack, LuaLabControlBehavior, LuaLampControlBehavior,
+  LuaLandMineControlBehavior, LuaLazyLoadedValue, LuaLoaderControlBehavior, LuaLogisticCell,
+  LuaLogisticContainerControlBehavior, LuaLogisticNetwork, LuaLogisticPoint, LuaLogisticSection,
+  LuaLogisticSections, LuaMiningDrillControlBehavior, LuaModData, LuaModSettingPrototype,
+  LuaModuleCategoryPrototype, LuaNamedNoiseExpression, LuaNamedNoiseFunction,
+  LuaNotificationQueue, LuaParticlePrototype, LuaPermissionGroup, LuaPermissionGroups, LuaPin,
+  LuaPlanet, LuaPlayer, LuaProcessionLayerInheritanceGroupPrototype, LuaProcessionPrototype,
+  LuaProfiler, LuaProgrammableSpeakerControlBehavior, LuaPrototypeBase, LuaPrototypes,
+  LuaProxyContainerControlBehavior, LuaPumpControlBehavior, LuaQualityPrototype, LuaRCON,
+  LuaRadarControlBehavior, LuaRailEnd, LuaRailPath, LuaRailSignalBaseControlBehavior,
+  LuaRandomGenerator, LuaReactorControlBehavior, LuaRecipe, LuaRecipeCategoryPrototype,
+  LuaRecipePrototype, LuaRecord, LuaRemote, LuaRenderObject, LuaRendering,
+  LuaResourceCategoryPrototype, LuaRoboportControlBehavior, LuaRocketSiloControlBehavior,
+  LuaSchedule, LuaSegment, LuaSegmentedUnit, LuaSelectorCombinatorControlBehavior, LuaSettings,
+  LuaShortcutPrototype, LuaSimulation, LuaSingleFluidBoxControlBehavior,
+  LuaSpaceConnectionPrototype, LuaSpaceLocationPrototype, LuaSpacePlatform,
+  LuaSpacePlatformHubControlBehavior, LuaSplitterControlBehavior, LuaStyle, LuaSurface,
+  LuaSurfacePropertyPrototype, LuaSurfacePrototype, LuaTechnology, LuaTechnologyPrototype,
+  LuaTerritory, LuaTile, LuaTilePrototype, LuaTrain, LuaTrainManager,
+  LuaTrainStopControlBehavior, LuaTransportBeltControlBehavior, LuaTransportLine,
+  LuaTrivialSmokePrototype, LuaTurretControlBehavior, LuaUndoRedoStack,
+  LuaVirtualSignalPrototype, LuaVoidEnergySourcePrototype, LuaWallControlBehavior,
+  LuaWireConnector
+
+CORE RULES FOR /silent-command LUA (violations abort the whole command):
+- Output with rcon.print(value). Plain Lua returns nothing over RCON; an empty response is not proof of success. Aggregate counts in Lua and keep total output under ~4000 characters.
+- Reading a nonexistent key or method RAISES and kills the command; it never returns nil. Wrap every uncertain read: pcall(function() return obj.key end)
+- Iterate collections with pairs(): game.surfaces, game.players (includes offline players), game.forces.
+- Filtered searches: surface.find_entities_filtered{name=..., type=..., position={x,y}, radius=..., area={{x1,y1},{x2,y2}}}. Area bounds are exclusive: a w x h box anchored at tile (x,y) is {{x,y},{x+w,y+h}}.
+- LuaInventory.get_contents() returns an array of {name=..., quality=..., count=...} entries indexed by slot; prefer get_item_count(name).
+- Compare entity status against defines.entity_status.<name> constants; the numbers are not reverse-indexable.
+- Lua 5.1: use string.char(...) (no chr()); never place a number literal directly before .. (write (n) .. ' suffix').

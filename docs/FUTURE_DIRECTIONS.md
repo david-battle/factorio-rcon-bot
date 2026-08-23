@@ -132,6 +132,111 @@ natural interaction, and restrained behavior.
    the entity-layout codec or deployment pipeline from direction 8 merely to
    create a tile-only inventory blueprint.
 
+10. **Achievements-active mode.** Accepting any Lua console command disables map
+    achievements for that session, and Jimbo now touches Lua constantly: every
+    chat line (custom-sound delivery), research/alerts/platform/logistics
+    queries, tagging, production cells, and console priming. A future optional
+    mode could keep a save achievement-eligible by restricting Jimbo to plain,
+    non-Lua RCON only — raw chat text with the standard ding instead of
+    `game.forces.player.print`, built-in slash commands such as `/players` or
+    `/evolution`, and none of the Lua-backed behaviors above. Classifier paths
+    and prompt contracts would need a matching degraded set, and requests
+    needing unavailable Lua facts should get a grounded decline rather than a
+    guess.
+
+11. **Version-exact Lua/RCON fluency (two-layer model-facing reference).**
+    Jimbo's models were trained before Factorio 2.1 and compose freeform Lua
+    from stale knowledge. Today only scattered prompt hints (the built-in slash
+    list, one `prototypes.recipe` line) arm the classifier's `/`-passthrough,
+    while all reliable behavior comes from Python-authored Lua in `jimbo.py`.
+    The fix is not more piecemeal notes: the authoritative, version-exact
+    reference already exists as machine-readable JSON shipped inside every full
+    install — `/mnt/d/factorio-standalone/current/doc-html/runtime-api.json`
+    reported `application_version` 2.1.14, matching the live server, alongside
+    `prototype-api.json`. Sizes forbid wholesale injection: full runtime JSON
+    is about 2 MB (~500K tokens), signatures-only about 0.64 MB; a single class
+    slice is 2–40 KB, so delivery must be layered.
+
+    **Layer 1 — generated essentials block (always available).** A small repo
+    script parses the local `runtime-api.json` and emits a compact reference
+    (target 3–6 KB): global objects, `/silent-command` single-line idiom with
+    `rcon.print()` output and the ~4 KB response cap, the pcall-or-die rule,
+    empty-response-is-not-success, common 2.x renames (`game.recipe_prototypes`
+    → `prototypes.recipe`, item prototypes under `prototypes.item`, inventory
+    `get_contents()` shape), plus distilled traps from `docs/RCON_NOTES.md`.
+    Inject it into classification prompts (where Lua is authored) but keep
+    greetings and spontaneous prompts lean to protect reply latency. Regenerate
+    after every game upgrade as part of the documented upgrade procedure;
+    commit the generated text, never the source JSON.
+
+    **Layer 2 — on-demand class/concept retrieval.** Add a structured
+    classifier decision such as `LOOKUP|class-a,class-b|question`: Python
+    extracts the named slices from `runtime-api.json` (and `prototype-api.json`
+    for prototype properties) — signatures plus truncated descriptions, capped
+    around 12–16 KB — into one dedicated read-only Lua composition call, then
+    executes and answers from its verified result like any other RCON path.
+    This keeps novel introspection accurate for anything the API exposes at a
+    cost of one extra model call on rare queries only.
+
+    **Capability goals this must preserve.** Players may ask for anything they
+    could find legitimately with enough in-game work. Target examples:
+    "where are all the iron plates being carried off by bots going" and "which
+    platforms regularly deliver science packs from Gleba". Both require
+    discovering exact members at query time (robot cargo fields, platform hub
+    logistic sections and import filters, flow statistics) rather than trusting
+    memory — exactly what Layer 2 exists for.
+
+    **Boundaries.** Guiding philosophy: Jimbo should feel frictionless.
+    Restrictions exist only where unlimited help would drain the game of
+    meaning, and even there the soft anti-cheat decline is an in-character
+    nudge for players who want effort to matter — not a wall. When the two
+    failure modes conflict, err on the side of frictionless. Ghost and
+    blueprint placement sits firmly on the frictionless side: players already
+    place arbitrary blueprints by hand, construction robots still demand real
+    materials, and expansion of placement capability is wanted (see directions
+    8 and 9). Reference prompts must state explicitly that placing ghosts or
+    delivering blueprints is ordinary convenience — never declined, never
+    treated as a mutation concern. Freeform Layer 2 composition therefore
+    rejects only two narrow things: overt progression bypasses (spawning or
+    granting items or equipment into inventories, teleporting players), which
+    get the light in-character decline described in `docs/BOT_CONTRACTS.md`,
+    and accidentally destructive one-liners (mass destroy/clear style calls),
+    which are a reliability guardrail against hallucinated commands rather
+    than policy.     Everything else — reading any state, creating ghosts,
+    tagging, wiring queries — composes freely. Composed placement should still
+    graduate over time to the verified staging, preflight, and rollback
+    pipelines for reporting quality, not permission. Keep single-command Lua
+    within the profile completion-token budgets by favoring compact semicolon
+    style.
+
+    **Status.** Layer 1 shipped 2026-08-23: `generate_lua_reference.py`
+    builds `lua_essentials.txt` (~6 KB: global objects, global functions,
+    full class index, core abort-rules) from the installed game's
+    `doc-html/runtime-api.json`, and `jimbo.py` injects it into classification
+    prompts only; regeneration is step 9 of the documented upgrade procedure.
+    First live tests produced correct composed queries (a technology listing)
+    and a working freeform entity-ghost     placement — but that command printed
+    success without checking `create_entity`'s return value, which is exactly
+    the unverified-reporting gap Layer 2's report-only-what-you-read
+    discipline closes.
+
+    Layer 2 shipped the same day: `parse_lookup_decision`,
+    `extract_api_slices` (budget-capped slices from `runtime-api.json`),
+    `build_lookup_prompt` / `compose_lookup_command`, the
+    `forbidden_lua_reason` guardrail, and the `RCON: scripted lookup`
+    dispatch with its verified-reporting reply hint.
+
+    **Known gap (2026-08-23 live test).** "How many iron plates total exist
+    on Nauvis?" correctly routed to LOOKUP with a well-composed question, but
+    the compose step returned empty — Jimbo honestly replied `[error: model
+    returned no command]`. No command ran, so `jimbo_commands.log` logged
+    nothing, and there is no raw fallback telling us whether the model gave an
+    empty reply, malformed fences, or a transient API failure. Two small
+    follow-ups: (1) on an empty compose, log the raw `ask_ai` output or do a
+    single light retry instead of a bare error; (2) write a compose-side audit
+    entry (question + reason/raw) even on failure so the audit trail explains
+    why a lookup came up empty.
+
 Context and factual knowledge are separate problems. A larger dialogue window
 would not have prevented the incorrect solid-fuel energy answer, and the current
 server log does not expose enough information to answer session death counts.

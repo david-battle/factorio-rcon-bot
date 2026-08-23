@@ -6,6 +6,7 @@ backup_loop.py
 backup_loop.log
 backup_loop.pid
 jimbo_says.log
+jimbo_commands.log
 last_commit.txt
 last_startup_summary.txt
 last_chat_review.txt

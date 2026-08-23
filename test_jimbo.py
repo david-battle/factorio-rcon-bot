@@ -44,7 +44,7 @@ class DialogueTests(unittest.TestCase):
             jimbo.ai_profiles["openai"]["model"], "openai/gpt-5.4-mini"
         )
         self.assertEqual(
-            jimbo.ai_profiles["deepseek"]["model"], "deepseek-v4-flash-free"
+            jimbo.ai_profiles["deepseek"]["model"], "deepseek-v4-flash"
         )
         self.assertEqual(jimbo.ai_profiles["big-pickle"]["model"], "big-pickle")
         self.assertEqual(jimbo.ai_profiles["big-pickle"]["provider"], "openai-compatible")
@@ -192,7 +192,7 @@ class DialogueTests(unittest.TestCase):
             max_retries=0,
         )
         constructor.return_value.chat.completions.create.assert_called_once_with(
-            model="deepseek-v4-flash-free",
+            model="deepseek-v4-flash",
             messages=[{"role": "user", "content": "prompt"}],
         )
 
@@ -351,6 +351,26 @@ class DialogueTests(unittest.TestCase):
         command = client.run.call_args.args[0]
         self.assertIn("steady hum \U0001F604", command)
         self.assertNotIn("\\u", command)
+
+    def test_console_prime_sends_identical_noop_twice(self):
+        client = Mock()
+
+        jimbo.prime_lua_console(client)
+
+        self.assertEqual(client.run.call_count, 2)
+        first, second = client.run.call_args_list
+        self.assertEqual(first, second)
+        self.assertEqual(first.args[0], jimbo.lua_console_prime_command)
+
+    def test_ai_warmup_uses_throwaway_prompt(self):
+        with patch.object(jimbo, "ask_ai", return_value="ok") as ask:
+            jimbo.warm_up_ai()
+
+        ask.assert_called_once_with(jimbo.ai_warmup_prompt)
+
+    def test_ai_warmup_failure_does_not_raise(self):
+        with patch.object(jimbo, "ask_ai", side_effect=RuntimeError("down")):
+            jimbo.warm_up_ai()
 
     def test_record_jimbo_says_appends_formatted_chat_line(self):
         path = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False)
@@ -646,6 +666,62 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("TAG|all|character-corpse|", prompt)
         self.assertIn("scan every surface", prompt)
 
+    def test_classification_prompt_includes_lua_essentials(self):
+        with patch.object(
+            jimbo, "lua_essentials_text", "ESSENTIALS SENTINEL rcon.print"
+        ):
+            prompt = jimbo.build_classification_prompt(
+                jimbo.server_owner,
+                "Jimbo how many iron chests exist",
+                "(none)",
+            )
+        self.assertIn("authoritative", prompt)
+        self.assertIn("ESSENTIALS SENTINEL rcon.print", prompt)
+
+    def test_reply_prompt_omits_lua_essentials(self):
+        with patch.object(
+            jimbo, "lua_essentials_text", "ESSENTIALS SENTINEL rcon.print"
+        ):
+            reply = jimbo.build_reply_prompt(
+                jimbo.server_owner,
+                "Jimbo how many iron chests exist",
+                "(none)",
+                "RCON: scripted query",
+                "42",
+            )
+            none_reply = jimbo.build_reply_prompt(
+                jimbo.server_owner,
+                "Jimbo how's the weather",
+                "(none)",
+                "NONE",
+                None,
+            )
+        self.assertNotIn("ESSENTIALS SENTINEL", reply)
+        self.assertNotIn("ESSENTIALS SENTINEL", none_reply)
+
+    def test_missing_lua_essentials_file_returns_empty(self):
+        self.assertEqual(
+            jimbo.load_lua_essentials("/nonexistent/lua_essentials.txt"), ""
+        )
+
+    def test_lua_essentials_generator_builds_compact_reference(self):
+        import generate_lua_reference as gen
+
+        doc = {
+            "application_version": "9.9.9-test",
+            "global_objects": [
+                {"name": "game", "type": "LuaGameScript", "description": "Main entry."},
+            ],
+            "global_functions": [],
+            "classes": [{"name": "LuaSurface"}, {"name": "LuaEntity"}],
+        }
+        text = gen.build_essentials(doc, "runtime-api.json")
+        self.assertIn("9.9.9-test", text)
+        self.assertIn("- game :: LuaGameScript — Main entry.", text)
+        self.assertIn("LuaSurface, LuaEntity", text)
+        self.assertIn("CORE RULES", text)
+
+
     def test_untag_classifier_guidance_for_just_tagged_entity(self):
         prompt = jimbo.build_classification_prompt(
             jimbo.server_owner,
@@ -706,8 +782,25 @@ class DialogueTests(unittest.TestCase):
             "Network 526: holmium-plate available=0",
         )
 
-        self.assertIn("available stock, never a recipe shortfall", prompt)
-        self.assertIn("the full required quantity is still needed", prompt)
+        self.assertIn("available stock in player logistic networks", prompt)
+        self.assertIn("never a recipe shortfall", prompt)
+        self.assertIn("Report ONLY counts that literally appear", prompt)
+
+    def test_logistic_reply_forbids_inventing_counts_when_none_found(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo how many iron plates exist on Nauvis?",
+            "(none)",
+            "RCON: logistic availability",
+            "No player logistic networks found",
+        )
+
+        self.assertIn(
+            "never reuse or extrapolate a number", prompt
+        )
+        self.assertIn(
+            "say plainly that there are none to count", prompt
+        )
 
     def test_research_context_is_attached_only_when_reply_uses_it(self):
         snapshot = "Current: mining-productivity-2\nProgress: 43.00%"
@@ -2322,6 +2415,186 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("rollback incomplete", phase2)
         self.assertEqual(
             result, "ERROR: request filter failed; rollback incomplete: 1"
+        )
+
+
+class LookupTests(unittest.TestCase):
+    def test_lookup_decision_parses_classes_and_question(self):
+        decision = jimbo.parse_lookup_decision(
+            "LOOKUP|LuaSpacePlatform, LuaLogisticSection|which platforms "
+            "request gleba science"
+        )
+        self.assertEqual(
+            decision,
+            (
+                ["LuaSpacePlatform", "LuaLogisticSection"],
+                "which platforms request gleba science",
+            ),
+        )
+
+    def test_lookup_decision_rejects_malformed_input(self):
+        self.assertIsNone(jimbo.parse_lookup_decision("NONE"))
+        self.assertIsNone(jimbo.parse_lookup_decision("LOOKUP|LuaSurface|"))
+        self.assertIsNone(jimbo.parse_lookup_decision("LOOKUP||question"))
+        self.assertIsNone(jimbo.parse_lookup_decision("LOOKUP|bad name!|q"))
+        self.assertIsNone(jimbo.parse_lookup_decision("LOOKUP|a,b,c,d,e|q"))
+        long_question = "x" * (jimbo.lookup_question_max_chars + 1)
+        self.assertIsNone(
+            jimbo.parse_lookup_decision(f"LOOKUP|LuaSurface|{long_question}")
+        )
+
+    def test_extract_api_slices_formats_members_and_skips_unknowns(self):
+        doc = {
+            "classes": [
+                {
+                    "name": "LuaThing",
+                    "description": "A test thing.",
+                    "attributes": [
+                        {
+                            "name": "valid",
+                            "type": ["boolean"],
+                            "description": "Is valid.",
+                        }
+                    ],
+                    "methods": [
+                        {
+                            "name": "do_thing",
+                            "parameters": [{"name": "target", "optional": True}],
+                            "return_values": [{"type": ["string"]}],
+                            "description": "Does a thing.",
+                        }
+                    ],
+                }
+            ],
+            "concepts": [],
+        }
+        text = jimbo.extract_api_slices(doc, ["LuaThing", "LuaMissing"])
+        self.assertIn("## LuaThing", text)
+        self.assertIn("- valid :: boolean — Is valid.", text)
+        self.assertIn("- do_thing(target?) -> string — Does a thing.", text)
+        self.assertNotIn("LuaMissing", text)
+
+    def test_extract_api_slices_respects_budget_with_truncation_marker(self):
+        doc = {
+            "classes": [
+                {
+                    "name": f"LuaBig{i}",
+                    "methods": [
+                        {"name": f"m{j}", "description": "x" * 60}
+                        for j in range(50)
+                    ],
+                }
+                for i in range(4)
+            ]
+        }
+        with patch.object(jimbo, "lookup_slice_max_chars", 800):
+            text = jimbo.extract_api_slices(
+                doc, [f"LuaBig{i}" for i in range(4)]
+            )
+        self.assertLessEqual(len(text), 830)
+        self.assertIn("[truncated]", text)
+
+    def test_forbidden_lua_reason_blocks_bypasses_and_destruction(self):
+        self.assertEqual(
+            jimbo.forbidden_lua_reason("/silent-command game.player.insert{}"),
+            "item grants",
+        )
+        self.assertEqual(
+            jimbo.forbidden_lua_reason("/silent-command p.teleport{x=1}"),
+            "teleporting players",
+        )
+        self.assertEqual(
+            jimbo.forbidden_lua_reason("/silent-command e.destroy()"),
+            "destructive changes",
+        )
+        self.assertEqual(
+            jimbo.forbidden_lua_reason(
+                '/silent-command s.create_entity{name="iron-chest"}'
+            ),
+            "spawning entities",
+        )
+
+    def test_forbidden_lua_reason_allows_ghosts_and_table_insert(self):
+        self.assertIsNone(
+            jimbo.forbidden_lua_reason(
+                '/silent-command s.create_entity{name="entity-ghost", '
+                'inner_name="iron-chest"}'
+            )
+        )
+        self.assertIsNone(
+            jimbo.forbidden_lua_reason(
+                "/silent-command table.insert(out, e.name)"
+            )
+        )
+        self.assertIsNone(
+            jimbo.forbidden_lua_reason(
+                "/silent-command rcon.print(#s.find_entities_filtered{})"
+            )
+        )
+
+    def test_compose_lookup_command_strips_fences_takes_first_line(self):
+        with patch.object(
+            jimbo,
+            "ask_ai",
+            return_value="```lua\n/silent-command rcon.print(1)\n```",
+        ) as ask:
+            command = jimbo.compose_lookup_command("count chests", "SLICES")
+        ask.assert_called_once()
+        prompt = ask.call_args.args[0]
+        self.assertIn('"count chests"', prompt)
+        self.assertIn("SLICES", prompt)
+        self.assertIn("Read-only inspection", prompt)
+        self.assertIn("scope line", prompt)
+        self.assertIn("EXCLUDED", prompt)
+        self.assertEqual(command, "/silent-command rcon.print(1)")
+
+    def test_build_lookup_prompt_includes_essentials_when_present(self):
+        with patch.object(jimbo, "lua_essentials_text", "SENTINEL SHEET"):
+            prompt = jimbo.build_lookup_prompt("q", "SLICE TEXT")
+        self.assertIn("SENTINEL SHEET", prompt)
+        self.assertIn("SLICE TEXT", prompt)
+
+    def test_reply_prompt_adds_scripted_lookup_hint(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner,
+            "Jimbo where are the iron plates going",
+            "(none)",
+            "RCON: scripted lookup",
+            "42 plates in flight",
+        )
+        self.assertIn("scripted live query", prompt)
+        self.assertIn("never add 'exactly' or 'all'", prompt)
+
+    def test_classifier_prompt_guides_lookup_and_ghost_placement(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo where are my iron plates going",
+            "(none)",
+        )
+        self.assertIn("LOOKUP|class-a,class-b|question", prompt)
+        self.assertIn("ordinary convenience", prompt)
+        self.assertIn("never as cheating", prompt)
+
+    def test_classifier_routes_container_item_counts_to_lookup(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner,
+            "Jimbo how many iron plates exist on Nauvis?",
+            "(none)",
+        )
+
+        self.assertIn(
+            "asks to COUNT an item's quantity stored physically", prompt
+        )
+        self.assertIn(
+            "grand total of an item that exists, use LOOKUP", prompt
+        )
+        self.assertIn(
+            "how many iron-plate items are stored in chests on nauvis", prompt
+        )
+        self.assertIn(
+            "what is available, on hand, or in stock in the player's "
+            "LOGISTIC NETWORK",
+            prompt,
         )
 
 

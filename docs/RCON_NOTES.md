@@ -160,6 +160,15 @@ learnings here as briefly as possible.
   `item-move`/`inventory_move_sound`. For logistic-robot the move and drop fields
   both point to `robotic-inventory-move.ogg`; it has no `open_sound`, so
   `item-open/logistic-robot` silently fell back to a wrong sound.
+- On each fresh map session Factorio holds the first Lua console command behind
+  the achievements warning ("Please repeat the command to proceed"); it is
+  silently dropped. The warning appears only in `server-console.log` while the
+  RCON response stays empty, so callers cannot detect it from the response.
+  Resending the **identical** command text executes it. Jimbo therefore primes
+  the console at startup with a doubled no-op silent-command
+  (`prime_lua_console` / `lua_console_prime_command` in `jimbo.py`) before any
+  real chat; without this, Jimbo's first line after every server restart was
+  lost while `jimbo_says.log` still recorded it as delivered.
 - `game.print`/`force.print` output is NOT written to `server-console.log`
   (verified: `/c game.print(false)` logged only the `[COMMAND]` line, not the
   output). Jimbo therefore records every delivered chat line to the gitignored

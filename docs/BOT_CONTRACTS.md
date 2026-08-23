@@ -13,7 +13,8 @@ and RCON queries/actions plus chat output. Parse chat as
 `[LEAVE]`. Ignore messages starting `Jimbo says ` to avoid bot echoes.
 
 For a new chat line, classify into `SKIP`, `NONE`, `PLATFORMS`, `PLANETS`,
-structured `LOGISTICS`, structured `PRODUCE`, or a slash command; gather the
+structured `LOGISTICS`, structured `PRODUCE`, structured `LOOKUP`, or a slash
+command; gather the
 required RCON facts or execute the selected action; compose a short reply; and
 send every reply line separately with the `Jimbo says ` prefix. The classifier
 defaults to `SKIP` unless the current message contains `Jimbo`, so player chat
@@ -46,6 +47,24 @@ friendly and offers legitimate alternatives (map tags, logistics, research or
 recipe answers, translations). This is intentionally not an absolute filter and
 has no Python-side enforcement: players who talk their way around it are
 tolerated, and Jimbo never announces or lectures about the policy.
+
+Placing entity ghosts or delivering blueprints is explicitly outside this line:
+players can already place arbitrary blueprints by hand and construction robots
+still require real materials, so placement is ordinary convenience. It is never
+declined as cheating, and expanding placement capability is a desired direction
+(see `docs/FUTURE_DIRECTIONS.md`).
+
+## Scripted Lookup
+
+A structured `LOOKUP|class-a,class-b|question` decision answers novel
+live-server questions through one composed read-only `/silent-command`. Python
+extracts the named class/concept slices from the version-exact
+`doc-html/runtime-api.json` under a character budget, gives the model those
+slices plus the Lua essentials block to compose one command
+(`compose_lookup_command`), rejects grant/teleport/destructive/non-ghost
+create patterns via `forbidden_lua_reason`, executes once without replay, and
+the reply reports exactly what the server printed — never invented values.
+Declines stay light and in character per Cheating Resistance.
 
 ## Shared Dialogue and Spontaneous Comments
 
