@@ -228,3 +228,26 @@ listed as announcements.
 - I can clean up now too: ask me to remove or demolish things and I'll
   delete ghosts outright while marking real structures for your
   construction bots to dismantle — and I'll keep those reports short.
+- I learned a new way to build: ask me for a belt-fed production cell
+  and I'll place the machine between two flowing belt lanes with no
+  logistics chests — and you can pick its facing direction and lane
+  count. Smelting requests like iron or copper plates work now too,
+  though I'll tell you when the furnace recipe needs setting by hand.
+
+## 2026-08-24
+
+- I learned a new way to build: ask me for a belt-fed production cell
+  and I'll place the machine between two flowing belt lanes with no
+  logistics chests — you can pick its facing direction and lane count.
+  Everything is just ghosts, so you can build it by hand before you
+  have construction bots. Smelting cells like iron or copper plates
+  work too; furnaces simply smelt whatever ore you feed them.
+- I learned a new way to build: ask me for a belt-fed production cell
+  and I'll place the machine between two flowing belt lanes with no
+  logistics chests — you can pick its facing direction and lane count.
+  Everything is just ghosts, so you can build it by hand before you
+  have construction bots. Smelting cells like iron or copper plates
+  work too; furnaces simply smelt whatever ore you feed them. I can
+  also design a custom one-off layout when no standard shape fits —
+  that runs in the background and I'll report back here when it's
+  placed. Ask me "Jimbo, what are you building?" to check on it.

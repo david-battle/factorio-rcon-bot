@@ -54,6 +54,18 @@ still require real materials, so placement is ordinary convenience. It is never
 declined as cheating, and expanding placement capability is a desired direction
 (see `docs/FUTURE_DIRECTIONS.md`).
 
+Free-form creative ghost composition is an intended, permanently preserved
+capability (owner directive, 2026-08-24): through the ordinary executable
+slash-command decision the model may compose any `/silent-command` that
+creates entity-ghosts of any type — belt art, names, pixel drawings,
+decorative or playful layouts. This path carries no Python-side bounding,
+filtering, or size limits, and none may be added. Judgment about scale and
+UPS belongs to the model's own reasoning, which already handles it well: on
+2026-08-24 it spelled "Jimbo" in 85 ghost belts on request, and grounded a
+refusal of a 100k-word belt novel in performance cost while offering smaller
+alternatives. The scripted LOOKUP path stays read-only by its own contract;
+creative creation flows through general commands instead.
+
 ## Scripted Lookup
 
 A structured `LOOKUP|class-a,class-b|question` decision answers novel
@@ -116,12 +128,129 @@ only code. Every changed summary must be recorded verbatim in
 
 ## Production Cell Placement
 
-Place a compact crafting cell (building, requester chest, provider chest, two
-inserters, and either a new or existing power supply) at a verified location so
-construction bots can build it. The model specifies what to make; local code
-handles geometry, preflight, placement, and verification. Compatible crafting
-machines and their dimensions are resolved from live Factorio 2.1 prototypes
-rather than a hardcoded recipe-category table.
+Place a compact crafting cell at a verified location so construction bots can
+build it. The model specifies what to make (and optionally how, via knobs);
+local code owns all geometry: cell shapes live as Python entity-offset tables
+(`_build_standard_variant`, `_build_aquilo_compact_variant`,
+`_build_belt_fed_variant`) that are instantiated per live machine footprint,
+validated, serialized to Lua table literals, and stamped as ghosts.
+Compatible crafting machines and their dimensions are resolved from live
+Factorio 2.1 prototypes by a read-only candidate probe rather than a
+hardcoded recipe-category table.
+
+### Layouts
+
+`standard` — the chest cell: building, requester chest west of the input
+inserter, provider chest east of the output inserter, two west-facing
+inserters, power pole below the building center. This is the default.
+
+`aquilo-compact` — heated ring with no new pole, tried first on Aquilo before
+the requested layout. Not classifier-selectable.
+
+`belt-fed` — machine between two parallel east-flowing belt lanes, no chests:
+
+```
+      >>>>>>>>>>>>>  output lane(s)
+           [out]     regular inserter, drops north onto lane
+        [building]
+           [ in]     long-handed inserter, picks input lane behind it
+      [pole][walkway]
+      >>>>>>>>>>>>>  input lane(s), 2 rows south of machine edge
+```
+
+Geometry is derived from measured reaches (regular pickup 1.00 / drop 1.20;
+long-handed pickup 2.00 / drop 2.20): the output lane sits one gap row from
+the machine so a regular inserter bridges it; the input lane sits past a
+walkway row so only the long-handed pickup reaches it. Both inserters face
+the output side. A medium pole stands in the walkway beside the input
+inserter and powers the building; the standard extension-pole search applies.
+Lanes extend `belt_lane_extension_tiles` (2) tiles beyond the machine on both
+ends; 1x1 entities always sit on half-tile centers (`floor(w/2)+0.5` columns).
+
+Rotation is implemented by rotating every offset around the machine footprint
+(`_rotate_variant`); directions rotate east→south→west→north per 90° step and
+the bounding box swaps width/height on quarter turns.
+
+### Classifier knobs
+
+An optional fifth PRODUCE field carries comma-separated `key=value` knobs the
+model may choose within these ranges; anything outside them is rejected
+before any RCON call:
+
+| Key | Values | Default | Applies to |
+|---|---|---|---|
+| `layout` | `standard`, `belt-fed`, `custom` | `standard` | all surfaces |
+| `rotation` | `east`, `south`, `west`, `north` | `east` | belt-fed |
+| `lanes` | `1`, `2` | `1` | belt-fed |
+| `tier` | `fastest`, `smallest` | `fastest` | candidate sort |
+
+The model never supplies coordinates or geometry — only these enumerated
+knobs. Omitting the field preserves the historical chest-cell behavior
+exactly. Machine tier remains an ordering preference over live-compatible
+candidates; technology awareness stays deferred (FIX_PLAN item 6). On Aquilo
+the compact variant is always evaluated first regardless of knobs.
+
+`layout=custom` is reserved for the worker subprocess: the classifier emits it
+only when the player explicitly asks for a custom or one-off layout. In that
+case Python does not place a cell immediately; instead it opens an async custom
+design job (see Custom-cell worker below).
+
+### Furnace recipe limitation
+
+Furnace ghosts cannot carry a preset recipe (creation `recipe=` is silently
+dropped and `set_recipe` raises), but this costs nothing in play: Factorio
+furnaces have no player-set recipe and automatically smelt whatever ore is
+inserted. A belt-fed furnace cell is therefore fully functional once built
+and prints no warning. Only the chest layout is affected: with no recipe to
+copy, the requester chest gets no filters, so placement records "furnace has
+no recipe; requester chest filters need setting by hand". Reply composition
+never tells players to configure a furnace recipe.
+
+### Reply honesty
+
+Reply composition must describe only the layout and parts named in the RCON
+response, exactly as named: no invented belt arrangements, chest types, or
+orientations, and no claims of success beyond the response text.
+
+### Custom-cell worker (async)
+
+`layout=custom` and the "no suitable pre-planned location" fallback start an
+asynchronous design job instead of placing a cell inline. The player hears a
+`PENDING:` acknowledgement immediately and a follow-up announcement when the
+job finishes (placed or failed). This is FIX_PLAN item 3 Step 2.
+
+Contract:
+
+- The worker subprocess has NO RCON connection. The parent surveys the site
+  read-only before forking (compatible machines, pole reach, recipe
+  ingredients, nearby entities, water and cliff samples, origin), then the
+  worker proposes entity-offset tables that Python validates deterministically.
+  The worker never touches the live server.
+- Jobs persist under `produce_jobs/<id>/` (`job.json`, `status.json`,
+  `result.json`, `worker.log`), gitignored, so a restart can reap dead workers
+  and still report unfinished work.
+- Budgets: one hour wall-clock and a 15-iteration runaway cap. One worker per
+  key (surface + item + rounded GPS chunk) at a time; duplicates are answered
+  with a `PENDING:` "already underway" line.
+- The worker returns a JSON object in the same variant schema Step 1 stamps
+  (`layout=custom`, `plans` as `n/x/y/d/r` offsets, `area`, `pole`, `req`).
+  Coordinates are offsets relative to the machine's TOP-left corner; positive
+  x east, positive y south; every entity center on a half-tile; inserters pick
+  up behind and drop ahead along their facing. Reaches honored exactly: regular
+  inserter pickup 1.00 / drop 1.20, long-handed 2.00 / 2.20.
+- Python re-validates deterministically (overlap, area containment and size,
+  connected belt lanes of ≥2 tiles, inserter source/destination reach, pole
+  coverage within Chebyshev supply radius, building count = 1, pole/req flag
+  consistency), then normalizes so the building sits at its own center, and
+  stamps through the existing Phase 2 mutation path.
+- On success the parent reports the outcome truthfully (SUCCESS with any
+  WARNING verbatim, or ERROR with the reason). On PENDING replies it confirms
+  the background work started and does NOT claim any cell was placed.
+- `JOBSTATUS` (e.g. "Jimbo, what are you building?") reports running designs
+  with age and requester, finished-but-unreported work, or that nothing is in
+  progress — always literal to the stored job state.
+- Reply honesty applies fully to both the PENDING acknowledgement and the
+  completion report.
 
 ## Architecture
 
@@ -155,12 +284,15 @@ only and never relaxes mutation verification or appears in player chat.
 
 ## Current Implementation Status
 
-Steps 1 through 5 are implemented for an item-only recipe. The current code:
+Steps 1 through 5 are implemented for an item-only recipe, now driven by the
+Python layout-variant tables described above. The current code:
 
-- classifies requests into `PRODUCE|surface|item|location`, distinguishing an
+- classifies requests into `PRODUCE|surface|item|location|optional-knobs`,
+  distinguishing an
   explicit GPS ping, current remote view, physical character position,
   normalized direction with an optional explicit view or standing origin, and
-  an omitted location;
+  an omitted location, plus enumerated build knobs (layout, rotation, lanes,
+  tier) validated before any RCON call;
 - resolves `current` to the connected player's viewed or physical surface,
   searches from the requested origin, and falls back to the requested surface's
   actual force spawn when an omitted location has no matching online view;
@@ -193,11 +325,14 @@ Steps 1 through 5 are implemented for an item-only recipe. The current code:
   with explicit support warnings if the bounded search finds no fully supported
   candidate;
 - repeats every structural and support preflight immediately before mutation;
-- creates the selected five- or six-ghost layout plus any extension poles
+- creates the selected layout's ghosts from the instantiated offset table
+  plus any extension poles
   without mutation retry,
   copies the machine recipe settings to the requester chest through the
-  requesting player, verifies every ingredient request, the assigned recipe,
-  and construction registration, and destroys and checks all newly created
+  requesting player when the layout has one and a recipe could be attached,
+  verifies every ingredient request, the assigned recipe (recording an
+  inherent warning for furnaces, which cannot carry preset recipes), and
+  construction registration, and destroys and checks all newly created
   ghosts if the mutation fails.
 
 The following details are deliberately not implemented yet:
@@ -210,7 +345,9 @@ The following details are deliberately not implemented yet:
 
 ## Cell Layout
 
-The building's bottom-left tile is the anchor `(x, y)`. All other positions
+These coordinate tables specify `standard` and `aquilo-compact`; `belt-fed`
+is specified in Layouts above. The building's bottom-left tile is the anchor
+`(x, y)`. All other positions
 are relative to the building's dimensions `(w, h)` queried at runtime from
 the compatible crafting-machine prototypes selected from every category in
 `prototypes.recipe[item-name].categories`.
@@ -599,6 +736,7 @@ restart because mods or game updates may change the prototypes.
 |---|---|
 | Surface does not exist | Return error; no mutation |
 | Recipe not found, locked, or invalid for the surface | Return error; no mutation |
+| Selected machine is a furnace (no preset recipe possible) | Belt-fed places silently; chest layout places with the "requester chest filters need setting by hand" warning |
 | Recipe has a fluid ingredient or product | Return unsupported error; no mutation |
 | Aquilo candidate lacks ≥30°C heat adjacency for a freezable component | Keep searching; if no fully supported site exists, place the structural fallback and warn |
 | Retained heat source overlaps an exact planned component | Reject the candidate; no mutation |
@@ -625,21 +763,28 @@ restart because mods or game updates may change the prototypes.
 The deterministic `ProduceCellTests` in `test_jimbo.py` cover:
 
 - classifier instructions, origin-qualified direction parsing and rejection,
-  backward-compatible view-relative directions, three-field dispatch with the
-  requesting player, and grounded reply guidance;
+  backward-compatible view-relative directions, knob parsing and rejection,
+  knob-aware dispatch with the requesting player, and grounded reply guidance;
+- belt-fed geometry (lane rows, long-handed input reach, pole placement),
+  even-width column alignment, lane-count and rotation transforms,
+  aquilo-compact table shape, variant ordering, and plan summaries;
 - strict GPS validation, surface matching, flooring, required-player behavior,
   malformed Phase 1 responses, remote-view versus physical-position origins,
   resolved-current-surface transfer, spawn fallback, direction filtering, and
   the radius/candidate bounds;
-- live category-based machine resolution, dimensions, half-tile geometry,
-  inserter directions, fluid/surface-condition rejection, Aquilo heat checks and
-  source-overlap handling, power, logistics, construction coverage, strict-site
-  preference, warning fallback, and both-phase placement checks;
+- the read-only candidate probe (error passthrough, empty list, dimension
+  parsing) and live-category machine resolution, dimensions, half-tile
+  geometry, inserter directions, fluid/surface-condition rejection, Aquilo
+  heat checks and source-overlap handling, power, logistics, construction
+  coverage, strict-site preference, warning fallback, tier-sorted candidates,
+  and both-phase placement checks;
 - bounded extension search, strict serialized-chain validation, Phase 2
   extension rechecks, and extension ghost creation;
-- creation of all base and extension ghosts, recipe and requester-filter
-  verification, construction registration, occupancy-race rejection, reverse
-  rollback with survivor reporting, and disabled mutation retry.
+- creation of all layout ghosts from offset tables, belt-fed placements that
+  omit requester settings entirely, recipe and requester-filter verification,
+  the furnace inherent-warning branch, construction registration,
+  occupancy-race rejection, reverse rollback with survivor reporting, and
+  disabled mutation retry.
 
 ## Rollback
 

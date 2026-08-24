@@ -342,6 +342,24 @@ learnings here as briefly as possible.
   `LuaInventory.get_item_count(name)` rejects the name argument on 2.1.14
   ("Expected 0 or 1 arguments but 2 were given"); sum
   `inv.get_contents()` entries (`name`/`count`) instead.
+- On 2.1.14, `defines.direction` prints eight directions at even steps:
+  north=0, north-east=2, east=4, south-east=6, south=8, south-west=10,
+  west=12, north-west=14. Belt and inserter `direction` reads use these
+  values (cardinals are multiples of 4), so never assume the documented
+  0-7 encoding when comparing raw numbers.
+- Inserter reach measured live on 2.1.14 via `LuaEntity.pickup_position` /
+  `drop_position`: regular inserters pick up 1.00 tiles from center and drop
+  at 1.20; long-handed pick up at 2.00 and drop at 2.20. `inserter_arm_length`
+  is not exposed on prototypes (raises).
+- Creating an `entity-ghost` of a furnace accepts a `recipe=` argument but
+  silently drops it (`get_recipe()` returns nil); `set_recipe` raises
+  "Entity is not assembling-machine". Furnace ghosts therefore cannot carry
+  a preset recipe.
+- `LuaEntity.cancel_deconstruction` returns nil, not a success flag; confirm
+  cancellation by re-scanning `to_be_deconstructed()`.
+- `create_entity` snaps positions that are not valid entity centers to a
+  nearby valid position rather than failing: a 1x1 ghost asked for x=261
+  (integer) landed at x=261.5. Give 1x1 entities half-tile centers.
 
 ### "Who Is Requesting Item X?" — Working Recipe (2.1.14)
 
@@ -381,9 +399,11 @@ than copying the Lua here.
   through roboports and dedupes them by `network_id`, links silos with
   `find_logistic_network_by_position()`, and sums `max(0,count)` per item across
   `LuaLogisticNetwork.get_contents()`.
-- Production cells: `place_production_cell` runs a read-only Phase 1 bounded
-  search, then a Phase 2 preflight+mutation+verify command; the mutation uses
-  `retry=False` and is never replayed after an RCON disconnect.
+- Production cells: `place_production_cell` runs a read-only candidate probe
+  (compatible machines and tile dimensions), a read-only Phase 1 bounded
+  search over Python-built layout variant tables, then a Phase 2
+  preflight+mutation+verify command; the mutation uses `retry=False` and is
+  never replayed after an RCON disconnect.
 - Research: `get_research_snapshot` reads `game.forces.player.current_research`,
   `research_progress`, and `research_queue`.
 - Alerts: `get_alerts_snapshot` groups `game.forces.player.alerts` by
@@ -441,3 +461,19 @@ than copying the Lua here.
 - Rockets: `rocket`, `explosive-rocket`, `atomic-bomb`.
 - Always enumerate `prototypes.item` for a complete list rather than trusting
   this list.
+
+## Custom-cell worker (Step 2) Lua learnings (2.1.14)
+
+- Entity footprint `w x h` for offset tables comes from
+  `prototypes.entity[name].tile_width` / `.tile_height`. The building's own
+  offset (its center relative to the machine's top-left) is `w/2, h/2`.
+- Survey commands use `find_entities_filtered{area={...}}` (area boxes are
+  `{{x1,y1},{x2,y2}}`), `get_tile(x,y).name:find('water')` for water samples,
+  and `find_entities_filtered{type='cliff'}` for cliffs.
+- Medium pole reach reads `prototypes.entity['medium-electric-pole']
+  .get_supply_area_distance('normal')` and `.get_max_wire_distance('normal')`.
+- Recipe ingredients enumerate `prototypes.recipe[name].ingredients` with
+  `ingredient.amount` and `ingredient.name` (same pattern as elsewhere).
+- The worker subprocess itself never talks RCON; it only reads the JSON facts
+  the parent gathered. All 2.1.14 prototypes are already captured via the
+  parent's read-only survey commands above.

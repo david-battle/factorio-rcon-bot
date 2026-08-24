@@ -1531,18 +1531,43 @@ class HydrationTests(unittest.TestCase):
 
 
 class ProduceCellTests(unittest.TestCase):
+    def candidates_response(self, extra=""):
+        return f"CANDIDATES:assembling-machine-3:3:3{extra}"
+
+    def produce_client(self, phase1_response, phase2_response=None):
+        client = Mock()
+        effects = [self.candidates_response(), phase1_response]
+        if phase2_response is not None:
+            effects.append(phase2_response)
+        client.run.side_effect = effects
+        return client
+
     def test_parse_produce_decision_valid(self):
         result = jimbo.parse_produce_decision(
             "PRODUCE|nauvis|processing-unit|"
         )
-        self.assertEqual(result, ("nauvis", "processing-unit", ""))
+        self.assertEqual(
+            result,
+            (
+                "nauvis",
+                "processing-unit",
+                "",
+                jimbo.default_production_cell_knobs(),
+            ),
+        )
 
     def test_parse_produce_decision_with_gps(self):
         result = jimbo.parse_produce_decision(
             "PRODUCE|fulgora|holmium-plate|[gps=10,20,fulgora]"
         )
         self.assertEqual(
-            result, ("fulgora", "holmium-plate", "[gps=10,20,fulgora]")
+            result,
+            (
+                "fulgora",
+                "holmium-plate",
+                "[gps=10,20,fulgora]",
+                jimbo.default_production_cell_knobs(),
+            ),
         )
 
     def test_parse_produce_decision_with_normalized_direction(self):
@@ -1552,7 +1577,12 @@ class ProduceCellTests(unittest.TestCase):
                     jimbo.parse_produce_decision(
                         f"PRODUCE|nauvis|iron-plate|{direction}"
                     ),
-                    ("nauvis", "iron-plate", direction),
+                    (
+                        "nauvis",
+                        "iron-plate",
+                        direction,
+                        jimbo.default_production_cell_knobs(),
+                    ),
                 )
 
     def test_parse_produce_decision_distinguishes_view_and_standing(self):
@@ -1560,13 +1590,23 @@ class ProduceCellTests(unittest.TestCase):
             jimbo.parse_produce_decision(
                 "PRODUCE|current|iron-plate|view"
             ),
-            ("current", "iron-plate", "view"),
+            (
+                "current",
+                "iron-plate",
+                "view",
+                jimbo.default_production_cell_knobs(),
+            ),
         )
         self.assertEqual(
             jimbo.parse_produce_decision(
                 "PRODUCE|current|iron-plate|standing"
             ),
-            ("current", "iron-plate", "standing"),
+            (
+                "current",
+                "iron-plate",
+                "standing",
+                jimbo.default_production_cell_knobs(),
+            ),
         )
 
     def test_parse_produce_decision_preserves_direction_origin(self):
@@ -1578,8 +1618,47 @@ class ProduceCellTests(unittest.TestCase):
                         jimbo.parse_produce_decision(
                             f"PRODUCE|current|iron-plate|{hint}"
                         ),
-                        ("current", "iron-plate", hint),
+                        (
+                            "current",
+                            "iron-plate",
+                            hint,
+                            jimbo.default_production_cell_knobs(),
+                        ),
                     )
+
+    def test_parse_produce_decision_knobs_field(self):
+        surface, item, hint, knobs = jimbo.parse_produce_decision(
+            "PRODUCE|current|iron-gear-wheel|standing:north|"
+            "layout=belt-fed,rotation=west,lanes=2,tier=smallest"
+        )
+        self.assertEqual((surface, item, hint), ("current", "iron-gear-wheel", "standing:north"))
+        self.assertEqual(
+            knobs,
+            {
+                "layout": "belt-fed",
+                "rotation": "west",
+                "lanes": 2,
+                "tier": "smallest",
+            },
+        )
+
+    def test_parse_produce_decision_rejects_bad_knobs(self):
+        for field in (
+            "layout=mystery",
+            "rotation=north-west",
+            "lanes=3",
+            "tier=cheapest",
+            "color=red",
+            "layout=belt-fed,layout=standard",
+            "layout",
+            "layout=",
+        ):
+            with self.subTest(field=field):
+                self.assertIsNone(
+                    jimbo.parse_produce_decision(
+                        f"PRODUCE|nauvis|iron-plate||{field}"
+                    )
+                )
 
     def test_parse_produce_decision_rejects_unstructured_location(self):
         for hint in (
@@ -1618,7 +1697,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_parse_produce_decision_invalid_surface(self):
         self.assertIsNone(jimbo.parse_produce_decision("PRODUCE|Nauvis|iron-plate|"))
 
-    def test_parse_remove_decision_valid_forms(self):
+    def test_remove_decision_valid_forms(self):
         self.assertEqual(
             jimbo.parse_remove_decision("REMOVE|nauvis|entity-ghost|[gps=6,-39]"),
             ("nauvis", "entity-ghost", "[gps=6,-39]"),
@@ -1660,6 +1739,20 @@ class ProduceCellTests(unittest.TestCase):
             result = jimbo.classify_current_message(
                 "Koopix",
                 "Jimbo delete the ghosts you placed there",
+                "(none)",
+            )
+
+        self.assertEqual(result, decision)
+        ask_ai.assert_called_once()
+
+    def test_recognized_classification_accepts_produce_knobs_without_retry(self):
+        decision = (
+            "PRODUCE|current|iron-gear-wheel|standing:north|layout=belt-fed"
+        )
+        with patch.object(jimbo, "ask_ai", return_value=decision) as ask_ai:
+            result = jimbo.classify_current_message(
+                "dlbattle",
+                "Jimbo put a belt-fed iron gear cell north of me",
                 "(none)",
             )
 
@@ -1752,10 +1845,11 @@ class ProduceCellTests(unittest.TestCase):
         )
         self.assertEqual(result, "ERROR: empty response")
 
-    def test_dispatch_production_cell_passes_only_placement_fields_and_player(self):
+    def test_dispatch_production_cell_passes_fields_knobs_and_player(self):
         client = Mock()
         request = jimbo.parse_produce_decision(
-            "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis]"
+            "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis]|"
+            "layout=belt-fed,lanes=1"
         )
         with patch.object(
             jimbo, "place_production_cell", return_value="SUCCESS: placed"
@@ -1769,30 +1863,62 @@ class ProduceCellTests(unittest.TestCase):
             "electronic-circuit",
             "[gps=-622,51,nauvis]",
             requesting_player="Alice",
+            knobs={
+                "layout": "belt-fed",
+                "rotation": "east",
+                "lanes": 1,
+                "tier": "fastest",
+            },
         )
 
     def test_place_cell_full_success(self):
-        client = Mock()
-        client.run.side_effect = [
+        client = self.produce_client(
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: [gps=10,20,nauvis] 3x3 processing-unit cell placed",
-        ]
+        )
 
         result = jimbo.place_production_cell(
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn("nauvis", phase1)
         self.assertIn("processing-unit", phase1)
-        self.assertIn("ax=10", phase1)
-        self.assertIn("ay=20", phase1)
+        self.assertIn("explicit_ax=10", phase1)
+        self.assertIn("explicit_ay=20", phase1)
+        probe = client.run.call_args_list[0].args[0]
+        self.assertTrue(probe.startswith("/silent-command "))
+        self.assertIn('"processing-unit"', probe)
+        self.assertIn("tile_width..':'..e.tile_height", probe)
         self.assertIn("SUCCESS", result)
         self.assertIn("[gps=10,20,nauvis]", result)
+
+    def test_place_cell_probe_error_short_circuits_before_search(self):
+        client = Mock()
+        client.run.return_value = "ERROR: Recipe not found"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
+        )
+
+        self.assertEqual(result, "ERROR: Recipe not found")
+        self.assertEqual(client.run.call_count, 1)
+
+    def test_place_cell_probe_reports_no_compatible_machine(self):
+        client = Mock()
+        client.run.return_value = "CANDIDATES:"
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "", "dlbattle"
+        )
+
+        self.assertEqual(result, "ERROR: No compatible crafting machine")
+        self.assertEqual(client.run.call_count, 1)
 
     def test_place_cell_looks_up_entity_dimensions(self):
         client = Mock()
         client.run.side_effect = [
+            "CANDIDATES:em-plasity-building:5:5",
             "ANCHOR:10,20,5,5,em-plasity-building",
             "SUCCESS: [gps=10,20,nauvis] 5x5 processing-unit cell placed",
         ]
@@ -1801,9 +1927,12 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn("e.tile_width", phase1)
         self.assertIn("e.tile_height", phase1)
+        self.assertIn("local w=e.tile_width;local h=e.tile_height", phase1)
+        self.assertIn("local dims=w..'x'..h;", phase1)
+        self.assertIn("local dim_variants=VARIANTS[dims];", phase1)
         self.assertIn("SUCCESS", result)
 
     def test_place_cell_reports_surface_error(self):
@@ -1852,26 +1981,34 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_handles_empty_hint(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: No suitable production-cell location within 128 tiles "
-            "(last: No logistic network coverage)"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            (
+                "ERROR: No suitable production-cell location within 128 tiles "
+                "(last: No logistic network coverage)|TRACE:surface=nauvis "
+                "origin=0.0:0.0 direction=any machines=1 anchors=4 "
+                "structural=0 occupied=0 unplaceable=0 heat=0 logistics=4 "
+                "construction=0 power=0 selected=none:0:0:none"
+            ),
+        ]
         result = jimbo.place_production_cell(
             client, "nauvis", "iron-plate", "", "dlbattle"
         )
 
-        phase1 = client.run.call_args.args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn("request_player.position", phase1)
         self.assertIn("game.forces.player.get_spawn_position(s)", phase1)
         self.assertIn("No suitable production-cell location within", result)
-        client.run.assert_called_once()
+        self.assertNotIn("TRACE", result)
+        self.assertEqual(client.run.call_count, 2)
         self.assertTrue(client.run.call_args.kwargs["retry"])
 
     def test_place_cell_uses_bounded_footprint_aware_location_search(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: No suitable production-cell location within 128 tiles"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: No suitable production-cell location within 128 tiles",
+        ]
 
         jimbo.place_production_cell(
             client, "nauvis", "iron-plate", "", "dlbattle"
@@ -1889,7 +2026,10 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_prefers_full_support_then_uses_structural_fallback(self):
         client = Mock()
-        client.run.return_value = "ERROR: captured"
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: captured",
+        ]
 
         jimbo.place_production_cell(
             client, "aquilo", "iron-gear-wheel", "standing:north", "dlbattle"
@@ -1898,19 +2038,15 @@ class ProduceCellTests(unittest.TestCase):
         phase1 = client.run.call_args.args[0]
         self.assertIn("local fallback_result=nil", phase1)
         self.assertIn("local function anchor_result", phase1)
+        self.assertIn("v.layout~='aquilo-compact'", phase1)
         self.assertIn(
-            "if compact_heated and compact_net and compact_construction "
-            "and compact_power then",
-            phase1,
+            "table.insert(ordered,1,dim_variants[#dim_variants])", phase1
         )
-        self.assertIn("'aquilo-compact','strict'", phase1)
-        self.assertIn("'aquilo-compact','fallback'", phase1)
         self.assertIn(
-            "if heated and net and construction and supplies and connected then",
-            phase1,
+            "if heated and net and construction and powered then", phase1
         )
-        self.assertIn("'standard','strict'", phase1)
-        self.assertIn("'standard','fallback'", phase1)
+        self.assertIn("'strict')) ", phase1)
+        self.assertIn("'fallback') ", phase1)
         self.assertIn("if fallback_result then rcon.print(fallback_result)", phase1)
         self.assertIn("local trace={anchors=0,structural=0", phase1)
         self.assertIn("local function trace_text", phase1)
@@ -1926,6 +2062,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_place_cell_logs_trace_without_exposing_it_to_reply(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             (
                 "ANCHOR:-34,-5,3,3,assembling-machine-3,,aquilo,"
                 "aquilo-compact,fallback|TRACE:surface=aquilo "
@@ -1960,12 +2097,15 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_strips_trace_from_grounded_failure(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: No structurally placeable candidate|TRACE:surface=aquilo "
-            "origin=-29.1:0.0 direction=north machines=3 anchors=768 "
-            "structural=0 occupied=700 unplaceable=68 heat=0 logistics=0 "
-            "construction=0 power=0 selected=none:0:0:none"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            (
+                "ERROR: No structurally placeable candidate|TRACE:surface=aquilo "
+                "origin=-29.1:0.0 direction=north machines=3 anchors=768 "
+                "structural=0 occupied=700 unplaceable=68 heat=0 logistics=0 "
+                "construction=0 power=0 selected=none:0:0:none"
+            ),
+        ]
 
         with patch("builtins.print") as output:
             result = jimbo.place_production_cell(
@@ -1988,16 +2128,19 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_named_direction_requires_online_player_on_surface(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: View-relative location requires the requesting player "
-            "online on nauvis"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            (
+                "ERROR: View-relative location requires the requesting player "
+                "online on nauvis"
+            ),
+        ]
 
         result = jimbo.place_production_cell(
             client, "nauvis", "iron-plate", "north-east", "dlbattle"
         )
 
-        phase1 = client.run.call_args.args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn('local direction="north-east"', phase1)
         self.assertIn('local relative_location="view"', phase1)
         self.assertIn("not request_player.connected", phase1)
@@ -2007,9 +2150,15 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_distinguishes_remote_view_and_physical_position(self):
         view_client = Mock()
-        view_client.run.return_value = "ERROR: blocked"
+        view_client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: blocked",
+        ]
         standing_client = Mock()
-        standing_client.run.return_value = "ERROR: blocked"
+        standing_client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: blocked",
+        ]
 
         jimbo.place_production_cell(
             view_client, "current", "iron-plate", "view", "dlbattle"
@@ -2018,8 +2167,8 @@ class ProduceCellTests(unittest.TestCase):
             standing_client, "current", "iron-plate", "standing", "dlbattle"
         )
 
-        view_phase1 = view_client.run.call_args.args[0]
-        standing_phase1 = standing_client.run.call_args.args[0]
+        view_phase1 = view_client.run.call_args_list[1].args[0]
+        standing_phase1 = standing_client.run.call_args_list[1].args[0]
         self.assertIn(
             "s=request_player.physical_surface else s=request_player.surface",
             view_phase1,
@@ -2030,9 +2179,15 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_direction_uses_selected_view_or_standing_origin(self):
         view_client = Mock()
-        view_client.run.return_value = "ERROR: blocked"
+        view_client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: blocked",
+        ]
         standing_client = Mock()
-        standing_client.run.return_value = "ERROR: blocked"
+        standing_client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: blocked",
+        ]
 
         jimbo.place_production_cell(
             view_client, "current", "iron-plate", "view:north", "dlbattle"
@@ -2041,8 +2196,8 @@ class ProduceCellTests(unittest.TestCase):
             standing_client, "current", "iron-plate", "standing:north", "dlbattle"
         )
 
-        view_phase1 = view_client.run.call_args.args[0]
-        standing_phase1 = standing_client.run.call_args.args[0]
+        view_phase1 = view_client.run.call_args_list[1].args[0]
+        standing_phase1 = standing_client.run.call_args_list[1].args[0]
         self.assertIn('local relative_location="view"', view_phase1)
         self.assertIn('local direction="north"', view_phase1)
         self.assertIn("s=request_player.surface", view_phase1)
@@ -2060,6 +2215,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_place_cell_carries_resolved_current_surface_into_mutation(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3,,fulgora",
             "SUCCESS: placed",
         ]
@@ -2068,7 +2224,7 @@ class ProduceCellTests(unittest.TestCase):
             client, "current", "iron-plate", "view", "dlbattle"
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn('local s=game.surfaces["fulgora"]', phase2)
         self.assertEqual(result, "SUCCESS: placed")
 
@@ -2080,6 +2236,17 @@ class ProduceCellTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "ERROR: Requesting player is required")
+        client.run.assert_not_called()
+
+    def test_place_cell_rejects_unknown_knobs_dict(self):
+        client = Mock()
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-plate", "", "dlbattle",
+            knobs={"layout": "standard"},
+        )
+
+        self.assertEqual(result, "ERROR: Invalid production-cell options")
         client.run.assert_not_called()
 
     def test_place_cell_rejects_invalid_or_mismatched_gps(self):
@@ -2100,18 +2267,24 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_rejects_malformed_location_response(self):
         client = Mock()
-        client.run.return_value = "ANCHOR:bad"
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ANCHOR:bad",
+        ]
 
         result = jimbo.place_production_cell(
             client, "nauvis", "iron-plate", "[gps=10,20,nauvis]", "dlbattle"
         )
 
         self.assertEqual(result, "ERROR: Invalid location response")
-        self.assertEqual(client.run.call_count, 1)
+        self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_rejects_fractional_anchor_response(self):
         client = Mock()
-        client.run.return_value = "ANCHOR:10.5,20,3,3,assembling-machine-3"
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ANCHOR:10.5,20,3,3,assembling-machine-3",
+        ]
 
         result = jimbo.place_production_cell(
             client, "nauvis", "electronic-circuit",
@@ -2119,11 +2292,30 @@ class ProduceCellTests(unittest.TestCase):
         )
 
         self.assertEqual(result, "ERROR: Invalid location response")
-        self.assertEqual(client.run.call_count, 1)
+        self.assertEqual(client.run.call_count, 2)
+
+    def test_place_cell_rejects_unknown_layout_in_response(self):
+        client = Mock()
+        client.run.side_effect = [
+            self.candidates_response(),
+            (
+                "ANCHOR:10,20,3,3,assembling-machine-3,,nauvis,"
+                "mystery,strict"
+            ),
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "electronic-circuit",
+            "[gps=10,20,nauvis]", "dlbattle",
+        )
+
+        self.assertEqual(result, "ERROR: Invalid location response")
+        self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_phase2_creates_all_ghosts(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2132,15 +2324,14 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("entity-ghost", phase2)
-        self.assertIn("requester-chest", phase2)
-        self.assertIn("passive-provider-chest", phase2)
-        self.assertIn("inserter", phase2)
-        self.assertIn("medium-electric-pole", phase2)
-        self.assertEqual(phase2.count("direction=defines.direction.west"), 2)
-        self.assertIn("direction=plans[4].direction", phase2)
-        self.assertIn("direction=plans[5].direction", phase2)
+        self.assertIn('"requester-chest"', phase2)
+        self.assertIn('"passive-provider-chest"', phase2)
+        self.assertIn('"inserter"', phase2)
+        self.assertIn('"medium-electric-pole"', phase2)
+        self.assertEqual(phase2.count('["d"]="west"'), 2)
+        self.assertIn("inner_name=plan.name", phase2)
         self.assertNotIn("defines.direction.right", phase2)
         self.assertNotIn("defines.direction.left", phase2)
         self.assertIn("pcall", phase2)
@@ -2151,6 +2342,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_place_cell_phase2_requester_filters(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2159,15 +2351,21 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("get_logistic_sections", phase2)
-        self.assertIn("copy_settings(b,player)", phase2)
+        self.assertIn("req.copy_settings(b,player)", phase2)
         self.assertIn("filter.value.name==ing.name", phase2)
         self.assertIn("request filter missing for", phase2)
+        self.assertIn(
+            "inherent_issue('furnace has no recipe; requester chest filters "
+            "need setting by hand')",
+            phase2,
+        )
 
     def test_place_cell_phase2_rollback_on_failure(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "ERROR: building failed",
         ]
@@ -2182,6 +2380,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_place_cell_phase2_no_retry_on_mutation(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2190,12 +2389,13 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase2_call = client.run.call_args_list[1]
+        phase2_call = client.run.call_args_list[2]
         self.assertFalse(phase2_call.kwargs.get("retry", False))
 
     def test_place_cell_resolves_compatible_machine_from_live_categories(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2204,7 +2404,7 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn("ipairs(r.categories)", phase1)
         self.assertIn("prototypes.get_entity_filtered", phase1)
         self.assertIn("filter='crafting-category'", phase1)
@@ -2213,9 +2413,33 @@ class ProduceCellTests(unittest.TestCase):
         self.assertNotIn("r.category", phase1)
         self.assertNotIn("r.products[1]", phase1)
 
+    def test_place_cell_tier_knob_changes_candidate_sort(self):
+        client = Mock()
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ANCHOR:10,20,3,3,assembling-machine-3",
+            "SUCCESS: placed",
+        ]
+
+        jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]",
+            "dlbattle",
+            knobs={
+                "layout": "standard",
+                "rotation": "east",
+                "lanes": 1,
+                "tier": "smallest",
+            },
+        )
+
+        phase1 = client.run.call_args_list[1].args[0]
+        self.assertIn('if "smallest"==\'smallest\' then', phase1)
+        self.assertIn("if aa~=ab then return aa<ab end;", phase1)
+
     def test_place_cell_checks_power_supply_radius(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2224,7 +2448,7 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertIn("get_supply_area_distance", phase1)
         self.assertIn("get_max_wire_distance", phase1)
         self.assertIn("pole.quality", phase1)
@@ -2232,16 +2456,17 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_place_cell_searches_a_bounded_extension_pole_chain(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: No live power connection within 2 extension poles"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: No live power connection within 2 extension poles",
+        ]
 
         result = jimbo.place_production_cell(
             client, "nauvis", "electronic-circuit",
             "[gps=10,20,nauvis]", "dlbattle",
         )
 
-        phase1 = client.run.call_args.args[0]
+        phase1 = client.run.call_args_list[1].args[0]
         self.assertEqual(jimbo.production_cell_max_extension_poles, 2)
         self.assertIn("local max_extensions=2", phase1)
         self.assertIn("local search_radius=(max_extensions+1)*new_wire", phase1)
@@ -2255,11 +2480,12 @@ class ProduceCellTests(unittest.TestCase):
         self.assertEqual(
             result, "ERROR: No live power connection within 2 extension poles"
         )
-        self.assertEqual(client.run.call_count, 1)
+        self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_revalidates_and_creates_extension_poles(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             (
                 "ANCHOR:10,20,3,3,assembling-machine-3,"
                 "15.5:19.5;22.5:19.5"
@@ -2272,7 +2498,7 @@ class ProduceCellTests(unittest.TestCase):
             "[gps=10,20,nauvis]", "dlbattle",
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn(
             "local extensions={{15.5,19.5},{22.5,19.5}}", phase2
         )
@@ -2290,7 +2516,7 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("cleanup[#cleanup+1]=extra", phase2)
         self.assertIn("#extensions..' extension medium-electric-pole'", phase2)
         self.assertEqual(result, "SUCCESS: placed with 2 extension poles")
-        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+        self.assertFalse(client.run.call_args_list[2].kwargs.get("retry", False))
 
     def test_place_cell_rejects_invalid_extension_plan_from_phase1(self):
         invalid_plans = (
@@ -2303,9 +2529,13 @@ class ProduceCellTests(unittest.TestCase):
         for plan in invalid_plans:
             with self.subTest(plan=plan):
                 client = Mock()
-                client.run.return_value = (
-                    "ANCHOR:10,20,3,3,assembling-machine-3," + plan
-                )
+                client.run.side_effect = [
+                    self.candidates_response(),
+                    (
+                        "ANCHOR:10,20,3,3,assembling-machine-3,"
+                        + plan
+                    ),
+                ]
 
                 result = jimbo.place_production_cell(
                     client, "nauvis", "electronic-circuit",
@@ -2313,11 +2543,12 @@ class ProduceCellTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result, "ERROR: Invalid location response")
-                self.assertEqual(client.run.call_count, 1)
+                self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_preflights_every_entity_in_both_phases(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
@@ -2326,8 +2557,8 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
-        phase2 = client.run.call_args_list[1].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         for command in (phase1, phase2):
             self.assertIn("s.can_place_entity", command)
             self.assertIn("defines.build_check_type.script_ghost", command)
@@ -2336,10 +2567,11 @@ class ProduceCellTests(unittest.TestCase):
             self.assertIn("passive-provider-chest", command)
             self.assertIn("medium-electric-pole", command)
 
-    def test_place_cell_uses_bottom_left_anchor_geometry(self):
+    def test_place_cell_builds_layouts_from_python_offset_tables(self):
         client = Mock()
         client.run.side_effect = [
-            "ANCHOR:10,20,5,5,electromagnetic-plant",
+            self.candidates_response(),
+            "ANCHOR:10,20,3,3,assembling-machine-3",
             "SUCCESS: placed",
         ]
 
@@ -2347,18 +2579,219 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
-        phase2 = client.run.call_args_list[1].args[0]
-        self.assertIn("local cx=ax+w/2", phase1)
-        self.assertIn("local cy=ay+h/2", phase1)
-        self.assertIn("local row=ay+math.floor(h/2)+0.5", phase1)
-        self.assertIn("position={cx,cy}", phase2)
-        self.assertIn("position={x-1.5,row}", phase2)
-        self.assertIn("position={x+w+1.5,row}", phase2)
-        self.assertIn("position=plans[1].position", phase2)
-        self.assertIn("position=plans[2].position", phase2)
-        self.assertIn("position=plans[3].position", phase2)
-        self.assertIn("pole_pos={x+math.floor(w/2)+0.5,y-0.5}", phase2)
+        phase1 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
+        self.assertIn('local VARIANTS={["3x3"]={', phase1)
+        self.assertIn(
+            "position={ax+off.x,ay+off.y}", phase1
+        )
+        self.assertIn("position={x+off.x,y+off.y}", phase2)
+        self.assertIn("e.tile_width~=w or e.tile_height~=h", phase2)
+        standard = jimbo._build_standard_variant(3, 3)
+        self.assertEqual(standard["plans"][0], {
+            "n": "building", "x": 1.5, "y": 1.5, "d": "", "r": "building",
+        })
+        self.assertEqual(
+            standard["plans"][1],
+            {"n": "requester-chest", "x": -1.5, "y": 1.5, "d": "", "r": "requester"},
+        )
+
+    def test_belt_fed_layout_geometry_east_single_lane(self):
+        variant = jimbo._build_belt_fed_variant(3, 3, 1)
+
+        self.assertEqual(variant["layout"], "belt-fed")
+        self.assertTrue(variant["pole"])
+        self.assertFalse(variant["req"])
+        self.assertEqual(variant["area"], [-2, -2, 5, 6])
+
+        by_name = {}
+        for plan in variant["plans"]:
+            by_name.setdefault(plan["n"], []).append(plan)
+
+        self.assertEqual(by_name["building"][0]["x"], 1.5)
+        self.assertEqual(by_name["building"][0]["y"], 1.5)
+
+        output_inserter = by_name["inserter"][0]
+        self.assertEqual(output_inserter["x"], 1.5)
+        self.assertEqual(output_inserter["y"], -0.5)
+        self.assertEqual(output_inserter["d"], "north")
+
+        input_inserter = by_name["long-handed-inserter"][0]
+        self.assertEqual(input_inserter["x"], 1.5)
+        self.assertEqual(input_inserter["y"], 3.5)
+        self.assertEqual(input_inserter["d"], "north")
+
+        pole = by_name["medium-electric-pole"][0]
+        self.assertEqual(pole["x"], 3.5)
+        self.assertEqual(pole["y"], 4.5)
+
+        output_belts = by_name["transport-belt"][:7]
+        input_belts = by_name["transport-belt"][7:]
+        self.assertEqual(
+            [(belt["x"], belt["y"]) for belt in output_belts],
+            [(x, -1.5) for x in (-1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5)],
+        )
+        self.assertEqual(
+            {(belt["d"]) for belt in output_belts}, {"east"}
+        )
+        self.assertEqual(
+            [(belt["x"], belt["y"]) for belt in input_belts],
+            [(x, 5.5) for x in (-1.5, -0.5, 0.5, 1.5, 2.5, 3.5, 4.5)],
+        )
+
+    def test_belt_fed_layout_lane_count_knob_adds_outer_lanes(self):
+        variant = jimbo._build_belt_fed_variant(3, 3, 2)
+
+        belts = [plan for plan in variant["plans"] if plan["n"] == "transport-belt"]
+        rows = sorted({belt["y"] for belt in belts})
+        self.assertEqual(rows, [-2.5, -1.5, 5.5, 6.5])
+        self.assertEqual(len(belts), 28)
+        self.assertEqual(variant["area"], [-2, -3, 5, 7])
+
+    def test_belt_fed_layout_aligns_even_width_machines(self):
+        variant = jimbo._build_belt_fed_variant(2, 2, 1)
+
+        belts = [plan for plan in variant["plans"] if plan["n"] == "transport-belt"]
+        self.assertEqual(len(belts), 12)
+        xs = sorted({belt["x"] for belt in belts})
+        self.assertEqual(xs, [-1.5, -0.5, 0.5, 1.5, 2.5, 3.5])
+
+        inserter = next(
+            plan for plan in variant["plans"] if plan["n"] == "inserter"
+        )
+        long_handed = next(
+            plan for plan in variant["plans"]
+            if plan["n"] == "long-handed-inserter"
+        )
+        self.assertEqual(inserter["x"], 1.5)
+        self.assertEqual(long_handed["x"], 1.5)
+        self.assertEqual(
+            {plan["x"] for plan in (inserter, long_handed)},
+            {1.5},
+        )
+
+    def test_belt_fed_rotation_knob_rotates_offsets_and_directions(self):
+        east = jimbo._build_belt_fed_variant(3, 3, 1)
+
+        south = jimbo._rotate_variant(east, 1, 3, 3)
+        south_plans = {id(plan): plan for plan in south["plans"]}
+        building = next(
+            plan for plan in south["plans"] if plan["r"] == "building"
+        )
+        self.assertEqual((building["x"], building["y"]), (1.5, 1.5))
+        out_inserter = next(
+            plan for plan in south["plans"]
+            if plan["n"] == "inserter" and plan["y"] == 1.5
+        )
+        self.assertEqual(out_inserter["x"], 3.5)
+        self.assertEqual(out_inserter["d"], "east")
+        belts = [plan for plan in south["plans"] if plan["n"] == "transport-belt"]
+        self.assertEqual({belt["d"] for belt in belts}, {"south"})
+        self.assertEqual({belt["x"] for belt in belts}, {4.5, -2.5})
+        self.assertEqual(south["area"], [-3, -2, 5, 5])
+
+        west = jimbo._rotate_variant(east, 2, 3, 3)
+        west_out = next(
+            plan for plan in west["plans"]
+            if plan["n"] == "inserter"
+        )
+        self.assertEqual((west_out["x"], west_out["y"]), (1.5, 3.5))
+        self.assertEqual(west_out["d"], "south")
+        west_lh = next(
+            plan for plan in west["plans"]
+            if plan["n"] == "long-handed-inserter"
+        )
+        self.assertEqual((west_lh["x"], west_lh["y"]), (1.5, -0.5))
+        self.assertEqual(
+            {belt["d"] for belt in west["plans"] if belt["n"] == "transport-belt"},
+            {"west"},
+        )
+
+        north = jimbo.build_requested_cell_variants(
+            {
+                "layout": "belt-fed",
+                "rotation": "north",
+                "lanes": 1,
+                "tier": "fastest",
+            },
+            3,
+            3,
+        )[0]
+        north_lh = next(
+            plan for plan in north["plans"]
+            if plan["n"] == "long-handed-inserter"
+        )
+        self.assertEqual((north_lh["x"], north_lh["y"]), (3.5, 1.5))
+        self.assertEqual(north_lh["d"], "west")
+
+    def test_requested_variants_append_aquilo_compact_for_heat_fallback(self):
+        variants = jimbo.build_requested_cell_variants(
+            jimbo.default_production_cell_knobs(), 3, 3
+        )
+
+        self.assertEqual(
+            [variant["layout"] for variant in variants],
+            ["standard", "aquilo-compact"],
+        )
+        compact = variants[1]
+        self.assertFalse(compact["pole"])
+        self.assertTrue(compact["req"])
+        self.assertEqual(compact["area"], [0, 0, 3, 5])
+        directions = [plan["d"] for plan in compact["plans"]]
+        self.assertEqual(directions.count("south"), 1)
+        self.assertEqual(directions.count("north"), 1)
+
+    def test_summarize_cell_plans_groups_repeated_names(self):
+        belt_fed = jimbo._build_belt_fed_variant(3, 3, 1)
+        self.assertEqual(
+            jimbo.summarize_cell_plans(belt_fed, "assembling-machine-3"),
+            (
+                "assembling-machine-3, inserter, 7 transport-belt, "
+                "long-handed-inserter, medium-electric-pole, 7 transport-belt"
+            ),
+        )
+        standard = jimbo._build_standard_variant(3, 3)
+        self.assertEqual(
+            jimbo.summarize_cell_plans(standard, "assembling-machine-3"),
+            (
+                "assembling-machine-3, requester-chest, "
+                "passive-provider-chest, 2 inserter, medium-electric-pole"
+            ),
+        )
+
+    def test_place_cell_belt_fed_mutation_skips_requester_settings(self):
+        client = Mock()
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ANCHOR:10,20,3,3,assembling-machine-3,,nauvis,belt-fed,strict",
+            "SUCCESS: placed",
+        ]
+
+        result = jimbo.place_production_cell(
+            client, "nauvis", "iron-gear-wheel", "[gps=10,20,nauvis]",
+            "dlbattle",
+            knobs={
+                "layout": "belt-fed",
+                "rotation": "east",
+                "lanes": 1,
+                "tier": "fastest",
+            },
+        )
+
+        phase2 = client.run.call_args_list[2].args[0]
+        self.assertIn('local layout="belt-fed"', phase2)
+        self.assertIn('"transport-belt"', phase2)
+        self.assertIn('"long-handed-inserter"', phase2)
+        self.assertNotIn("copy_settings", phase2)
+        self.assertNotIn("requester-chest", phase2)
+        self.assertNotIn("furnace has no recipe", phase2)
+        self.assertIn(
+            "cell placed with assembling-machine-3, inserter, "
+            "7 transport-belt, long-handed-inserter, medium-electric-pole, "
+            "7 transport-belt",
+            phase2,
+        )
+        self.assertEqual(result, "SUCCESS: placed")
 
     def test_place_cell_rejects_fluid_recipes_before_location_checks(self):
         client = Mock()
@@ -2368,9 +2801,9 @@ class ProduceCellTests(unittest.TestCase):
             client, "nauvis", "processing-unit", "[gps=10,20,nauvis]", "dlbattle"
         )
 
-        phase1 = client.run.call_args.args[0]
-        self.assertIn("ingredient.type=='fluid'", phase1)
-        self.assertIn("product.type=='fluid'", phase1)
+        probe = client.run.call_args.args[0]
+        self.assertIn("ingredient.type=='fluid'", probe)
+        self.assertIn("product.type=='fluid'", probe)
         self.assertEqual(result, "ERROR: Fluid recipes are not supported")
         self.assertEqual(client.run.call_count, 1)
 
@@ -2383,24 +2816,29 @@ class ProduceCellTests(unittest.TestCase):
             "[gps=10,20,nauvis]", "dlbattle",
         )
 
-        phase1 = client.run.call_args.args[0]
-        self.assertIn("condition.min and value<condition.min", phase1)
-        self.assertIn("condition.max and value>condition.max", phase1)
+        probe = client.run.call_args.args[0]
+        self.assertIn("condition.min and value<condition.min", probe)
+        self.assertIn("condition.max and value>condition.max", probe)
 
     def test_place_cell_requires_live_heat_for_freezable_aquilo_components(self):
         client = Mock()
-        client.run.return_value = (
-            "ERROR: No suitable production-cell location within 128 tiles "
-            "(last: No heat coverage for assembling-machine-3)"
-        )
+        client.run.side_effect = [
+            self.candidates_response(),
+            (
+                "ERROR: No suitable production-cell location within 128 tiles "
+                "(last: No heat coverage for assembling-machine-3)"
+            ),
+        ]
 
         result = jimbo.place_production_cell(
             client, "aquilo", "electronic-circuit", "[gps=10,20,aquilo]",
             "dlbattle",
         )
 
-        phase1 = client.run.call_args.args[0]
-        self.assertIn("local requires_heat=s.planet and s.planet.name=='aquilo'", phase1)
+        phase1 = client.run.call_args_list[1].args[0]
+        self.assertIn(
+            "local requires_heat=s.planet and s.planet.name=='aquilo'", phase1
+        )
         self.assertIn("p.heating_energy<=0", phase1)
         self.assertIn("source.prototype.heating_radius", phase1)
         self.assertIn("source.temperature>=30", phase1)
@@ -2411,11 +2849,12 @@ class ProduceCellTests(unittest.TestCase):
         self.assertIn("No heat coverage for", phase1)
         self.assertNotIn("Unheated cells are not supported on Aquilo", phase1)
         self.assertIn("No heat coverage", result)
-        self.assertEqual(client.run.call_count, 1)
+        self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_rechecks_aquilo_heat_before_mutation(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3,,aquilo",
             "ERROR: no heat coverage for inserter",
         ]
@@ -2425,31 +2864,34 @@ class ProduceCellTests(unittest.TestCase):
             "dlbattle",
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
-        self.assertIn("local requires_heat=s.planet and s.planet.name=='aquilo'", phase2)
+        phase2 = client.run.call_args_list[2].args[0]
+        self.assertIn(
+            "local requires_heat=s.planet and s.planet.name=='aquilo'", phase2
+        )
         self.assertIn("p.heating_energy<=0", phase2)
         self.assertIn("source.prototype.heating_radius", phase2)
         self.assertIn("source.temperature>=30", phase2)
         self.assertIn("plan_overlaps_heat_source(plan)", phase2)
         self.assertIn("local count=count_blockers(area)", phase2)
         self.assertIn(
-            "support_issue('no heat coverage for '..plan.name)", phase2
+            "support_issue('no heat coverage for '..plan.key)", phase2
         )
         self.assertIn("local allow_support_warnings=false", phase2)
         self.assertEqual(result, "ERROR: no heat coverage for inserter")
-        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+        self.assertFalse(client.run.call_args_list[2].kwargs.get("retry", False))
 
     def test_place_cell_fallback_places_with_verified_support_warnings(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             (
                 "ANCHOR:-34,-5,3,3,assembling-machine-3,,aquilo,"
                 "aquilo-compact,fallback"
             ),
             (
-                "SUCCESS: [gps=-34,-5,aquilo] 3x3 iron-gear-wheel cell placed "
-                "with assembling-machine-3, requester-chest, 2 inserters, "
-                "passive-provider-chest using existing power; WARNING: "
+                "SUCCESS: [gps=-34,-5,aquilo] 3x3 iron-gear-wheel aquilo-compact "
+                "cell placed with assembling-machine-3, requester-chest, "
+                "passive-provider-chest, 2 inserter; WARNING: "
                 "no heat coverage for inserter"
             ),
         ]
@@ -2458,12 +2900,12 @@ class ProduceCellTests(unittest.TestCase):
             client, "current", "iron-gear-wheel", "standing:north", "dlbattle"
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("local allow_support_warnings=true", phase2)
         self.assertIn("local warnings={};local warning_seen={}", phase2)
         self.assertIn("local function support_issue(text)", phase2)
         self.assertIn(
-            "support_issue('no heat coverage for '..plan.name)", phase2
+            "support_issue('no heat coverage for '..plan.key)", phase2
         )
         self.assertIn("support_issue('no logistic network coverage')", phase2)
         self.assertIn(
@@ -2475,7 +2917,7 @@ class ProduceCellTests(unittest.TestCase):
             phase2,
         )
         self.assertIn("error(count..' entities appeared in area')", phase2)
-        self.assertIn("error('cannot place '..plan.name)", phase2)
+        self.assertIn("error('cannot place '..plan.key)", phase2)
         self.assertIn("building recipe was not set", phase2)
         self.assertIn("request filter missing for", phase2)
         self.assertIn(
@@ -2483,11 +2925,12 @@ class ProduceCellTests(unittest.TestCase):
         )
         self.assertIn("SUCCESS", result)
         self.assertIn("WARNING", result)
-        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+        self.assertFalse(client.run.call_args_list[2].kwargs.get("retry", False))
 
     def test_place_cell_uses_compact_aquilo_ring_layout(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:-21,-8,3,3,assembling-machine-3,,aquilo,aquilo-compact",
             "SUCCESS: compact cell placed",
         ]
@@ -2496,31 +2939,22 @@ class ProduceCellTests(unittest.TestCase):
             client, "aquilo", "pumpjack", "[gps=-21,-8,aquilo]", "dlbattle"
         )
 
-        phase1 = client.run.call_args_list[0].args[0]
-        phase2 = client.run.call_args_list[1].args[0]
+        phase1 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("if requires_heat then step_x=1;step_y=1 end", phase1)
-        self.assertIn("local compact_area={{ax,ay},{ax+w,ay+h+2}}", phase1)
-        self.assertIn("position={ax+0.5,ay+h+1.5}", phase1)
-        self.assertIn("position={ax+1.5,ay+h+1.5}", phase1)
-        self.assertIn("position={ax+0.5,ay+h+0.5}", phase1)
-        self.assertIn("position={ax+1.5,ay+h+0.5}", phase1)
-        self.assertIn("direction=defines.direction.south", phase1)
-        self.assertIn("direction=defines.direction.north", phase1)
-        self.assertIn("plan_has_live_power(compact_plans[1])", phase1)
-        self.assertIn("plan_has_live_power(compact_plans[4])", phase1)
-        self.assertIn("plan_has_live_power(compact_plans[5])", phase1)
-        self.assertIn("aquilo-compact", phase1)
+        self.assertIn('"aquilo-compact"', phase1)
+        self.assertIn('["x"]=0.5', phase1)
+        self.assertIn('["y"]=4.5', phase1)
+        self.assertIn('["d"]="south"', phase1)
+        self.assertIn('["d"]="north"', phase1)
+        self.assertIn("powered=plan_has_live_power{position=building}", phase1)
+        self.assertIn("if not plan_has_live_power{position=pos} then", phase1)
         self.assertIn('local layout="aquilo-compact"', phase2)
-        self.assertIn("area={{x,y},{x+w,y+h+2}}", phase2)
-        self.assertIn("position={x+0.5,y+h+1.5}", phase2)
-        self.assertIn("position={x+1.5,y+h+1.5}", phase2)
-        self.assertIn("position={x+0.5,y+h+0.5}", phase2)
-        self.assertIn("position={x+1.5,y+h+0.5}", phase2)
         self.assertIn("compact layout cannot use extension poles", phase2)
         self.assertIn("no existing power coverage for compact cell", phase2)
-        self.assertIn("using existing power", phase2)
+        self.assertIn("error('layout has no planned pole') end;", phase2)
         self.assertEqual(result, "SUCCESS: compact cell placed")
-        self.assertFalse(client.run.call_args_list[1].kwargs.get("retry", False))
+        self.assertFalse(client.run.call_args_list[2].kwargs.get("retry", False))
 
     def test_place_cell_rejects_invalid_compact_layout_response(self):
         invalid_responses = (
@@ -2539,7 +2973,10 @@ class ProduceCellTests(unittest.TestCase):
         for response in invalid_responses:
             with self.subTest(response=response):
                 client = Mock()
-                client.run.return_value = response
+                client.run.side_effect = [
+                    self.candidates_response(),
+                    response,
+                ]
 
                 result = jimbo.place_production_cell(
                     client, "aquilo", "pumpjack", "[gps=10,20,aquilo]",
@@ -2547,11 +2984,12 @@ class ProduceCellTests(unittest.TestCase):
                 )
 
                 self.assertEqual(result, "ERROR: Invalid location response")
-                self.assertEqual(client.run.call_count, 1)
+                self.assertEqual(client.run.call_count, 2)
 
     def test_place_cell_rechecks_occupancy_before_mutation(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "ERROR: 1 entities appeared in area",
         ]
@@ -2561,14 +2999,17 @@ class ProduceCellTests(unittest.TestCase):
             "dlbattle",
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("s.count_entities_filtered{area=area}", phase2)
         self.assertIn("entities appeared in area", phase2)
         self.assertIn("ERROR", result)
 
     def test_place_cell_floors_gps_to_bottom_left_tile(self):
         client = Mock()
-        client.run.return_value = "ERROR: blocked"
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: blocked",
+        ]
 
         jimbo.place_production_cell(
             client, "nauvis", "electronic-circuit",
@@ -2581,6 +3022,7 @@ class ProduceCellTests(unittest.TestCase):
     def test_place_cell_phase2_reports_incomplete_rollback(self):
         client = Mock()
         client.run.side_effect = [
+            self.candidates_response(),
             "ANCHOR:10,20,3,3,assembling-machine-3",
             "ERROR: request filter failed; rollback incomplete: 1",
         ]
@@ -2590,13 +3032,12 @@ class ProduceCellTests(unittest.TestCase):
             "[gps=10,20,nauvis]", "dlbattle",
         )
 
-        phase2 = client.run.call_args_list[1].args[0]
+        phase2 = client.run.call_args_list[2].args[0]
         self.assertIn("for i=#cleanup,1,-1", phase2)
         self.assertIn("rollback incomplete", phase2)
         self.assertEqual(
             result, "ERROR: request filter failed; rollback incomplete: 1"
         )
-
 
 class LookupTests(unittest.TestCase):
     def test_lookup_decision_parses_classes_and_question(self):
@@ -2797,6 +3238,379 @@ class LookupTests(unittest.TestCase):
             "LOGISTIC NETWORK",
             prompt,
         )
+
+
+class CustomCellWorkerTests(unittest.TestCase):
+    def facts(self):
+        return {
+            "surface": "nauvis",
+            "origin": [100.0, 200.0],
+            "machines": {"assembling-machine-3": {"w": 3, "h": 3}},
+            "pole_supply": 7.0,
+            "pole_wire": 9.0,
+            "ingredients": ["1 copper-cable", "1 iron-gear-wheel"],
+            "cliffs": [],
+            "cliff_count": 0,
+            "water_samples": [],
+            "entities": [],
+            "entity_count": 0,
+        }
+
+    def valid_proposal(self):
+        return {
+            "layout": "custom",
+            "plans": [
+                {"n": "assembling-machine-3", "x": 1.5, "y": 1.5,
+                 "d": "", "r": "building"},
+                {"n": "inserter", "x": 1.5, "y": -0.5, "d": "north",
+                 "r": "inserter"},
+                {"n": "transport-belt", "x": 0.5, "y": -1.5, "d": "east",
+                 "r": "belt"},
+                {"n": "transport-belt", "x": 1.5, "y": -1.5, "d": "east",
+                 "r": "belt"},
+                {"n": "medium-electric-pole", "x": 3.5, "y": 0.5, "d": "",
+                 "r": "pole"},
+            ],
+            "area": [-1, -2, 4, 3],
+            "pole": True,
+            "req": False,
+        }
+
+    def test_validator_accepts_working_cell(self):
+        errors = jimbo.validate_custom_cell_plan(
+            self.valid_proposal(), self.facts()
+        )
+        self.assertEqual(errors, [])
+
+    def test_validator_rejects_non_custom_layout(self):
+        proposal = self.valid_proposal()
+        proposal["layout"] = "standard"
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(
+            any("layout" in e and "custom" in e for e in errors)
+        )
+
+    def test_validator_rejects_missing_building(self):
+        proposal = self.valid_proposal()
+        proposal["plans"] = proposal["plans"][1:]
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(
+            any("exactly one" in e and "building" in e for e in errors)
+        )
+
+    def test_validator_rejects_unknown_machine(self):
+        proposal = self.valid_proposal()
+        proposal["plans"][0]["n"] = "assembling-machine-99"
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(
+            any("not among the compatible machines" in e for e in errors)
+        )
+
+    def test_validator_rejects_isolated_belt(self):
+        proposal = self.valid_proposal()
+        proposal["plans"] = proposal["plans"][:3]
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(any("isolated" in e for e in errors))
+
+    def test_validator_rejects_inserter_without_source(self):
+        proposal = self.valid_proposal()
+        for plan in proposal["plans"]:
+            if plan["r"] == "inserter":
+                plan["x"] = 4.5
+                plan["y"] = 1.5
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(
+            any("picks up" in e and "nothing stands" in e for e in errors)
+        )
+
+    def test_validator_rejects_pole_too_far(self):
+        proposal = self.valid_proposal()
+        for plan in proposal["plans"]:
+            if plan["r"] == "pole":
+                plan["x"] = 30.0
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(
+            any("cannot power the machine" in e for e in errors)
+        )
+
+    def test_validator_rejects_overlapping_entities(self):
+        proposal = self.valid_proposal()
+        proposal["plans"][1]["x"] = 1.5
+        proposal["plans"][1]["y"] = 1.5
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(any("overlaps" in e for e in errors))
+
+    def test_validator_rejects_unknown_role(self):
+        proposal = self.valid_proposal()
+        proposal["plans"][1]["r"] = "rocket"
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(any("r must be one of" in e for e in errors))
+
+    def test_validator_rejects_non_half_tile_centers(self):
+        proposal = self.valid_proposal()
+        proposal["plans"][1]["x"] = 1.3
+        errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
+        self.assertTrue(any("half-tile centers" in e for e in errors))
+
+    def test_parse_proposal_extracts_json_from_fences(self):
+        proposal = self.valid_proposal()
+        text = "Here you go:\n```json\n" + json.dumps(proposal) + "\n```"
+        self.assertEqual(
+            jimbo.parse_custom_plan_proposal(text), proposal
+        )
+
+    def test_parse_proposal_returns_none_on_garbage(self):
+        self.assertIsNone(jimbo.parse_custom_plan_proposal("not json at all"))
+
+    def test_produce_job_key_chunk_dedupe(self):
+        key1 = jimbo.produce_job_key("nauvis", "iron-plate", "[gps=13.1,7.9]")
+        key2 = jimbo.produce_job_key("nauvis", "iron-plate", "[gps=13.8,7.1]")
+        self.assertEqual(key1, key2)
+        self.assertIn("chunk:", key1)
+
+    def test_produce_job_store_dedupe_reap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                self.assertIsNotNone(job_id)
+                self.assertEqual(
+                    jimbo.find_active_cell_job(
+                        jimbo.produce_job_key(
+                            "nauvis", "iron-plate", "[gps=13,7]"
+                        )
+                    ),
+                    job_id,
+                )
+                jimbo.update_job_status(job_id, pid=999999999)
+                reaped = jimbo.reap_stale_cell_jobs()
+                self.assertIn(job_id, reaped)
+                status = jimbo._read_json(jimbo._job_paths(job_id)["status"])
+                self.assertEqual(status["status"], "designed_failed")
+                self.assertIn("interrupted", status["failure"])
+
+    def test_run_worker_accepts_valid_proposal(self):
+        proposal = self.valid_proposal()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                job_path = jimbo._job_paths(job_id)["job"]
+                with patch.object(jimbo, "ask_ai", return_value=json.dumps(proposal)):
+                    rc = jimbo.run_produce_worker(job_path)
+                self.assertEqual(rc, 0)
+                result = jimbo._read_json(jimbo._job_paths(job_id)["result"])
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["variant"]["layout"], "custom")
+                status = jimbo._read_json(jimbo._job_paths(job_id)["status"])
+                self.assertEqual(status["status"], "designed_ok")
+
+    def test_run_worker_fails_after_iterations(self):
+        def bad_ai(prompt):
+            return json.dumps({"layout": "custom", "plans": [
+                {"n": "assembling-machine-3", "x": 1.5, "y": 1.5,
+                 "d": "", "r": "building"},
+            ], "area": [0, 0, 3, 3], "pole": False, "req": False})
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                job_path = jimbo._job_paths(job_id)["job"]
+                with patch.object(
+                    jimbo, "ask_ai", side_effect=bad_ai
+                ):
+                    rc = jimbo.run_produce_worker(job_path)
+                self.assertEqual(rc, 1)
+                result = jimbo._read_json(jimbo._job_paths(job_id)["result"])
+                self.assertFalse(result["ok"])
+                status = jimbo._read_json(jimbo._job_paths(job_id)["status"])
+                self.assertEqual(status["status"], "designed_failed")
+                self.assertIn("iterations", status["failure"])
+
+    def test_run_worker_handles_non_json_response(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                job_path = jimbo._job_paths(job_id)["job"]
+                with patch.object(
+                    jimbo, "ask_ai", side_effect=lambda p: "I think you should..."
+                ):
+                    rc = jimbo.run_produce_worker(job_path)
+                self.assertEqual(rc, 1)
+
+    def test_normalize_custom_variant_recenters_building(self):
+        variant = self.valid_proposal()
+        normalized = jimbo._normalize_custom_variant(variant, 3, 3)
+        building = next(p for p in normalized["plans"] if p["r"] == "building")
+        self.assertEqual(building["x"], 1.5)
+        self.assertEqual(building["y"], 1.5)
+        self.assertEqual(normalized["layout"], "custom")
+
+    def test_place_cell_with_custom_variant_stamps(self):
+        client = Mock()
+        client.run.side_effect = [
+            "CANDIDATES:assembling-machine-3:3:3",
+            "ANCHOR:10,20,3,3,assembling-machine-3,,nauvis,custom",
+            "SUCCESS: [gps=10,20,nauvis] custom cell placed",
+        ]
+        knobs = jimbo.default_production_cell_knobs()
+        knobs["layout"] = "custom"
+        knobs["custom_variant"] = self.valid_proposal()
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]",
+            "dlbattle", knobs=knobs,
+        )
+        self.assertTrue(result.startswith("SUCCESS"))
+        phase2 = client.run.call_args_list[2].args[0]
+        self.assertIn("cell placed with", phase2)
+
+    def test_place_cell_custom_requires_known_machine(self):
+        client = Mock()
+        client.run.side_effect = [
+            "CANDIDATES:assembling-machine-2:3:3",
+        ]
+        knobs = jimbo.default_production_cell_knobs()
+        knobs["layout"] = "custom"
+        knobs["custom_variant"] = self.valid_proposal()
+        result = jimbo.place_production_cell(
+            client, "nauvis", "processing-unit", "[gps=10,20,nauvis]",
+            "dlbattle", knobs=knobs,
+        )
+        self.assertIn("not available", result)
+
+    def test_report_finished_job_stamps_and_reports(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]",
+                    jimbo.default_production_cell_knobs(),
+                    "dlbattle", self.facts(),
+                )
+                jimbo._write_json(
+                    jimbo._job_paths(job_id)["result"],
+                    {"ok": True, "variant": self.valid_proposal()},
+                )
+                jimbo.update_job_status(
+                    job_id, status="designed_ok", reported=False
+                )
+                client = Mock()
+                client.run.side_effect = [
+                    "CANDIDATES:assembling-machine-3:3:3",
+                    "ANCHOR:13,7,3,3,assembling-machine-3,,nauvis,custom",
+                    "SUCCESS: [gps=13,7,nauvis] custom cell placed",
+                ]
+                with patch.object(
+                    jimbo, "ask_ai",
+                    return_value="Placed your custom iron-plate cell.",
+                ):
+                    with patch.object(
+                        jimbo, "send_jimbo_lines",
+                        return_value=(["Placed your custom iron-plate cell."], None),
+                    ):
+                        with patch.object(jimbo, "record_direct_reply"):
+                            result = jimbo.report_finished_cell_job(
+                                client, deque(), [], job_id
+                            )
+                self.assertTrue(result)
+                status = jimbo._read_json(
+                    jimbo._job_paths(job_id)["status"]
+                )
+                self.assertEqual(status["status"], "done_placed")
+                self.assertTrue(status["reported"])
+
+    def test_dispatch_custom_layout_spawns_job(self):
+        knobs = jimbo.default_production_cell_knobs()
+        knobs["layout"] = "custom"
+        produce_request = ("nauvis", "iron-plate", "[gps=13,7]", knobs)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                with patch.object(
+                    jimbo, "collect_custom_site_facts",
+                    return_value=(self.facts(), None),
+                ):
+                    with patch.object(jimbo, "spawn_cell_worker") as spawn:
+                        client = Mock()
+                        result = jimbo.dispatch_production_cell(
+                            client, produce_request, "dlbattle"
+                        )
+                spawn.assert_called_once()
+        self.assertTrue(result.startswith("PENDING:"))
+
+    def test_dispatch_exhausted_fallback_spawns_job(self):
+        knobs = jimbo.default_production_cell_knobs()
+        produce_request = ("nauvis", "iron-plate", "[gps=13,7]", knobs)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                with patch.object(
+                    jimbo, "collect_custom_site_facts",
+                    return_value=(self.facts(), None),
+                ):
+                    with patch.object(jimbo, "spawn_cell_worker") as spawn:
+                        with patch.object(
+                            jimbo, "place_production_cell",
+                            return_value=(
+                                "ERROR: No suitable production-cell location "
+                                "within search radius"
+                            ),
+                        ):
+                            client = Mock()
+                            result = jimbo.dispatch_production_cell(
+                                client, produce_request, "dlbattle"
+                            )
+                spawn.assert_called_once()
+        self.assertTrue(result.startswith("PENDING:"))
+
+    def test_parse_job_status_decision(self):
+        self.assertEqual(jimbo.parse_job_status_decision("JOBSTATUS"), ())
+        self.assertIsNone(jimbo.parse_job_status_decision("NONE"))
+        self.assertTrue(
+            jimbo._is_recognized_classification("JOBSTATUS")
+        )
+
+    def test_classifier_prompt_mentions_custom_and_jobstatus(self):
+        prompt = jimbo.build_classification_prompt(
+            jimbo.server_owner, "Jimbo what are you building?", "(none)"
+        )
+        self.assertIn("layout=custom", prompt)
+        self.assertIn("JOBSTATUS", prompt)
+
+    def test_reply_prompt_pending_hint(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner, "build me something", "(none)",
+            "RCON: production cell", "PENDING: designing in the background",
+        )
+        self.assertIn("background", prompt)
+        self.assertIn("do NOT claim the cell was placed", prompt)
+
+    def test_reply_prompt_job_status_hint(self):
+        prompt = jimbo.build_reply_prompt(
+            jimbo.server_owner, "status?", "(none)",
+            "RCON: produce job status", "(no custom cell designs in progress)",
+        )
+        self.assertIn("no custom designs running", prompt)
+
+    def test_build_custom_plan_prompt_contains_facts(self):
+        job = {
+            "surface": "nauvis",
+            "item": "iron-plate",
+            "hint": "",
+            "requesting_player": "dlbattle",
+            "facts": self.facts(),
+        }
+        prompt = jimbo.build_custom_plan_prompt(job, [], 1)
+        self.assertIn("assembling-machine-3 (3x3)", prompt)
+        self.assertIn("copper-cable", prompt)
+        self.assertIn("Medium pole supply radius: 7.0", prompt)
 
 
 if __name__ == "__main__":

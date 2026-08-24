@@ -4,6 +4,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from collections import deque
@@ -149,13 +150,91 @@ production_cell_search_max_radius = 128
 production_cell_search_max_candidates = 256
 remove_area_radius = 64
 
+# Declared knob ranges for structured PRODUCE decisions. The classifier picks
+# values within these ranges; all geometry stays in Python layout tables.
+production_cell_layouts = ("standard", "belt-fed", "custom")
+production_cell_rotations = ("east", "south", "west", "north")
+production_cell_lane_counts = (1, 2)
+production_cell_machine_tiers = ("fastest", "smallest")
+# Belt lanes run this many tiles beyond the machine footprint on both ends.
+belt_lane_extension_tiles = 2
+# Live-measured reaches on 2.1.14: regular inserters pick up at 1.00 tiles and
+# drop at 1.20; long-handed pick up at 2.00 and drop at 2.20. The output lane
+# sits one gap row from the machine so a regular inserter bridges it; the
+# input lane sits past a walkway row so only the long-handed pickup (2.00)
+# reaches it.
+belt_fed_output_lane_offset = 1.5
+belt_fed_input_lane_offset = 2.5
+
+# Custom-cell worker (FIX_PLAN item 3 Step 2). The worker subprocess has no
+# RCON connection: the parent surveys the site read-only first, then the
+# worker proposes entity-offset tables that Python validates deterministically.
+produce_jobs_dirname = "produce_jobs"
+produce_worker_max_seconds = 3600
+produce_worker_max_iterations = 15
+produce_job_poll_interval = 5
+produce_job_survey_radius = 128
+produce_job_survey_max_entities = 120
+custom_plan_max_area_tiles = 48
+custom_plan_max_entities = 80
+custom_plan_roles = (
+    "building", "requester", "provider", "inserter", "pole", "belt", "part",
+)
+cell_reach_constants = {
+    "inserter": {"pickup": 1.0, "drop": 1.2},
+    "burner-inserter": {"pickup": 1.0, "drop": 1.2},
+    "long-handed-inserter": {"pickup": 2.0, "drop": 2.2},
+}
+
+
+def default_production_cell_knobs():
+    return {
+        "layout": "standard",
+        "rotation": "east",
+        "lanes": 1,
+        "tier": "fastest",
+    }
+
+
+def parse_production_cell_knobs(raw):
+    knobs = default_production_cell_knobs()
+    if not raw:
+        return knobs
+    seen = set()
+    for field in raw.split(","):
+        key, separator, value = field.strip().partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not separator or not key or not value or key in seen:
+            return None
+        seen.add(key)
+        if key == "layout" and value in production_cell_layouts:
+            knobs["layout"] = value
+        elif key == "rotation" and value in production_cell_rotations:
+            knobs["rotation"] = value
+        elif key == "lanes" and value in tuple(
+            str(count) for count in production_cell_lane_counts
+        ):
+            knobs["lanes"] = int(value)
+        elif key == "tier" and value in production_cell_machine_tiers:
+            knobs["tier"] = value
+        else:
+            return None
+    return knobs
+
 # IMPORTANT: Update this player-facing summary whenever a change will alter what
 # players observe Jimbo doing after restart — code OR prompt edits. Describe why
 # the behavior changed, not implementation details.
 startup_change_summary = (
-    "I can clean up now too: ask me to remove or demolish things and I'll "
-    "delete ghosts outright while marking real structures for your "
-    "construction bots to dismantle — and I'll keep those reports short."
+    "I learned a new way to build: ask me for a belt-fed production cell "
+    "and I'll place the machine between two flowing belt lanes with no "
+    "logistics chests — you can pick its facing direction and lane count. "
+    "Everything is just ghosts, so you can build it by hand before you "
+    "have construction bots. Smelting cells like iron or copper plates "
+    "work too; furnaces simply smelt whatever ore you feed them. I can "
+    "also design a custom one-off layout when no standard shape fits — "
+    "that runs in the background and I'll report back here when it's "
+    "placed. Ask me \"Jimbo, what are you building?\" to check on it."
 )
 
 opencode_config = json.dumps({
@@ -519,6 +598,7 @@ def _is_recognized_classification(raw):
             parse_top_damage_decision(line),
             parse_lookup_decision(line),
             parse_remove_decision(line),
+            parse_job_status_decision(line),
         )
     )
 
@@ -575,6 +655,12 @@ def parse_lookup_decision(raw):
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,63}", name):
             return None
     return class_names, question
+
+
+def parse_job_status_decision(raw):
+    if (raw or "").strip() != "JOBSTATUS":
+        return None
+    return ()
 
 
 def parse_logistics_decision(raw):
@@ -843,11 +929,16 @@ def parse_produce_decision(raw):
     if not raw.startswith("PRODUCE|"):
         return None
     parts = raw.split("|")
-    if len(parts) not in (3, 4):
+    if len(parts) not in (3, 4, 5):
         return None
     surface = parts[1].strip()
     item = parts[2].strip()
-    hint = parts[3].strip() if len(parts) == 4 else ""
+    hint = parts[3].strip() if len(parts) >= 4 else ""
+    knobs = parse_production_cell_knobs(
+        parts[4].strip() if len(parts) == 5 else ""
+    )
+    if knobs is None:
+        return None
 
     def valid_name(name):
         return bool(name) and all(
@@ -858,7 +949,7 @@ def parse_produce_decision(raw):
         return None
     if hint:
         if parse_production_cell_relative_hint(hint) is not None:
-            return surface, item, hint
+            return surface, item, hint, knobs
         try:
             if not (hint.startswith("[gps=") and hint.endswith("]")):
                 return None
@@ -871,7 +962,7 @@ def parse_produce_decision(raw):
                 return None
         except ValueError:
             return None
-    return surface, item, hint
+    return surface, item, hint, knobs
 
 
 def parse_remove_decision(raw):
@@ -1021,9 +1112,333 @@ def remove_entities(client, surface, entity_type, hint="", requesting_player="")
     return response.strip() if response else "ERROR: empty response"
 
 
-def place_production_cell(client, surface, item, hint="", requesting_player=""):
+
+def _cell_plan(name, x, y, direction="", role="part"):
+    return {
+        "n": name,
+        "x": x,
+        "y": y,
+        "d": direction,
+        "r": role,
+    }
+
+
+def _finish_variant(layout, plans, area, has_pole, has_requester):
+    return {
+        "layout": layout,
+        "plans": plans,
+        "area": list(area),
+        "pole": has_pole,
+        "req": has_requester,
+    }
+
+
+def _build_standard_variant(w, h):
+    row = math.floor(h / 2) + 0.5
+    plans = [
+        _cell_plan("building", w / 2, h / 2, "", "building"),
+        _cell_plan("requester-chest", -1.5, row, "", "requester"),
+        _cell_plan("passive-provider-chest", w + 1.5, row, "", "provider"),
+        _cell_plan("inserter", -0.5, row, "west", "inserter"),
+        _cell_plan("inserter", w + 0.5, row, "west", "inserter"),
+        _cell_plan(
+            "medium-electric-pole",
+            math.floor(w / 2) + 0.5,
+            -0.5,
+            "",
+            "pole",
+        ),
+    ]
+    return _finish_variant("standard", plans, (-2, -1, w + 2, h), True, True)
+
+
+def _build_aquilo_compact_variant(w, h):
+    plans = [
+        _cell_plan("building", w / 2, h / 2, "", "building"),
+        _cell_plan("requester-chest", 0.5, h + 1.5, "", "requester"),
+        _cell_plan("passive-provider-chest", 1.5, h + 1.5, "", "provider"),
+        _cell_plan("inserter", 0.5, h + 0.5, "south", "inserter"),
+        _cell_plan("inserter", 1.5, h + 0.5, "north", "inserter"),
+    ]
+    return _finish_variant(
+        "aquilo-compact", plans, (0, 0, w, h + 2), False, True
+    )
+
+
+def _build_belt_fed_variant(w, h, lanes):
+    column = math.floor(w / 2) + 0.5
+    plans = [
+        _cell_plan("building", w / 2, h / 2, "", "building"),
+        _cell_plan("inserter", column, -0.5, "north", "inserter"),
+    ]
+    for lane in range(lanes):
+        y = -belt_fed_output_lane_offset - lane
+        for index in range(w + 2 * belt_lane_extension_tiles):
+            plans.append(
+                _cell_plan(
+                    "transport-belt",
+                    -belt_lane_extension_tiles + 0.5 + index,
+                    y,
+                    "east",
+                    "belt",
+                )
+            )
+    plans.append(_cell_plan("long-handed-inserter", column, h + 0.5, "north"))
+    plans.append(
+        _cell_plan("medium-electric-pole", w + 0.5, h + 1.5, "", "pole")
+    )
+    for lane in range(lanes):
+        y = h + belt_fed_input_lane_offset + lane
+        for index in range(w + 2 * belt_lane_extension_tiles):
+            plans.append(
+                _cell_plan(
+                    "transport-belt",
+                    -belt_lane_extension_tiles + 0.5 + index,
+                    y,
+                    "east",
+                    "belt",
+                )
+            )
+    area = (
+        -belt_lane_extension_tiles,
+        -(lanes + 1),
+        w + belt_lane_extension_tiles,
+        h + lanes + 2,
+    )
+    return _finish_variant("belt-fed", plans, area, True, False)
+
+
+_CELL_DIRECTION_ORDER = ("east", "south", "west", "north")
+
+
+def _rotate_cell_offset(dx, dy, steps, w, h):
+    if steps == 0:
+        return dx, dy
+    if steps == 1:
+        return h - dy, dx
+    if steps == 2:
+        return w - dx, h - dy
+    return dy, w - dx
+
+
+def _rotate_cell_direction(direction, steps):
+    if not direction:
+        return ""
+    index = _CELL_DIRECTION_ORDER.index(direction)
+    return _CELL_DIRECTION_ORDER[(index + steps) % 4]
+
+
+def _rotate_variant(variant, steps, w, h):
+    if steps == 0:
+        return variant
+
+    def point(dx, dy):
+        return _rotate_cell_offset(dx, dy, steps, w, h)
+
+    plans = []
+    for plan in variant["plans"]:
+        x, y = point(plan["x"], plan["y"])
+        plans.append({
+            "n": plan["n"],
+            "x": x,
+            "y": y,
+            "d": _rotate_cell_direction(plan["d"], steps),
+            "r": plan["r"],
+        })
+    x1, y1 = point(variant["area"][0], variant["area"][1])
+    x2, y2 = point(variant["area"][2], variant["area"][3])
+    area = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+    return _finish_variant(
+        variant["layout"], plans, area, variant["pole"], variant["req"]
+    )
+
+
+def _normalize_custom_variant(variant, w, h):
+    building = None
+    for plan in variant.get("plans", []):
+        if plan.get("r") == "building":
+            building = plan
+            break
+    if building is None:
+        return variant
+    dx = w / 2 - building.get("x", 0)
+    dy = h / 2 - building.get("y", 0)
+    shifted = []
+    for plan in variant.get("plans", []):
+        shifted.append({
+            "n": plan.get("n", ""),
+            "x": plan.get("x", 0) + dx,
+            "y": plan.get("y", 0) + dy,
+            "d": plan.get("d", ""),
+            "r": plan.get("r", ""),
+        })
+    area = variant.get("area", [0, 0, w, h])
+    normalized_area = (
+        area[0] + dx, area[1] + dy, area[2] + dx, area[3] + dy
+    )
+    return {
+        "layout": "custom",
+        "plans": shifted,
+        "area": normalized_area,
+        "pole": bool(variant.get("pole")),
+        "req": bool(variant.get("req")),
+    }
+
+
+def build_requested_cell_variants(knobs, w, h):
+    if knobs["layout"] == "belt-fed":
+        steps = production_cell_rotations.index(knobs["rotation"])
+        requested = _rotate_variant(
+            _build_belt_fed_variant(w, h, knobs["lanes"]), steps, w, h
+        )
+    else:
+        requested = _build_standard_variant(w, h)
+    return [requested, _build_aquilo_compact_variant(w, h)]
+
+
+def summarize_cell_plans(variant, machine_name):
+    names = []
+    for plan in variant["plans"]:
+        names.append(machine_name if plan["n"] == "building" else plan["n"])
+    labels = []
+    index = 0
+    while index < len(names):
+        end = index
+        while end + 1 < len(names) and names[end + 1] == names[index]:
+            end += 1
+        count = end - index + 1
+        labels.append(names[index] if count == 1 else f"{count} {names[index]}")
+        index = end + 1
+    return ", ".join(labels)
+
+
+production_cell_recipe_checks_lua = (
+    "local r=prototypes.recipe[{item}];"
+    "if not r then rcon.print('ERROR: Recipe not found') return end;"
+    "for _,ingredient in ipairs(r.ingredients) do "
+    "if ingredient.type=='fluid' then "
+    "rcon.print('ERROR: Fluid recipes are not supported') return end end;"
+    "for _,product in ipairs(r.products) do "
+    "if product.type=='fluid' then "
+    "rcon.print('ERROR: Fluid recipes are not supported') return end end;"
+    "if not s.ignore_surface_conditions then "
+    "for _,condition in ipairs(r.surface_conditions or {{}}) do "
+    "local value=s.get_property(condition.property);"
+    "if (condition.min and value<condition.min) "
+    "or (condition.max and value>condition.max) then "
+    "rcon.print('ERROR: Recipe is not supported on '..s.name) return end "
+    "end end;"
+    "local force_recipe=game.forces.player.recipes[{item}];"
+    "if not force_recipe or not force_recipe.enabled then "
+    "rcon.print('ERROR: Recipe is not unlocked') return end;"
+)
+
+
+def query_production_cell_candidates(
+    client, surface, item, requesting_player, relative_location
+):
+    probe = (
+        "/silent-command "
+        f"local request_player=game.get_player({json.dumps(requesting_player)});"
+        f"local requested_surface={json.dumps(surface)};"
+        f"local relative_location={json.dumps(relative_location)};"
+        "local s=nil;"
+        "if requested_surface=='current' then "
+        "if not request_player or not request_player.connected then "
+        "rcon.print('ERROR: Current location requires the requesting player "
+        "online') return end;"
+        "if relative_location=='standing' then "
+        "s=request_player.physical_surface else s=request_player.surface end "
+        "else s=game.surfaces[requested_surface] end;"
+        "if not s then rcon.print('ERROR: Surface not found') return end;"
+        + production_cell_recipe_checks_lua.format(item=json.dumps(item))
+        +
+        "local by_name={};"
+        "for _,category in ipairs(r.categories) do "
+        "for name,e in pairs(prototypes.get_entity_filtered{"
+        "{filter='crafting-category',crafting_category=category}"
+        "}) do "
+        "if (e.type=='assembling-machine' or e.type=='furnace') "
+        "and e.items_to_place_this and #e.items_to_place_this>0 "
+        "and (not e.fixed_recipe or e.fixed_recipe.name==r.name) then "
+        "by_name[name]=e end end end;"
+        "local out={};"
+        "for _,e in pairs(by_name) do "
+        "out[#out+1]=e.name..':'..e.tile_width..':'..e.tile_height end;"
+        "rcon.print('CANDIDATES:'..table.concat(out,';'))"
+    )
+    response = client.run(probe, retry=True)
+    text = response.strip() if response else ""
+    if not text.startswith("CANDIDATES:"):
+        return None, text or "ERROR: empty response"
+    candidates = []
+    for field in text[len("CANDIDATES:"):].split(";"):
+        if not field:
+            continue
+        name, separator, rest = field.partition(":")
+        width_text, width_separator, height_text = rest.partition(":")
+        try:
+            width = int(width_text)
+            height = int(height_text)
+        except ValueError:
+            return None, "ERROR: Invalid location response"
+        if (
+            not separator
+            or not width_separator
+            or not name
+            or width < 1
+            or height < 1
+        ):
+            return None, "ERROR: Invalid location response"
+        candidates.append((name, width, height))
+    if not candidates:
+        return None, "ERROR: No compatible crafting machine"
+    return candidates, None
+
+
+def _lua_table(value):
+    if value is None:
+        return "nil"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, dict):
+        fields = ",".join(
+            f"[{json.dumps(str(key))}]={_lua_table(item)}"
+            for key, item in value.items()
+        )
+        return "{" + fields + "}"
+    if isinstance(value, (list, tuple)):
+        return "{" + ",".join(_lua_table(item) for item in value) + "}"
+    raise TypeError(f"cannot serialize {type(value).__name__} to Lua")
+
+
+CELL_DIR_LUA = (
+    "local DIR={east=defines.direction.east,"
+    "south=defines.direction.south,"
+    "west=defines.direction.west,north=defines.direction.north};"
+)
+
+
+def cell_variants_lua(variants_by_dims):
+    return CELL_DIR_LUA + "local VARIANTS=" + _lua_table(
+        variants_by_dims
+    ) + ";"
+
+
+def place_production_cell(client, surface, item, hint="", requesting_player="", knobs=None):
     if not requesting_player:
         return "ERROR: Requesting player is required"
+
+    knobs = knobs or default_production_cell_knobs()
+    default_keys = set(default_production_cell_knobs())
+    if set(knobs) not in (default_keys, default_keys | {"custom_variant"}):
+        return "ERROR: Invalid production-cell options"
 
     explicit = False
     ax = 0
@@ -1053,12 +1468,42 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         ax = math.floor(ax_value)
         ay = math.floor(ay_value)
 
+    candidates, error = query_production_cell_candidates(
+        client, surface, item, requesting_player, relative_location
+    )
+    if error:
+        return error
+
+    custom_variant = knobs.get("custom_variant")
+    if custom_variant is not None:
+        machine = None
+        for plan in custom_variant.get("plans", []):
+            if plan.get("r") == "building":
+                machine = plan.get("n")
+        if not machine:
+            return "ERROR: custom plan has no building entry"
+        match = [candidate for candidate in candidates if candidate[0] == machine]
+        if not match:
+            return f"ERROR: custom plan machine '{machine}' not available"
+        _, width, height = match[0]
+        normalized = _normalize_custom_variant(custom_variant, width, height)
+        variants_by_dims = {f"{width}x{height}": [normalized]}
+    else:
+        variants_by_dims = {}
+        for _, width, height in candidates:
+            key = f"{width}x{height}"
+            if key not in variants_by_dims:
+                variants_by_dims[key] = build_requested_cell_variants(
+                    knobs, width, height
+                )
+
     surface_lua = json.dumps(surface)
     item_lua = json.dumps(item)
     player_lua = json.dumps(requesting_player)
     direction_lua = json.dumps(direction)
     relative_location_lua = json.dumps(relative_location)
     explicit_lua = "true" if explicit else "false"
+    tier_lua = json.dumps(knobs["tier"])
 
     phase1 = (
         f"/silent-command "
@@ -1097,381 +1542,344 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         f"else origin=game.forces.player.get_spawn_position(s) end end;"
         f"local origin_x=explicit and explicit_ax or origin.x;"
         f"local origin_y=explicit and explicit_ay or origin.y;"
-        f"local r=prototypes.recipe[{item_lua}];"
-        f"if not r then rcon.print('ERROR: Recipe not found') return end;"
-        f"for _,ingredient in ipairs(r.ingredients) do "
-        f"if ingredient.type=='fluid' then "
-        f"rcon.print('ERROR: Fluid recipes are not supported') return end end;"
-        f"for _,product in ipairs(r.products) do "
-        f"if product.type=='fluid' then "
-        f"rcon.print('ERROR: Fluid recipes are not supported') return end end;"
-        f"if not s.ignore_surface_conditions then "
-        f"for _,condition in ipairs(r.surface_conditions or {{}}) do "
-        f"local value=s.get_property(condition.property);"
-        f"if (condition.min and value<condition.min) "
-        f"or (condition.max and value>condition.max) then "
-        f"rcon.print('ERROR: Recipe is not supported on '..s.name) return end end end;"
-        f"local force_recipe=game.forces.player.recipes[{item_lua}];"
-        f"if not force_recipe or not force_recipe.enabled then "
-        f"rcon.print('ERROR: Recipe is not unlocked') return end;"
-        f"local by_name={{}};"
-        f"for _,category in ipairs(r.categories) do "
-        f"for name,e in pairs(prototypes.get_entity_filtered{{"
-        f"{{filter='crafting-category',crafting_category=category}}"
-        f"}}) do "
-        f"if (e.type=='assembling-machine' or e.type=='furnace') "
-        f"and e.items_to_place_this and #e.items_to_place_this>0 "
-        f"and (not e.fixed_recipe or e.fixed_recipe.name==r.name) then "
-        f"by_name[name]=e end end end;"
-        f"local candidates={{}};"
-        f"for _,e in pairs(by_name) do candidates[#candidates+1]=e end;"
-        f"table.sort(candidates,function(a,b) "
-        f"local sa=a.get_crafting_speed('normal');"
-        f"local sb=b.get_crafting_speed('normal');"
-        f"if sa~=sb then return sa>sb end;"
-        f"local aa=a.tile_width*a.tile_height;"
-        f"local ab=b.tile_width*b.tile_height;"
-        f"if aa~=ab then return aa<ab end;"
-        f"return a.name<b.name end);"
-        f"if #candidates==0 then "
-        f"rcon.print('ERROR: No compatible crafting machine') return end;"
+        + production_cell_recipe_checks_lua.format(item=item_lua)
+        +
+        "local by_name={};"
+        "for _,category in ipairs(r.categories) do "
+        "for name,e in pairs(prototypes.get_entity_filtered{"
+        "{filter='crafting-category',crafting_category=category}"
+        "}) do "
+        "if (e.type=='assembling-machine' or e.type=='furnace') "
+        "and e.items_to_place_this and #e.items_to_place_this>0 "
+        "and (not e.fixed_recipe or e.fixed_recipe.name==r.name) then "
+        "by_name[name]=e end end end;"
+        "local candidates={};"
+        "for _,e in pairs(by_name) do candidates[#candidates+1]=e end;"
+        "table.sort(candidates,function(a,b) "
+        "local sa=a.get_crafting_speed('normal');"
+        "local sb=b.get_crafting_speed('normal');"
+        "local aa=a.tile_width*a.tile_height;"
+        "local ab=b.tile_width*b.tile_height;"
+        f"if {tier_lua}=='smallest' then "
+        "if aa~=ab then return aa<ab end;"
+        "if sa~=sb then return sa>sb end;"
+        "else "
+        "if sa~=sb then return sa>sb end;"
+        "if aa~=ab then return aa<ab end;"
+        "end "
+        "return a.name<b.name end);"
+        "if #candidates==0 then "
+        "rcon.print('ERROR: No compatible crafting machine') return end;"
+        + cell_variants_lua(variants_by_dims)
+        +
         f"local max_search_radius={production_cell_search_max_radius};"
         f"local max_search_candidates={production_cell_search_max_candidates};"
-        f"local function direction_ok(dx,dy) "
-        f"if direction=='' then return true end;"
-        f"if direction=='north' then return dy<0 and math.abs(dx)<=math.abs(dy) end;"
-        f"if direction=='north-east' then return dx>0 and dy<0 end;"
-        f"if direction=='east' then return dx>0 and math.abs(dy)<=math.abs(dx) end;"
-        f"if direction=='south-east' then return dx>0 and dy>0 end;"
-        f"if direction=='south' then return dy>0 and math.abs(dx)<=math.abs(dy) end;"
-        f"if direction=='south-west' then return dx<0 and dy>0 end;"
-        f"if direction=='west' then return dx<0 and math.abs(dy)<=math.abs(dx) end;"
-        f"return dx<0 and dy<0 end;"
-        f"local requires_heat=s.planet and s.planet.name=='aquilo';"
-        f"local heat_source_types={{'heat-pipe','reactor','heat-interface'}};"
-        f"local heat_source_type={{['heat-pipe']=true,['reactor']=true,"
-        f"['heat-interface']=true}};"
-        f"local max_heat_reach=0;"
-        f"if requires_heat then "
-        f"for _,source_type in ipairs(heat_source_types) do "
-        f"for _,p in pairs(prototypes.get_entity_filtered{{"
-        f"{{filter='type',type=source_type}}}}) do "
-        f"local radius=p.heating_radius or 0;local box=p.collision_box;"
-        f"local extent=math.max(math.abs(box.left_top.x),"
-        f"math.abs(box.left_top.y),math.abs(box.right_bottom.x),"
-        f"math.abs(box.right_bottom.y));"
-        f"max_heat_reach=math.max(max_heat_reach,radius+extent) end end end;"
-        f"local function plan_is_heated(plan) "
-        f"if not requires_heat then return true end;"
-        f"local p=prototypes.entity[plan.name];"
-        f"if not p or p.heating_energy<=0 then return true end;"
-        f"local box=p.collision_box;"
-        f"local left=plan.position[1]+box.left_top.x;"
-        f"local top=plan.position[2]+box.left_top.y;"
-        f"local right=plan.position[1]+box.right_bottom.x;"
-        f"local bottom=plan.position[2]+box.right_bottom.y;"
-        f"local sources=s.find_entities_filtered{{"
-        f"area={{{{left-max_heat_reach,top-max_heat_reach}},"
-        f"{{right+max_heat_reach,bottom+max_heat_reach}}}},"
-        f"type=heat_source_types}};"
-        f"for _,source in ipairs(sources) do "
-        f"local radius=source.prototype.heating_radius or 0;"
-        f"local heat_box=source.bounding_box;"
-        f"if radius>0 and source.temperature and source.temperature>=30 "
-        f"and right>heat_box.left_top.x-radius "
-        f"and left<heat_box.right_bottom.x+radius "
-        f"and bottom>heat_box.left_top.y-radius "
-        f"and top<heat_box.right_bottom.y+radius then return true end end;"
-        f"return false end;"
-        f"local function plan_overlaps_heat_source(plan) "
-        f"if not requires_heat then return false end;"
-        f"local p=prototypes.entity[plan.name];local box=p.collision_box;"
-        f"local left=plan.position[1]+box.left_top.x;"
-        f"local top=plan.position[2]+box.left_top.y;"
-        f"local right=plan.position[1]+box.right_bottom.x;"
-        f"local bottom=plan.position[2]+box.right_bottom.y;"
-        f"for _,source in ipairs(s.find_entities_filtered{{"
-        f"area={{{{left,top}},{{right,bottom}}}},type=heat_source_types}}) do "
-        f"local heat_box=source.bounding_box;"
-        f"if right>heat_box.left_top.x and left<heat_box.right_bottom.x "
-        f"and bottom>heat_box.left_top.y and top<heat_box.right_bottom.y then "
-        f"return true end end;return false end;"
-        f"local function count_blockers(area) "
-        f"if not requires_heat then "
-        f"return s.count_entities_filtered{{area=area}} end;"
-        f"local count=0;for _,existing in ipairs("
-        f"s.find_entities_filtered{{area=area}}) do "
-        f"if not heat_source_type[existing.type] then count=count+1 end end;"
-        f"return count end;"
-        f"local function plan_has_live_power(plan) "
-        f"for _,pole in ipairs(s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{plan.position[1]-64,plan.position[2]-64}},"
-        f"{{plan.position[1]+64,plan.position[2]+64}}}},force='player'}}) do "
-        f"if pole.electric_network then "
-        f"local supply=pole.prototype.get_supply_area_distance(pole.quality);"
-        f"if math.abs(pole.position.x-plan.position[1])<=supply "
-        f"and math.abs(pole.position.y-plan.position[2])<=supply then "
-        f"return true end end end;return false end;"
-        f"local pole_proto=prototypes.entity['medium-electric-pole'];"
-        f"if not pole_proto then "
-        f"rcon.print('ERROR: medium-electric-pole not found') return end;"
-        f"local trace={{anchors=0,structural=0,occupied=0,unplaceable=0,"
-        f"heat=0,logistics=0,construction=0,power=0}};"
-        f"local function trace_text(selection,ax,ay,layout) "
-        f"return string.format('surface=%s origin=%.1f:%.1f direction=%s "
-        f"machines=%d anchors=%d structural=%d occupied=%d unplaceable=%d "
-        f"heat=%d logistics=%d construction=%d power=%d "
-        f"selected=%s:%.0f:%.0f:%s',s.name,origin_x,origin_y,"
-        f"direction=='' and 'any' or direction,#candidates,trace.anchors,"
-        f"trace.structural,trace.occupied,trace.unplaceable,trace.heat,"
-        f"trace.logistics,trace.construction,trace.power,selection,ax,ay,"
-        f"layout) end;"
-        f"local function anchor_result(ax,ay,w,h,en,chain,layout,mode) "
-        f"local encoded={{}};for _,pos in ipairs(chain) do "
-        f"encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
-        f"return 'ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
-        f"','..table.concat(encoded,';')..','..s.name..','..layout..','..mode.."
-        f"'|TRACE:'..trace_text(mode,ax,ay,layout) end;"
-        f"local fallback_result=nil;"
-        f"local last_error='No suitable compatible crafting machine';"
-        f"for _,e in ipairs(candidates) do "
-        f"local en=e.name;local w=e.tile_width;local h=e.tile_height;"
-        f"local anchors={{}};"
-        f"if explicit then anchors[1]={{explicit_ax,explicit_ay}} else "
-        f"local step_x=w+4;local step_y=h+1;"
-        f"if requires_heat then step_x=1;step_y=1 end;"
-        f"local base_x=math.floor(origin.x-w/2);"
-        f"local base_y=math.floor(origin.y-h/2);"
-        f"local max_ring=math.ceil(max_search_radius/math.min(step_x,step_y));"
-        f"for ring=0,max_ring do "
-        f"if #anchors>=max_search_candidates then break end;"
-        f"for gy=-ring,ring do "
-        f"if #anchors>=max_search_candidates then break end;"
-        f"for gx=-ring,ring do "
-        f"if #anchors>=max_search_candidates then break end;"
-        f"if math.max(math.abs(gx),math.abs(gy))==ring then "
-        f"local dx=gx*step_x;local dy=gy*step_y;"
-        f"if math.max(math.abs(dx),math.abs(dy))<=max_search_radius "
-        f"and direction_ok(dx,dy) then "
-        f"anchors[#anchors+1]={{base_x+dx,base_y+dy}} end end end end end end;"
-        f"for _,anchor in ipairs(anchors) do "
-        f"trace.anchors=trace.anchors+1;"
-        f"local ax=anchor[1];local ay=anchor[2];"
-        f"local cx=ax+w/2;local cy=ay+h/2;"
-        f"if requires_heat and w>=2 then "
-        f"local compact_area={{{{ax,ay}},{{ax+w,ay+h+2}}}};"
-        f"local compact_plans={{"
-        f"{{name=en,position={{cx,cy}}}},"
-        f"{{name='requester-chest',position={{ax+0.5,ay+h+1.5}}}},"
-        f"{{name='passive-provider-chest',position={{ax+1.5,ay+h+1.5}}}},"
-        f"{{name='inserter',position={{ax+0.5,ay+h+0.5}},"
-        f"direction=defines.direction.south}},"
-        f"{{name='inserter',position={{ax+1.5,ay+h+0.5}},"
-        f"direction=defines.direction.north}}"
-        f"}};"
-        f"local compact_count=count_blockers(compact_area);"
-        f"if compact_count>0 then "
-        f"trace.occupied=trace.occupied+1;"
-        f"last_error=compact_count..' entities in compact area' "
-        f"else "
-        f"local compact_placeable=true;local compact_blocked='';"
-        f"for _,plan in ipairs(compact_plans) do "
-        f"if plan_overlaps_heat_source(plan) or not "
-        f"s.can_place_entity{{name=plan.name,position=plan.position,"
-        f"direction=plan.direction,force='player',"
-        f"build_check_type=defines.build_check_type.script_ghost}} then "
-        f"compact_placeable=false;compact_blocked=plan.name;break end end;"
-        f"local compact_heated=true;local compact_cold='';"
-        f"if compact_placeable then for _,plan in ipairs(compact_plans) do "
-        f"if not plan_is_heated(plan) then "
-        f"compact_heated=false;compact_cold=plan.name;break end end end;"
-        f"if not compact_placeable then "
-        f"trace.unplaceable=trace.unplaceable+1;"
-        f"last_error='Cannot place compact '..compact_blocked "
-        f"else "
-        f"trace.structural=trace.structural+1;"
-        f"local compact_net=s.find_logistic_network_by_position("
-        f"compact_plans[2].position,'player');"
-        f"local compact_construction=true;"
-        f"for _,plan in ipairs(compact_plans) do "
-        f"if #s.find_logistic_networks_by_construction_area("
-        f"plan.position,'player')==0 then "
-        f"compact_construction=false break end end;"
-        f"local compact_power=plan_has_live_power(compact_plans[1]) "
-        f"and plan_has_live_power(compact_plans[4]) "
-        f"and plan_has_live_power(compact_plans[5]);"
-        f"if not compact_heated then trace.heat=trace.heat+1 end;"
-        f"if not compact_net then trace.logistics=trace.logistics+1 end;"
-        f"if not compact_construction then "
-        f"trace.construction=trace.construction+1 end;"
-        f"if not compact_power then trace.power=trace.power+1 end;"
-        f"if compact_heated and compact_net and compact_construction "
-        f"and compact_power then "
-        f"rcon.print(anchor_result(ax,ay,w,h,en,{{}},"
-        f"'aquilo-compact','strict')) return "
-        f"else "
-        f"if not compact_heated then "
-        f"last_error='No heat coverage for compact '..compact_cold "
-        f"elseif not compact_net then "
-        f"last_error='No logistic network coverage for compact cell' "
-        f"elseif not compact_construction then "
-        f"last_error='No construction network coverage for compact cell' "
-        f"else last_error='No existing power coverage for compact cell' end;"
-        f"if not fallback_result then fallback_result=anchor_result("
-        f"ax,ay,w,h,en,{{}},'aquilo-compact','fallback') end end end end end;"
-        f"local row=ay+math.floor(h/2)+0.5;"
-        f"local pole_pos={{ax+math.floor(w/2)+0.5,ay-0.5}};"
-        f"local area={{{{ax-2,ay-1}},{{ax+w+2,ay+h}}}};"
-        f"local count=count_blockers(area);"
-        f"if count>0 then "
-        f"trace.occupied=trace.occupied+1;"
-        f"last_error=count..' entities in area' "
-        f"else "
-        f"local plans={{"
-        f"{{name=en,position={{cx,cy}}}},"
-        f"{{name='requester-chest',position={{ax-1.5,row}}}},"
-        f"{{name='passive-provider-chest',position={{ax+w+1.5,row}}}},"
-        f"{{name='inserter',position={{ax-0.5,row}},"
-        f"direction=defines.direction.west}},"
-        f"{{name='inserter',position={{ax+w+0.5,row}},"
-        f"direction=defines.direction.west}},"
-        f"{{name='medium-electric-pole',position=pole_pos}}"
-        f"}};"
-        f"local placeable=true;local blocked='';"
-        f"for _,plan in ipairs(plans) do "
-        f"if plan_overlaps_heat_source(plan) or not "
-        f"s.can_place_entity{{name=plan.name,position=plan.position,"
-        f"direction=plan.direction,force='player',"
-        f"build_check_type=defines.build_check_type.script_ghost}} then "
-        f"placeable=false;blocked=plan.name;break end end;"
-        f"local heated=true;local cold='';"
-        f"if placeable then for _,plan in ipairs(plans) do "
-        f"if not plan_is_heated(plan) then "
-        f"heated=false;cold=plan.name;break end end end;"
-        f"if not placeable then "
-        f"trace.unplaceable=trace.unplaceable+1;"
-        f"last_error='Cannot place '..blocked "
-        f"else "
-        f"trace.structural=trace.structural+1;"
-        f"local requester=plans[2].position;"
-        f"local net=s.find_logistic_network_by_position(requester,'player');"
-        f"local construction=true;"
-        f"for _,plan in ipairs(plans) do "
-        f"if #s.find_logistic_networks_by_construction_area("
-        f"plan.position,'player')==0 then construction=false break end end;"
-        f"local supply=pole_proto.get_supply_area_distance('normal');"
-        f"local supplies=math.abs(cx-pole_pos[1])<=supply "
-        f"and math.abs(cy-pole_pos[2])<=supply;"
-        f"local new_wire=pole_proto.get_max_wire_distance('normal');"
+        "local function direction_ok(dx,dy) "
+        "if direction=='' then return true end;"
+        "if direction=='north' then return dy<0 and math.abs(dx)<=math.abs(dy) end;"
+        "if direction=='north-east' then return dx>0 and dy<0 end;"
+        "if direction=='east' then return dx>0 and math.abs(dy)<=math.abs(dx) end;"
+        "if direction=='south-east' then return dx>0 and dy>0 end;"
+        "if direction=='south' then return dy>0 and math.abs(dx)<=math.abs(dy) end;"
+        "if direction=='south-west' then return dx<0 and dy>0 end;"
+        "if direction=='west' then return dx<0 and math.abs(dy)<=math.abs(dx) end;"
+        "return dx<0 and dy<0 end;"
+        "local requires_heat=s.planet and s.planet.name=='aquilo';"
+        "local heat_source_types={'heat-pipe','reactor','heat-interface'};"
+        "local heat_source_type={['heat-pipe']=true,['reactor']=true,"
+        "['heat-interface']=true};"
+        "local max_heat_reach=0;"
+        "if requires_heat then "
+        "for _,source_type in ipairs(heat_source_types) do "
+        "for _,p in pairs(prototypes.get_entity_filtered{"
+        "{filter='type',type=source_type}}) do "
+        "local radius=p.heating_radius or 0;local box=p.collision_box;"
+        "local extent=math.max(math.abs(box.left_top.x),"
+        "math.abs(box.left_top.y),math.abs(box.right_bottom.x),"
+        "math.abs(box.right_bottom.y));"
+        "max_heat_reach=math.max(max_heat_reach,radius+extent) end end end;"
+        "local function plan_is_heated(plan) "
+        "if not requires_heat then return true end;"
+        "local p=prototypes.entity[plan.name];"
+        "if not p or p.heating_energy<=0 then return true end;"
+        "local box=p.collision_box;"
+        "local left=plan.position[1]+box.left_top.x;"
+        "local top=plan.position[2]+box.left_top.y;"
+        "local right=plan.position[1]+box.right_bottom.x;"
+        "local bottom=plan.position[2]+box.right_bottom.y;"
+        "local sources=s.find_entities_filtered{"
+        "area={{left-max_heat_reach,top-max_heat_reach},"
+        "{right+max_heat_reach,bottom+max_heat_reach}},"
+        "type=heat_source_types};"
+        "for _,source in ipairs(sources) do "
+        "local radius=source.prototype.heating_radius or 0;"
+        "local heat_box=source.bounding_box;"
+        "if radius>0 and source.temperature and source.temperature>=30 "
+        "and right>heat_box.left_top.x-radius "
+        "and left<heat_box.right_bottom.x+radius "
+        "and bottom>heat_box.left_top.y-radius "
+        "and top<heat_box.right_bottom.y+radius then return true end end;"
+        "return false end;"
+        "local function plan_overlaps_heat_source(plan) "
+        "if not requires_heat then return false end;"
+        "local p=prototypes.entity[plan.name];local box=p.collision_box;"
+        "local left=plan.position[1]+box.left_top.x;"
+        "local top=plan.position[2]+box.left_top.y;"
+        "local right=plan.position[1]+box.right_bottom.x;"
+        "local bottom=plan.position[2]+box.right_bottom.y;"
+        "for _,source in ipairs(s.find_entities_filtered{"
+        "area={{left,top},{right,bottom}},type=heat_source_types}) do "
+        "local heat_box=source.bounding_box;"
+        "if right>heat_box.left_top.x and left<heat_box.right_bottom.x "
+        "and bottom>heat_box.left_top.y and top<heat_box.right_bottom.y then "
+        "return true end end;return false end;"
+        "local function count_blockers(area) "
+        "if not requires_heat then "
+        "return s.count_entities_filtered{area=area} end;"
+        "local count=0;for _,existing in ipairs("
+        "s.find_entities_filtered{area=area}) do "
+        "if not heat_source_type[existing.type] then count=count+1 end end;"
+        "return count end;"
+        "local function plan_has_live_power(plan) "
+        "for _,pole in ipairs(s.find_entities_filtered{type='electric-pole',"
+        "area={{plan.position[1]-64,plan.position[2]-64},"
+        "{plan.position[1]+64,plan.position[2]+64}},force='player'}) do "
+        "if pole.electric_network then "
+        "local supply=pole.prototype.get_supply_area_distance(pole.quality);"
+        "if math.abs(pole.position.x-plan.position[1])<=supply "
+        "and math.abs(pole.position.y-plan.position[2])<=supply then "
+        "return true end end end;return false end;"
+        "local pole_proto=prototypes.entity['medium-electric-pole'];"
+        "if not pole_proto then "
+        "rcon.print('ERROR: medium-electric-pole not found') return end;"
+        "local trace={anchors=0,structural=0,occupied=0,unplaceable=0,"
+        "heat=0,logistics=0,construction=0,power=0};"
+        "local function trace_text(selection,ax,ay,layout) "
+        "return string.format('surface=%s origin=%.1f:%.1f direction=%s "
+        "machines=%d anchors=%d structural=%d occupied=%d unplaceable=%d "
+        "heat=%d logistics=%d construction=%d power=%d "
+        "selected=%s:%.0f:%.0f:%s',s.name,origin_x,origin_y,"
+        "direction=='' and 'any' or direction,#candidates,trace.anchors,"
+        "trace.structural,trace.occupied,trace.unplaceable,trace.heat,"
+        "trace.logistics,trace.construction,trace.power,selection,ax,ay,"
+        "layout) end;"
+        "local function anchor_result(ax,ay,w,h,en,chain,layout,mode) "
+        "local encoded={};for _,pos in ipairs(chain) do "
+        "encoded[#encoded+1]=string.format('%.1f:%.1f',pos[1],pos[2]) end;"
+        "return 'ANCHOR:'..ax..','..ay..','..w..','..h..','..en.."
+        "','..table.concat(encoded,';')..','..s.name..','..layout..','..mode.."
+        "'|TRACE:'..trace_text(mode,ax,ay,layout) end;"
+        "local function instantiate(v,ax,ay,en) "
+        "local plans={};"
+        "for i,off in ipairs(v.plans) do "
+        "local pname=off.r=='building' and en or off.n;"
+        "plans[i]={name=pname,key=off.n,"
+        "position={ax+off.x,ay+off.y},"
+        "direction=(off.d and off.d~='') and DIR[off.d] or nil,role=off.r} "
+        "end;"
+        "local area={{ax+v.area[1],ay+v.area[2]},"
+        "{ax+v.area[3],ay+v.area[4]}};"
+        "return plans,area end;"
+        "local fallback_result=nil;"
+        "local last_error='No suitable compatible crafting machine';"
+        "for _,e in ipairs(candidates) do "
+        "local en=e.name;local w=e.tile_width;local h=e.tile_height;"
+        "local dims=w..'x'..h;"
+        "local dim_variants=VARIANTS[dims];"
+        "if not dim_variants then "
+        "last_error='No layout table for '..dims "
+        "else "
+        "local anchors={};"
+        "if explicit then anchors[1]={explicit_ax,explicit_ay} else "
+        "local step_x=w+4;local step_y=h+1;"
+        "if requires_heat then step_x=1;step_y=1 end;"
+        "local base_x=math.floor(origin.x-w/2);"
+        "local base_y=math.floor(origin.y-h/2);"
+        "local max_ring=math.ceil(max_search_radius/math.min(step_x,step_y));"
+        "for ring=0,max_ring do "
+        "if #anchors>=max_search_candidates then break end;"
+        "for gy=-ring,ring do "
+        "if #anchors>=max_search_candidates then break end;"
+        "for gx=-ring,ring do "
+        "if #anchors>=max_search_candidates then break end;"
+        "if math.max(math.abs(gx),math.abs(gy))==ring then "
+        "local dx=gx*step_x;local dy=gy*step_y;"
+        "if math.max(math.abs(dx),math.abs(dy))<=max_search_radius "
+        "and direction_ok(dx,dy) then "
+        "anchors[#anchors+1]={base_x+dx,base_y+dy} end end end end end end;"
+        "for _,anchor in ipairs(anchors) do "
+        "trace.anchors=trace.anchors+1;"
+        "local ax=anchor[1];local ay=anchor[2];"
+        "local ordered={};"
+        "for _,v in ipairs(dim_variants) do "
+        "if v.layout~='aquilo-compact' then "
+        "ordered[#ordered+1]=v end end;"
+        "if requires_heat then "
+        "table.insert(ordered,1,dim_variants[#dim_variants]) end;"
+        "for _,v in ipairs(ordered) do "
+        "local plans,area=instantiate(v,ax,ay,en);"
+        "local count=count_blockers(area);"
+        "if count>0 then "
+        "trace.occupied=trace.occupied+1;"
+        "last_error=count..' entities in area' "
+        "else "
+        "local placeable=true;local blocked='';"
+        "for _,plan in ipairs(plans) do "
+        "if plan_overlaps_heat_source(plan) or not "
+        "s.can_place_entity{name=plan.name,position=plan.position,"
+        "direction=plan.direction,force='player',"
+        "build_check_type=defines.build_check_type.script_ghost} then "
+        "placeable=false;blocked=plan.key;break end end;"
+        "local heated=true;local cold='';"
+        "if placeable then for _,plan in ipairs(plans) do "
+        "if not plan_is_heated(plan) then "
+        "heated=false;cold=plan.key;break end end end;"
+        "if not placeable then "
+        "trace.unplaceable=trace.unplaceable+1;"
+        "last_error='Cannot place '..blocked "
+        "else "
+        "trace.structural=trace.structural+1;"
+        "local consumer=nil;"
+        "for _,plan in ipairs(plans) do "
+        "if plan.role=='requester' then consumer=plan.position break end "
+        "end;"
+        "if not consumer then "
+        "for _,plan in ipairs(plans) do "
+        "if plan.role=='building' then consumer=plan.position break end "
+        "end end;"
+        "local net=consumer and "
+        "s.find_logistic_network_by_position(consumer,'player') or nil;"
+        "local construction=true;"
+        "for _,plan in ipairs(plans) do "
+        "if #s.find_logistic_networks_by_construction_area("
+        "plan.position,'player')==0 then construction=false break end end;"
+        "local building=nil;local pole_pos=nil;local inserters={};"
+        "for _,plan in ipairs(plans) do "
+        "if plan.role=='building' then building=plan.position end;"
+        "if plan.role=='pole' then pole_pos=plan.position end;"
+        "if plan.role=='inserter' then inserters[#inserters+1]=plan.position "
+        "end end;"
+        "local powered=true;"
+        "local new_wire=pole_proto.get_max_wire_distance('normal');"
+        "local chain={};"
+        "if v.pole then "
+        "local supply=pole_proto.get_supply_area_distance('normal');"
+        "local supplies=math.abs(building[1]-pole_pos[1])<=supply "
+        "and math.abs(building[2]-pole_pos[2])<=supply;"
         f"local max_extensions={production_cell_max_extension_poles};"
-        f"local search_radius=(max_extensions+1)*new_wire;"
-        f"local live={{}};"
-        f"for _,pole in ipairs(s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{pole_pos[1]-search_radius,pole_pos[2]-search_radius}},"
-        f"{{pole_pos[1]+search_radius,pole_pos[2]+search_radius}}}},"
-        f"force='player'}}) do "
-        f"if pole.electric_network then live[#live+1]=pole end end;"
-        f"table.sort(live,function(a,b) "
-        f"local adx=a.position.x-pole_pos[1];"
-        f"local ady=a.position.y-pole_pos[2];"
-        f"local bdx=b.position.x-pole_pos[1];"
-        f"local bdy=b.position.y-pole_pos[2];"
-        f"local da=adx*adx+ady*ady;local db=bdx*bdx+bdy*bdy;"
-        f"if da~=db then return da<db end;"
-        f"if a.position.x~=b.position.x then "
-        f"return a.position.x<b.position.x end;"
-        f"return a.position.y<b.position.y end);"
-        f"local function reaches_live(pos) "
-        f"for _,pole in ipairs(live) do "
-        f"local reach=math.min(new_wire,"
-        f"pole.prototype.get_max_wire_distance(pole.quality));"
-        f"local dx=pole.position.x-pos[1];"
-        f"local dy=pole.position.y-pos[2];"
-        f"if dx*dx+dy*dy<=reach*reach then return true end end;"
-        f"return false end;"
-        f"local function overlaps_cell(pos) "
-        f"local left=pos[1]-0.5;local right=pos[1]+0.5;"
-        f"local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
-        f"return not (right<=area[1][1] or left>=area[2][1] "
-        f"or bottom<=area[1][2] or top>=area[2][2]) end;"
-        f"local function valid_extension(pos) "
-        f"if overlaps_cell(pos) then return false end;"
-        f"local cell={{{{pos[1]-0.5,pos[2]-0.5}},"
-        f"{{pos[1]+0.5,pos[2]+0.5}}}};"
-        f"if s.count_entities_filtered{{area=cell}}>0 then return false end;"
-        f"if not s.can_place_entity{{name='medium-electric-pole',position=pos,"
-        f"force='player',"
-        f"build_check_type=defines.build_check_type.script_ghost}} then "
-        f"return false end;"
-        f"return #s.find_logistic_networks_by_construction_area("
-        f"pos,'player')>0 end;"
-        f"local function key(pos) "
-        f"return string.format('%.1f,%.1f',pos[1],pos[2]) end;"
-        f"local function target_distance(pos) "
-        f"local best=math.huge;for _,pole in ipairs(live) do "
-        f"local dx=pole.position.x-pos[1];"
-        f"local dy=pole.position.y-pos[2];"
-        f"best=math.min(best,dx*dx+dy*dy) end;return best end;"
-        f"local chain={{}};local connected=reaches_live(pole_pos);"
-        f"if not connected and construction and supplies and #live>0 then "
-        f"local frontier={{{{position=pole_pos,path={{}}}}}};"
-        f"local seen={{[key(pole_pos)]=true}};"
-        f"for depth=1,max_extensions do "
-        f"local next_frontier={{}};"
-        f"for _,state in ipairs(frontier) do "
-        f"local candidates={{}};"
-        f"local min_x=math.ceil(state.position[1]-new_wire-0.5);"
-        f"local max_x=math.floor(state.position[1]+new_wire-0.5);"
-        f"local min_y=math.ceil(state.position[2]-new_wire-0.5);"
-        f"local max_y=math.floor(state.position[2]+new_wire-0.5);"
-        f"for tile_x=min_x,max_x do for tile_y=min_y,max_y do "
-        f"local pos={{tile_x+0.5,tile_y+0.5}};"
-        f"local dx=pos[1]-state.position[1];"
-        f"local dy=pos[2]-state.position[2];"
-        f"local distance=dx*dx+dy*dy;local pos_key=key(pos);"
-        f"if distance>0 and distance<=new_wire*new_wire "
-        f"and not seen[pos_key] then "
-        f"candidates[#candidates+1]={{position=pos,key=pos_key,"
-        f"target=target_distance(pos)}} end end end;"
-        f"table.sort(candidates,function(a,b) "
-        f"if a.target~=b.target then return a.target<b.target end;"
-        f"if a.position[1]~=b.position[1] then "
-        f"return a.position[1]<b.position[1] end;"
-        f"return a.position[2]<b.position[2] end);"
-        f"for _,candidate in ipairs(candidates) do "
-        f"seen[candidate.key]=true;"
-        f"if valid_extension(candidate.position) then "
-        f"local path={{}};for _,p in ipairs(state.path) do "
-        f"path[#path+1]=p end;path[#path+1]=candidate.position;"
-        f"if reaches_live(candidate.position) then "
-        f"chain=path;connected=true;break end;"
-        f"next_frontier[#next_frontier+1]="
-        f"{{position=candidate.position,path=path}} end end;"
-        f"if connected then break end end;"
-        f"if connected then break end;frontier=next_frontier end end;"
-        f"if not heated then trace.heat=trace.heat+1 end;"
-        f"if not net then trace.logistics=trace.logistics+1 end;"
-        f"if not construction then trace.construction=trace.construction+1 end;"
-        f"if not supplies or not connected then trace.power=trace.power+1 end;"
-        f"if heated and net and construction and supplies and connected then "
-        f"rcon.print(anchor_result(ax,ay,w,h,en,chain,'standard','strict')) "
-        f"return "
-        f"else "
-        f"if not heated then last_error='No heat coverage for '..cold "
-        f"elseif not net then last_error='No logistic network coverage' "
-        f"elseif not construction then "
-        f"last_error='No construction network coverage for full cell' "
-        f"elseif not supplies then last_error='Planned pole cannot power building' "
-        f"else last_error='No live power connection within '..max_extensions.."
-        f"' extension poles' end;"
-        f"if not fallback_result then fallback_result=anchor_result("
-        f"ax,ay,w,h,en,chain,'standard','fallback') end end end end end end;"
-        f"if fallback_result then rcon.print(fallback_result) "
-        f"else local failure=nil;"
-        f"if explicit then failure='ERROR: '..last_error "
-        f"else failure='ERROR: No suitable production-cell location within "
-        f"'..max_search_radius..' tiles (last: '..last_error..')' end;"
-        f"rcon.print(failure..'|TRACE:'..trace_text('none',0,0,'none')) end"
+        "local search_radius=(max_extensions+1)*new_wire;"
+        "local live={};"
+        "for _,pole in ipairs(s.find_entities_filtered{type='electric-pole',"
+        "area={{pole_pos[1]-search_radius,pole_pos[2]-search_radius},"
+        "{pole_pos[1]+search_radius,pole_pos[2]+search_radius}},"
+        "force='player'}) do "
+        "if pole.electric_network then live[#live+1]=pole end end;"
+        "table.sort(live,function(a,b) "
+        "local adx=a.position.x-pole_pos[1];"
+        "local ady=a.position.y-pole_pos[2];"
+        "local bdx=b.position.x-pole_pos[1];"
+        "local bdy=b.position.y-pole_pos[2];"
+        "local da=adx*adx+ady*ady;local db=bdx*bdx+bdy*bdy;"
+        "if da~=db then return da<db end;"
+        "if a.position.x~=b.position.x then "
+        "return a.position.x<b.position.x end;"
+        "return a.position.y<b.position.y end);"
+        "local function reaches_live(pos) "
+        "for _,pole in ipairs(live) do "
+        "local reach=math.min(new_wire,"
+        "pole.prototype.get_max_wire_distance(pole.quality));"
+        "local dx=pole.position.x-pos[1];"
+        "local dy=pole.position.y-pos[2];"
+        "if dx*dx+dy*dy<=reach*reach then return true end end;"
+        "return false end;"
+        "local function overlaps_cell(pos) "
+        "local left=pos[1]-0.5;local right=pos[1]+0.5;"
+        "local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
+        "return not (right<=area[1][1] or left>=area[2][1] "
+        "or bottom<=area[1][2] or top>=area[2][2]) end;"
+        "local function valid_extension(pos) "
+        "if overlaps_cell(pos) then return false end;"
+        "local cell={{pos[1]-0.5,pos[2]-0.5},"
+        "{pos[1]+0.5,pos[2]+0.5}};"
+        "if s.count_entities_filtered{area=cell}>0 then return false end;"
+        "if not s.can_place_entity{name='medium-electric-pole',position=pos,"
+        "force='player',"
+        "build_check_type=defines.build_check_type.script_ghost} then "
+        "return false end;"
+        "return #s.find_logistic_networks_by_construction_area("
+        "pos,'player')>0 end;"
+        "local function key(pos) "
+        "return string.format('%.1f,%.1f',pos[1],pos[2]) end;"
+        "local function target_distance(pos) "
+        "local best=math.huge;for _,pole in ipairs(live) do "
+        "local dx=pole.position.x-pos[1];"
+        "local dy=pole.position.y-pos[2];"
+        "best=math.min(best,dx*dx+dy*dy) end;return best end;"
+        "local connected=reaches_live(pole_pos);"
+        "if not connected and construction and supplies and #live>0 then "
+        "local frontier={{position=pole_pos,path={}}};"
+        "local seen={[key(pole_pos)]=true};"
+        "for depth=1,max_extensions do "
+        "local next_frontier={};"
+        "for _,state in ipairs(frontier) do "
+        "local ext_candidates={};"
+        "local min_x=math.ceil(state.position[1]-new_wire-0.5);"
+        "local max_x=math.floor(state.position[1]+new_wire-0.5);"
+        "local min_y=math.ceil(state.position[2]-new_wire-0.5);"
+        "local max_y=math.floor(state.position[2]+new_wire-0.5);"
+        "for tile_x=min_x,max_x do for tile_y=min_y,max_y do "
+        "local pos={tile_x+0.5,tile_y+0.5};"
+        "local dx=pos[1]-state.position[1];"
+        "local dy=pos[2]-state.position[2];"
+        "local distance=dx*dx+dy*dy;local pos_key=key(pos);"
+        "if distance>0 and distance<=new_wire*new_wire "
+        "and not seen[pos_key] then "
+        "ext_candidates[#ext_candidates+1]={position=pos,key=pos_key,"
+        "target=target_distance(pos)} end end end;"
+        "table.sort(ext_candidates,function(a,b) "
+        "if a.target~=b.target then return a.target<b.target end;"
+        "if a.position[1]~=b.position[1] then "
+        "return a.position[1]<b.position[1] end;"
+        "return a.position[2]<b.position[2] end);"
+        "for _,candidate in ipairs(ext_candidates) do "
+        "seen[candidate.key]=true;"
+        "if valid_extension(candidate.position) then "
+        "local path={};for _,p in ipairs(state.path) do "
+        "path[#path+1]=p end;path[#path+1]=candidate.position;"
+        "if reaches_live(candidate.position) then "
+        "chain=path;connected=true;break end;"
+        "next_frontier[#next_frontier+1]="
+        "{position=candidate.position,path=path} end end;"
+        "if connected then break end end;"
+        "if connected then break end;frontier=next_frontier end end;"
+        "powered=supplies and connected "
+        "else "
+        "powered=plan_has_live_power{position=building};"
+        "for _,pos in ipairs(inserters) do "
+        "if not plan_has_live_power{position=pos} then "
+        "powered=false break end end end;"
+        "if not heated then trace.heat=trace.heat+1 end;"
+        "if not net then trace.logistics=trace.logistics+1 end;"
+        "if not construction then trace.construction=trace.construction+1 end;"
+        "if not powered then trace.power=trace.power+1 end;"
+        "if heated and net and construction and powered then "
+        "rcon.print(anchor_result(ax,ay,w,h,en,chain,v.layout,'strict')) "
+        "return "
+        "else "
+        "if not heated then last_error='No heat coverage for '..cold "
+        "elseif not net then last_error='No logistic network coverage' "
+        "elseif not construction then "
+        "last_error='No construction network coverage for full cell' "
+        "elseif not powered then last_error='No power coverage for cell' end;"
+        "if not fallback_result then fallback_result=anchor_result("
+        "ax,ay,w,h,en,chain,v.layout,'fallback') end "
+        "end end end end end end end;"
+        "if fallback_result then rcon.print(fallback_result) "
+        "else local failure=nil;"
+        "if explicit then failure='ERROR: '..last_error "
+        "else failure='ERROR: No suitable production-cell location within "
+        "'..max_search_radius..' tiles (last: '..last_error..')' end;"
+        "rcon.print(failure..'|TRACE:'..trace_text('none',0,0,'none')) end"
     )
 
     response = client.run(phase1, retry=True)
@@ -1519,7 +1927,12 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         ):
             return "ERROR: Invalid location response"
     layout = parts[7] if len(parts) >= 8 else "standard"
-    if layout not in ("standard", "aquilo-compact"):
+    dims_key = f"{anchor_w}x{anchor_h}"
+    allowed_layouts = {
+        variant["layout"]
+        for variant in variants_by_dims.get(dims_key, [])
+    } | {"aquilo-compact"}
+    if layout not in allowed_layouts:
         return "ERROR: Invalid location response"
     placement_mode = parts[8] if len(parts) == 9 else "strict"
     if placement_mode not in ("strict", "fallback"):
@@ -1550,301 +1963,1420 @@ def place_production_cell(client, surface, item, hint="", requesting_player=""):
         extensions or resolved_surface != "aquilo"
     ):
         return "ERROR: Invalid location response"
+
+    selected_variant = None
+    for variant in variants_by_dims[dims_key]:
+        if variant["layout"] == layout:
+            selected_variant = variant
+            break
+    if selected_variant is None:
+        return "ERROR: Invalid location response"
+
     anchor_ax = str(int(anchor_ax_value))
     anchor_ay = str(int(anchor_ay_value))
     extensions_lua = "{" + ",".join(
         f"{{{px},{py}}}" for px, py in extensions
     ) + "}"
     phase2_surface_lua = json.dumps(resolved_surface)
+    entity_summary = summarize_cell_plans(selected_variant, en)
 
     phase2 = (
         f"/silent-command "
         f"local s=game.surfaces[{phase2_surface_lua}];"
         f"local x={anchor_ax};local y={anchor_ay};"
         f"local w={anchor_w};local h={anchor_h};"
-        f"local cx=x+w/2;local cy=y+h/2;"
-        f"local row=y+math.floor(h/2)+0.5;"
         f"local en={json.dumps(en)};"
         f"local item={item_lua};"
         f"local layout={json.dumps(layout)};"
         f"local allow_support_warnings="
         f"{'true' if placement_mode == 'fallback' else 'false'};"
         f"local extensions={extensions_lua};"
+        f"local offs={_lua_table(selected_variant['plans'])};"
+        f"local area_off={_lua_table(list(selected_variant['area']))};"
         f"local player=game.get_player({player_lua});"
-        f"local cleanup={{}};"
-        f"local warnings={{}};local warning_seen={{}};"
-        f"local function support_issue(text) "
-        f"if not allow_support_warnings then error(text) end;"
-        f"if not warning_seen[text] then warning_seen[text]=true;"
-        f"warnings[#warnings+1]=text end end;"
-        f"local function rb() "
-        f"for i=#cleanup,1,-1 do local g=cleanup[i];"
-        f"if g and g.valid then pcall(function() g.destroy() end) end end;"
-        f"local remaining=0;"
-        f"for _,g in ipairs(cleanup) do "
-        f"if g and g.valid then remaining=remaining+1 end end;"
-        f"return remaining end;"
-        f"local ok,err=pcall(function() "
-        f"if not s then error('surface not found') end;"
-        f"if not player then error('requesting player not found') end;"
-        f"local r=prototypes.recipe[item];"
-        f"local e=prototypes.entity[en];"
-        f"local pole_proto=prototypes.entity['medium-electric-pole'];"
-        f"if not r or not e or (layout=='standard' and not pole_proto) then "
-        f"error('prototype changed after preflight') end;"
-        f"if e.tile_width~=w or e.tile_height~=h then "
-        f"error('building dimensions changed after preflight') end;"
-        f"local pole_pos={{x+math.floor(w/2)+0.5,y-0.5}};"
-        f"local area=nil;local plans=nil;"
-        f"if layout=='aquilo-compact' then "
-        f"area={{{{x,y}},{{x+w,y+h+2}}}};"
-        f"plans={{"
-        f"{{name=en,position={{cx,cy}}}},"
-        f"{{name='requester-chest',position={{x+0.5,y+h+1.5}}}},"
-        f"{{name='passive-provider-chest',position={{x+1.5,y+h+1.5}}}},"
-        f"{{name='inserter',position={{x+0.5,y+h+0.5}},"
-        f"direction=defines.direction.south}},"
-        f"{{name='inserter',position={{x+1.5,y+h+0.5}},"
-        f"direction=defines.direction.north}}"
-        f"}} "
-        f"else area={{{{x-2,y-1}},{{x+w+2,y+h}}}};plans={{"
-        f"{{name=en,position={{cx,cy}}}},"
-        f"{{name='requester-chest',position={{x-1.5,row}}}},"
-        f"{{name='passive-provider-chest',position={{x+w+1.5,row}}}},"
-        f"{{name='inserter',position={{x-0.5,row}},"
-        f"direction=defines.direction.west}},"
-        f"{{name='inserter',position={{x+w+0.5,row}},"
-        f"direction=defines.direction.west}},"
-        f"{{name='medium-electric-pole',position=pole_pos}}"
-        f"}} end;"
-        f"local requires_heat=s.planet and s.planet.name=='aquilo';"
-        f"local heat_source_types={{'heat-pipe','reactor','heat-interface'}};"
-        f"local heat_source_type={{['heat-pipe']=true,['reactor']=true,"
-        f"['heat-interface']=true}};"
-        f"local max_heat_reach=0;"
-        f"if requires_heat then "
-        f"for _,source_type in ipairs(heat_source_types) do "
-        f"for _,p in pairs(prototypes.get_entity_filtered{{"
-        f"{{filter='type',type=source_type}}}}) do "
-        f"local radius=p.heating_radius or 0;local box=p.collision_box;"
-        f"local extent=math.max(math.abs(box.left_top.x),"
-        f"math.abs(box.left_top.y),math.abs(box.right_bottom.x),"
-        f"math.abs(box.right_bottom.y));"
-        f"max_heat_reach=math.max(max_heat_reach,radius+extent) end end end;"
-        f"local function plan_is_heated(plan) "
-        f"if not requires_heat then return true end;"
-        f"local p=prototypes.entity[plan.name];"
-        f"if not p or p.heating_energy<=0 then return true end;"
-        f"local box=p.collision_box;"
-        f"local left=plan.position[1]+box.left_top.x;"
-        f"local top=plan.position[2]+box.left_top.y;"
-        f"local right=plan.position[1]+box.right_bottom.x;"
-        f"local bottom=plan.position[2]+box.right_bottom.y;"
-        f"local sources=s.find_entities_filtered{{"
-        f"area={{{{left-max_heat_reach,top-max_heat_reach}},"
-        f"{{right+max_heat_reach,bottom+max_heat_reach}}}},"
-        f"type=heat_source_types}};"
-        f"for _,source in ipairs(sources) do "
-        f"local radius=source.prototype.heating_radius or 0;"
-        f"local heat_box=source.bounding_box;"
-        f"if radius>0 and source.temperature and source.temperature>=30 "
-        f"and right>heat_box.left_top.x-radius "
-        f"and left<heat_box.right_bottom.x+radius "
-        f"and bottom>heat_box.left_top.y-radius "
-        f"and top<heat_box.right_bottom.y+radius then return true end end;"
-        f"return false end;"
-        f"local function plan_overlaps_heat_source(plan) "
-        f"if not requires_heat then return false end;"
-        f"local p=prototypes.entity[plan.name];local box=p.collision_box;"
-        f"local left=plan.position[1]+box.left_top.x;"
-        f"local top=plan.position[2]+box.left_top.y;"
-        f"local right=plan.position[1]+box.right_bottom.x;"
-        f"local bottom=plan.position[2]+box.right_bottom.y;"
-        f"for _,source in ipairs(s.find_entities_filtered{{"
-        f"area={{{{left,top}},{{right,bottom}}}},type=heat_source_types}}) do "
-        f"local heat_box=source.bounding_box;"
-        f"if right>heat_box.left_top.x and left<heat_box.right_bottom.x "
-        f"and bottom>heat_box.left_top.y and top<heat_box.right_bottom.y then "
-        f"return true end end;return false end;"
-        f"local function count_blockers(area) "
-        f"if not requires_heat then "
-        f"return s.count_entities_filtered{{area=area}} end;"
-        f"local count=0;for _,existing in ipairs("
-        f"s.find_entities_filtered{{area=area}}) do "
-        f"if not heat_source_type[existing.type] then count=count+1 end end;"
-        f"return count end;"
-        f"local function plan_has_live_power(plan) "
-        f"for _,pole in ipairs(s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{plan.position[1]-64,plan.position[2]-64}},"
-        f"{{plan.position[1]+64,plan.position[2]+64}}}},force='player'}}) do "
-        f"if pole.electric_network then "
-        f"local supply=pole.prototype.get_supply_area_distance(pole.quality);"
-        f"if math.abs(pole.position.x-plan.position[1])<=supply "
-        f"and math.abs(pole.position.y-plan.position[2])<=supply then "
-        f"return true end end end;return false end;"
-        f"local count=count_blockers(area);"
-        f"if count>0 then error(count..' entities appeared in area') end;"
-        f"for _,plan in ipairs(plans) do "
-        f"if plan_overlaps_heat_source(plan) or not "
-        f"s.can_place_entity{{name=plan.name,position=plan.position,"
-        f"direction=plan.direction,force='player',"
-        f"build_check_type=defines.build_check_type.script_ghost}} then "
-        f"error('cannot place '..plan.name) end end;"
-        f"for _,plan in ipairs(plans) do "
-        f"if not plan_is_heated(plan) then "
-        f"support_issue('no heat coverage for '..plan.name) end end;"
-        f"local requester=plans[2].position;"
-        f"if not s.find_logistic_network_by_position(requester,'player') then "
-        f"support_issue('no logistic network coverage') end;"
-        f"local construction=true;"
-        f"for _,plan in ipairs(plans) do "
-        f"if #s.find_logistic_networks_by_construction_area("
-        f"plan.position,'player')==0 then "
-        f"construction=false break end end;"
-        f"if not construction then "
-        f"support_issue('no construction network coverage for full cell') end;"
-        f"if layout=='aquilo-compact' then "
-        f"if not requires_heat then error('compact layout requires Aquilo') end;"
-        f"if #extensions~=0 then error('compact layout cannot use extension poles') end;"
-        f"if not plan_has_live_power(plans[1]) "
-        f"or not plan_has_live_power(plans[4]) "
-        f"or not plan_has_live_power(plans[5]) then "
-        f"support_issue('no existing power coverage for compact cell') end "
-        f"else "
+        + CELL_DIR_LUA
+        +
+        "local cleanup={};"
+        "local warnings={};local warning_seen={};"
+        "local function support_issue(text) "
+        "if not allow_support_warnings then error(text) end;"
+        "if not warning_seen[text] then warning_seen[text]=true;"
+        "warnings[#warnings+1]=text end end;"
+        "local function inherent_issue(text) "
+        "if not warning_seen[text] then warning_seen[text]=true;"
+        "warnings[#warnings+1]=text end end;"
+        "local function rb() "
+        "for i=#cleanup,1,-1 do local g=cleanup[i];"
+        "if g and g.valid then pcall(function() g.destroy() end) end end;"
+        "local remaining=0;"
+        "for _,g in ipairs(cleanup) do "
+        "if g and g.valid then remaining=remaining+1 end end;"
+        "return remaining end;"
+        "local ok,err=pcall(function() "
+        "if not s then error('surface not found') end;"
+        "if not player then error('requesting player not found') end;"
+        "local r=prototypes.recipe[item];"
+        "local plans={};"
+        "for i,off in ipairs(offs) do "
+        "local pname=off.r=='building' and en or off.n;"
+        "plans[i]={name=pname,key=off.n,"
+        "position={x+off.x,y+off.y},"
+        "direction=(off.d and off.d~='') and DIR[off.d] or nil,role=off.r} "
+        "end;"
+        "local area={{x+area_off[1],y+area_off[2]},"
+        "{x+area_off[3],y+area_off[4]}};"
+        "local e=prototypes.entity[en];"
+        "if not r or not e then error('prototype changed after preflight') end;"
+        "if e.tile_width~=w or e.tile_height~=h then "
+        "error('building dimensions changed after preflight') end;"
+        "local requires_heat=s.planet and s.planet.name=='aquilo';"
+        "local heat_source_types={'heat-pipe','reactor','heat-interface'};"
+        "local heat_source_type={['heat-pipe']=true,['reactor']=true,"
+        "['heat-interface']=true};"
+        "local max_heat_reach=0;"
+        "if requires_heat then "
+        "for _,source_type in ipairs(heat_source_types) do "
+        "for _,p in pairs(prototypes.get_entity_filtered{"
+        "{filter='type',type=source_type}}) do "
+        "local radius=p.heating_radius or 0;local box=p.collision_box;"
+        "local extent=math.max(math.abs(box.left_top.x),"
+        "math.abs(box.left_top.y),math.abs(box.right_bottom.x),"
+        "math.abs(box.right_bottom.y));"
+        "max_heat_reach=math.max(max_heat_reach,radius+extent) end end end;"
+        "local function plan_is_heated(plan) "
+        "if not requires_heat then return true end;"
+        "local p=prototypes.entity[plan.name];"
+        "if not p or p.heating_energy<=0 then return true end;"
+        "local box=p.collision_box;"
+        "local left=plan.position[1]+box.left_top.x;"
+        "local top=plan.position[2]+box.left_top.y;"
+        "local right=plan.position[1]+box.right_bottom.x;"
+        "local bottom=plan.position[2]+box.right_bottom.y;"
+        "local sources=s.find_entities_filtered{"
+        "area={{left-max_heat_reach,top-max_heat_reach},"
+        "{right+max_heat_reach,bottom+max_heat_reach}},"
+        "type=heat_source_types};"
+        "for _,source in ipairs(sources) do "
+        "local radius=source.prototype.heating_radius or 0;"
+        "local heat_box=source.bounding_box;"
+        "if radius>0 and source.temperature and source.temperature>=30 "
+        "and right>heat_box.left_top.x-radius "
+        "and left<heat_box.right_bottom.x+radius "
+        "and bottom>heat_box.left_top.y-radius "
+        "and top<heat_box.right_bottom.y+radius then return true end end;"
+        "return false end;"
+        "local function plan_overlaps_heat_source(plan) "
+        "if not requires_heat then return false end;"
+        "local p=prototypes.entity[plan.name];local box=p.collision_box;"
+        "local left=plan.position[1]+box.left_top.x;"
+        "local top=plan.position[2]+box.left_top.y;"
+        "local right=plan.position[1]+box.right_bottom.x;"
+        "local bottom=plan.position[2]+box.right_bottom.y;"
+        "for _,source in ipairs(s.find_entities_filtered{"
+        "area={{left,top},{right,bottom}},type=heat_source_types}) do "
+        "local heat_box=source.bounding_box;"
+        "if right>heat_box.left_top.x and left<heat_box.right_bottom.x "
+        "and bottom>heat_box.left_top.y and top<heat_box.right_bottom.y then "
+        "return true end end;return false end;"
+        "local function count_blockers(area) "
+        "if not requires_heat then "
+        "return s.count_entities_filtered{area=area} end;"
+        "local count=0;for _,existing in ipairs("
+        "s.find_entities_filtered{area=area}) do "
+        "if not heat_source_type[existing.type] then count=count+1 end end;"
+        "return count end;"
+        "local function plan_has_live_power(plan) "
+        "for _,pole in ipairs(s.find_entities_filtered{type='electric-pole',"
+        "area={{plan.position[1]-64,plan.position[2]-64},"
+        "{plan.position[1]+64,plan.position[2]+64}},force='player'}) do "
+        "if pole.electric_network then "
+        "local supply=pole.prototype.get_supply_area_distance(pole.quality);"
+        "if math.abs(pole.position.x-plan.position[1])<=supply "
+        "and math.abs(pole.position.y-plan.position[2])<=supply then "
+        "return true end end end;return false end;"
+        "local count=count_blockers(area);"
+        "if count>0 then error(count..' entities appeared in area') end;"
+        "for _,plan in ipairs(plans) do "
+        "if plan_overlaps_heat_source(plan) or not "
+        "s.can_place_entity{name=plan.name,position=plan.position,"
+        "direction=plan.direction,force='player',"
+        "build_check_type=defines.build_check_type.script_ghost} then "
+        "error('cannot place '..plan.key) end end;"
+        "for _,plan in ipairs(plans) do "
+        "if not plan_is_heated(plan) then "
+        "support_issue('no heat coverage for '..plan.key) end end;"
+        "local building=nil;local pole_pos=nil;local requester_pos=nil;"
+        "local inserters={};"
+        "for _,plan in ipairs(plans) do "
+        "if plan.role=='building' then building=plan.position end;"
+        "if plan.role=='pole' then pole_pos=plan.position end;"
+        "if plan.role=='requester' then requester_pos=plan.position end;"
+        "if plan.role=='inserter' then inserters[#inserters+1]=plan end end;"
+        "local logistic_pos=requester_pos or building;"
+        "if not s.find_logistic_network_by_position(logistic_pos,'player') "
+        "then support_issue('no logistic network coverage') end;"
+        "local construction=true;"
+        "for _,plan in ipairs(plans) do "
+        "if #s.find_logistic_networks_by_construction_area("
+        "plan.position,'player')==0 then "
+        "construction=false break end end;"
+        "if not construction then "
+        "support_issue('no construction network coverage for full cell') end;"
+        "local pole_proto=prototypes.entity['medium-electric-pole'];"
+        "if pole_pos then "
         f"if #extensions>{production_cell_max_extension_poles} then "
-        f"error('too many extension poles') end;"
-        f"local function overlaps_cell(pos) "
-        f"local left=pos[1]-0.5;local right=pos[1]+0.5;"
-        f"local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
-        f"return not (right<=area[1][1] or left>=area[2][1] "
-        f"or bottom<=area[1][2] or top>=area[2][2]) end;"
-        f"for _,pos in ipairs(extensions) do "
-        f"if overlaps_cell(pos) then error('extension pole overlaps cell') end;"
-        f"local cell={{{{pos[1]-0.5,pos[2]-0.5}},"
-        f"{{pos[1]+0.5,pos[2]+0.5}}}};"
-        f"if s.count_entities_filtered{{area=cell}}>0 then "
-        f"error('entity appeared at extension pole') end;"
-        f"if not s.can_place_entity{{name='medium-electric-pole',position=pos,"
-        f"force='player',"
-        f"build_check_type=defines.build_check_type.script_ghost}} then "
-        f"error('cannot place extension pole') end;"
-        f"if #s.find_logistic_networks_by_construction_area("
-        f"pos,'player')==0 then "
-        f"support_issue('no construction network coverage for extension pole') "
-        f"end end;"
-        f"local supply=pole_proto.get_supply_area_distance('normal');"
-        f"if math.abs(cx-pole_pos[1])>supply "
-        f"or math.abs(cy-pole_pos[2])>supply then "
-        f"support_issue('planned pole cannot power building') end;"
-        f"local new_wire=pole_proto.get_max_wire_distance('normal');"
-        f"local previous=pole_pos;"
-        f"for _,pos in ipairs(extensions) do "
-        f"local dx=pos[1]-previous[1];local dy=pos[2]-previous[2];"
-        f"if dx*dx+dy*dy>new_wire*new_wire then "
-        f"error('extension pole chain exceeds wire reach') end;"
-        f"previous=pos end;"
-        f"local connected=false;"
-        f"local poles=s.find_entities_filtered{{type='electric-pole',"
-        f"area={{{{previous[1]-new_wire,previous[2]-new_wire}},"
-        f"{{previous[1]+new_wire,previous[2]+new_wire}}}},force='player'}};"
-        f"for _,pole in ipairs(poles) do "
-        f"if pole.electric_network then "
-        f"local reach=math.min(new_wire,"
-        f"pole.prototype.get_max_wire_distance(pole.quality));"
-        f"local dx=pole.position.x-previous[1];"
-        f"local dy=pole.position.y-previous[2];"
-        f"if dx*dx+dy*dy<=reach*reach then connected=true break end end end;"
-        f"if not connected then "
-        f"support_issue('no live power connection for extension chain') end end;"
-        f"local b=s.create_entity{{"
-        f"name='entity-ghost',position=plans[1].position,force='player',"
-        f"inner_name=en,recipe=item"
-        f"}};"
-        f"if not b then error('building') end;cleanup[#cleanup+1]=b;"
-        f"local req=s.create_entity{{"
-        f"name='entity-ghost',position=plans[2].position,"
-        f"force='player',inner_name='requester-chest'"
-        f"}};"
-        f"if not req then error('requester') end;cleanup[#cleanup+1]=req;"
-        f"local prov=s.create_entity{{"
-        f"name='entity-ghost',position=plans[3].position,"
-        f"force='player',inner_name='passive-provider-chest'"
-        f"}};"
-        f"if not prov then error('provider') end;cleanup[#cleanup+1]=prov;"
-        f"local ii=s.create_entity{{"
-        f"name='entity-ghost',position=plans[4].position,"
-        f"force='player',inner_name='inserter',"
-        f"direction=plans[4].direction"
-        f"}};"
-        f"if not ii then error('input inserter') end;cleanup[#cleanup+1]=ii;"
-        f"local oi=s.create_entity{{"
-        f"name='entity-ghost',position=plans[5].position,"
-        f"force='player',inner_name='inserter',"
-        f"direction=plans[5].direction"
-        f"}};"
-        f"if not oi then error('output inserter') end;cleanup[#cleanup+1]=oi;"
-        f"local po=nil;if layout=='standard' then po=s.create_entity{{"
-        f"name='entity-ghost',position=pole_pos,"
-        f"force='player',inner_name='medium-electric-pole'"
-        f"}};"
-        f"if not po then error('pole') end;cleanup[#cleanup+1]=po end;"
-        f"if layout=='standard' then for _,pos in ipairs(extensions) do "
-        f"local extra=s.create_entity{{name='entity-ghost',position=pos,"
-        f"force='player',inner_name='medium-electric-pole'}};"
-        f"if not extra then error('extension pole') end;"
-        f"cleanup[#cleanup+1]=extra end end;"
-        f"local actual_recipe=b.get_recipe();"
-        f"if not actual_recipe or actual_recipe.name~=item then "
-        f"error('building recipe was not set') end;"
-        f"if r.ingredients then "
-        f"req.copy_settings(b,player);"
-        f"local sections=req.get_logistic_sections().sections;"
-        f"for _,ing in ipairs(r.ingredients) do "
-        f"local found=false;"
-        f"for _,section in ipairs(sections) do "
-        f"for _,filter in ipairs(section.filters) do "
-        f"if filter.value and filter.value.name==ing.name "
-        f"and filter.min and filter.min>0 then found=true end "
-        f"end end;"
-        f"if not found then error('request filter missing for '..ing.name) end "
-        f"end "
-        f"end;"
-        f"for _,g in ipairs(cleanup) do "
-        f"if not g.is_registered_for_construction() then "
-        f"support_issue(g.ghost_name..' not registered for construction') end "
-        f"end;"
-        f"end);"
-        f"if not ok then "
-        f"local remaining=rb();"
-        f"if remaining>0 then "
-        f"rcon.print('ERROR: '..err..'; rollback incomplete: '..remaining) "
-        f"else rcon.print('ERROR: '..err) end "
-        f"else rcon.print("
+        "error('too many extension poles') end;"
+        "local function overlaps_cell(pos) "
+        "local left=pos[1]-0.5;local right=pos[1]+0.5;"
+        "local top=pos[2]-0.5;local bottom=pos[2]+0.5;"
+        "return not (right<=area[1][1] or left>=area[2][1] "
+        "or bottom<=area[1][2] or top>=area[2][2]) end;"
+        "for _,pos in ipairs(extensions) do "
+        "if overlaps_cell(pos) then error('extension pole overlaps cell') end;"
+        "local cell={{pos[1]-0.5,pos[2]-0.5},"
+        "{pos[1]+0.5,pos[2]+0.5}};"
+        "if s.count_entities_filtered{area=cell}>0 then "
+        "error('entity appeared at extension pole') end;"
+        "if not s.can_place_entity{name='medium-electric-pole',position=pos,"
+        "force='player',"
+        "build_check_type=defines.build_check_type.script_ghost} then "
+        "error('cannot place extension pole') end;"
+        "if #s.find_logistic_networks_by_construction_area("
+        "pos,'player')==0 then "
+        "support_issue('no construction network coverage for extension pole') "
+        "end end;"
+        "local supply=pole_proto.get_supply_area_distance('normal');"
+        "if math.abs(building[1]-pole_pos[1])>supply "
+        "or math.abs(building[2]-pole_pos[2])>supply then "
+        "support_issue('planned pole cannot power building') end;"
+        "local new_wire=pole_proto.get_max_wire_distance('normal');"
+        "local previous=pole_pos;"
+        "for _,pos in ipairs(extensions) do "
+        "local dx=pos[1]-previous[1];local dy=pos[2]-previous[2];"
+        "if dx*dx+dy*dy>new_wire*new_wire then "
+        "error('extension pole chain exceeds wire reach') end;"
+        "previous=pos end;"
+        "local connected=false;"
+        "local poles=s.find_entities_filtered{type='electric-pole',"
+        "area={{previous[1]-new_wire,previous[2]-new_wire},"
+        "{previous[1]+new_wire,previous[2]+new_wire}},force='player'};"
+        "for _,pole in ipairs(poles) do "
+        "if pole.electric_network then "
+        "local reach=math.min(new_wire,"
+        "pole.prototype.get_max_wire_distance(pole.quality));"
+        "local dx=pole.position.x-previous[1];"
+        "local dy=pole.position.y-previous[2];"
+        "if dx*dx+dy*dy<=reach*reach then connected=true break end end end;"
+        "if not connected then "
+        "support_issue('no live power connection for extension chain') end "
+        "else "
+        "if layout~='aquilo-compact' then "
+        "error('layout has no planned pole') end;"
+        "if #extensions~=0 then "
+        "error('compact layout cannot use extension poles') end;"
+        "if not plan_has_live_power{position=building} then "
+        "support_issue('no existing power coverage for compact cell') end;"
+        "for _,plan in ipairs(inserters) do "
+        "if not plan_has_live_power(plan) then "
+        "support_issue('no existing power coverage for compact cell') end "
+        "end end;"
+        "local created={};"
+        "local b=nil;local req=nil;"
+        "for _,plan in ipairs(plans) do "
+        "local args={name='entity-ghost',position=plan.position,"
+        "force='player',inner_name=plan.name};"
+        "if plan.direction then args.direction=plan.direction end;"
+        "if plan.role=='building' then args.recipe=item end;"
+        "local ghost=s.create_entity(args);"
+        "if not ghost then error(plan.key) end;"
+        "cleanup[#cleanup+1]=ghost;created[#created+1]=ghost;"
+        "if plan.role=='building' then b=ghost end;"
+        "if plan.role=='requester' then req=ghost end end;"
+        "for _,pos in ipairs(extensions) do "
+        "local extra=s.create_entity{name='entity-ghost',position=pos,"
+        "force='player',inner_name='medium-electric-pole'};"
+        "if not extra then error('extension pole') end;"
+        "cleanup[#cleanup+1]=extra end;"
+        "local actual_recipe=b.get_recipe();"
+        "if not actual_recipe then "
+        "local bp=prototypes.entity[en];"
+        + (
+            "if bp.type=='furnace' then "
+            "inherent_issue('furnace has no recipe; requester chest filters "
+            "need setting by hand') "
+            "else error('building recipe was not set') end "
+            if selected_variant["req"]
+            else
+            "error('building recipe was not set') "
+        ) +
+        "elseif actual_recipe.name~=item then "
+        "error('building recipe was not set') end;"
+        + (
+            "if req and actual_recipe and r.ingredients then "
+            "req.copy_settings(b,player);"
+            "local sections=req.get_logistic_sections().sections;"
+            "for _,ing in ipairs(r.ingredients) do "
+            "local found=false;"
+            "for _,section in ipairs(sections) do "
+            "for _,filter in ipairs(section.filters) do "
+            "if filter.value and filter.value.name==ing.name "
+            "and filter.min and filter.min>0 then found=true end "
+            "end end;"
+            "if not found then error('request filter missing for '..ing.name) "
+            "end "
+            "end "
+            "end;"
+            if selected_variant["req"]
+            else ""
+        ) +
+        "for _,g in ipairs(cleanup) do "
+        "if not g.is_registered_for_construction() then "
+        "support_issue(g.ghost_name..' not registered for construction') end "
+        "end;"
+        "end);"
+        "if not ok then "
+        "local remaining=rb();"
+        "if remaining>0 then "
+        "rcon.print('ERROR: '..err..'; rollback incomplete: '..remaining) "
+        "else rcon.print('ERROR: '..err) end "
+        "else rcon.print("
         f"'SUCCESS: [gps='..x..','..y..','..s.name..'] '"
-        f"..w..'x'..h..' '..item..' cell placed with '..en.."
-        f"', requester-chest, 2 inserters, passive-provider-chest'.."
-        f"(layout=='aquilo-compact' and "
-        f"(#warnings==0 and ' using existing power' or ' using compact layout') or "
-        f"', medium-electric-pole'..(#extensions>0 and "
-        f"', '..#extensions..' extension medium-electric-pole'.."
-        f"(#extensions==1 and '' or 's') or '')).."
-        f"(#warnings>0 and '; WARNING: '..table.concat(warnings,', ') or '')) end"
+        f"..w..'x'..h..' '..item..' '..layout..' cell placed with "
+        f"{entity_summary}'.."
+        "(#extensions>0 and ', '..#extensions..' extension "
+        "medium-electric-pole'..(#extensions==1 and '' or 's') or '').."
+        "(#warnings>0 and '; WARNING: '..table.concat(warnings,', ') or ''))"
+        " end"
     )
 
     response = client.run(phase2, retry=False)
     return response.strip() if response else "ERROR: empty response"
 
-
 def dispatch_production_cell(client, produce_request, username):
-    surface, item, hint = produce_request
-    return place_production_cell(
+    surface, item, hint, knobs = produce_request
+    if knobs.get("layout") == "custom":
+        return maybe_start_custom_cell_job(
+            client, produce_request, username, reason="layout=custom requested"
+        )
+    result = place_production_cell(
         client,
         surface,
         item,
         hint,
         requesting_player=username,
+        knobs=knobs,
+    )
+    if result.startswith("ERROR: No suitable production-cell location within"):
+        spawned = maybe_start_custom_cell_job(
+            client, produce_request, username,
+            reason="no pre-planned shape fit",
+        )
+        if spawned is not None:
+            return spawned
+    return result
+
+
+
+def produce_jobs_dir():
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), produce_jobs_dirname
     )
 
+
+def _job_paths(job_id):
+    base = os.path.join(produce_jobs_dir(), job_id)
+    return {
+        "dir": base,
+        "job": os.path.join(base, "job.json"),
+        "status": os.path.join(base, "status.json"),
+        "result": os.path.join(base, "result.json"),
+        "log": os.path.join(base, "worker.log"),
+    }
+
+
+def _read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def _write_json(path, data):
+    directory = os.path.dirname(path)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=1)
+        os.replace(temporary, path)
+        return True
+    except OSError as e:
+        print(f"Job write failed ({path}): {e}", flush=True)
+        return False
+
+
+def produce_job_key(surface, item, hint):
+    inner = ""
+    if hint.startswith("[gps=") and hint.endswith("]"):
+        inner = hint[5:-1]
+    elif hint.startswith("[") and hint.endswith("]"):
+        inner = hint[1:-1]
+    coords = [part.strip() for part in inner.split(",")] if inner else []
+    if len(coords) >= 2:
+        try:
+            x = int(math.floor(float(coords[0]) // 32))
+            y = int(math.floor(float(coords[1]) // 32))
+            return f"{surface}|{item}|chunk:{x},{y}"
+        except ValueError:
+            pass
+    return f"{surface}|{item}|rel:{hint}"
+
+
+def iter_job_ids():
+    try:
+        return sorted(os.listdir(produce_jobs_dir()))
+    except OSError:
+        return []
+
+
+def find_active_cell_job(key):
+    for job_id in iter_job_ids():
+        status = _read_json(_job_paths(job_id)["status"])
+        if (
+            status
+            and status.get("kind") == "custom-cell"
+            and status.get("status") in ("pending", "running")
+            and status.get("key") == key
+        ):
+            return job_id
+    return None
+
+
+def create_cell_job(surface, item, hint, knobs, requesting_player, facts):
+    key = produce_job_key(surface, item, hint)
+    job_id = (
+        f"{datetime.now():%Y%m%d-%H%M%S}-{surface}-{item}".replace(
+            "'", ""
+        )
+    )
+    paths = _job_paths(job_id)
+    job = {
+        "job_id": job_id,
+        "surface": surface,
+        "item": item,
+        "hint": hint,
+        "knobs": {
+            k: v for k, v in knobs.items() if k != "custom_variant"
+        },
+        "requesting_player": requesting_player,
+        "facts": facts,
+    }
+    status = {
+        "kind": "custom-cell",
+        "key": key,
+        "status": "pending",
+        "reported": False,
+        "pid": None,
+        "requested_by": requesting_player,
+        "created": time.time(),
+        "updated": time.time(),
+        "iterations": 0,
+    }
+    if _write_json(paths["job"], job) and _write_json(paths["status"], status):
+        return job_id
+    return None
+
+
+def update_job_status(job_id, **fields):
+    paths = _job_paths(job_id)
+    status = _read_json(paths["status"], {})
+    status.update(fields)
+    status["updated"] = time.time()
+    _write_json(paths["status"], status)
+    return status
+
+
+def job_pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, TypeError):
+        return False
+
+
+def reap_stale_cell_jobs():
+    reaped = []
+    for job_id in iter_job_ids():
+        status = _read_json(_job_paths(job_id)["status"])
+        if not status or status.get("kind") != "custom-cell":
+            continue
+        if status.get("status") in ("pending", "running"):
+            if not job_pid_alive(status.get("pid")):
+                update_job_status(
+                    job_id,
+                    status="designed_failed",
+                    reported=False,
+                    failure=(
+                        "interrupted: the design worker is no longer alive"
+                    ),
+                )
+                reaped.append(job_id)
+    return reaped
+
+
+def describe_produce_jobs():
+    lines = []
+    for job_id in iter_job_ids():
+        status = _read_json(_job_paths(job_id)["status"])
+        if not status or status.get("kind") != "custom-cell":
+            continue
+        state = status.get("status")
+        if state == "pending" or state == "running":
+            age = max(0, int(time.time() - status.get("created", time.time())))
+            lines.append(
+                f"{job_id}: designing for {age // 60}m {age % 60}s "
+                f"(iteration {status.get('iterations', 0)}), "
+                f"requested by {status.get('requested_by')}"
+            )
+        elif not status.get("reported"):
+            lines.append(f"{job_id}: finished ({state}), report pending")
+    if not lines:
+        return "(no custom cell designs in progress)"
+    return "; ".join(lines)
+
+
+def spawn_cell_worker(job_id):
+    paths = _job_paths(job_id)
+    os.makedirs(paths["dir"], exist_ok=True)
+    log_handle = open(paths["log"], "a", encoding="utf-8")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--produce-worker",
+            paths["job"],
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+    log_handle.close()
+    update_job_status(job_id, pid=process.pid, status="running")
+    return process.pid
+
+
+CUSTOM_PLAN_DIRECTIONS = {
+    "north": (0, -1),
+    "south": (0, 1),
+    "west": (-1, 0),
+    "east": (1, 0),
+}
+
+
+def _plan_box(plan, machines):
+    width = 1
+    height = 1
+    if plan["r"] == "building":
+        dims = machines.get(plan["n"])
+        if not dims:
+            return None
+        width = dims["w"]
+        height = dims["h"]
+    x = plan["x"]
+    y = plan["y"]
+    return (
+        x - width / 2,
+        y - height / 2,
+        x + width / 2,
+        y + height / 2,
+    )
+
+
+def _boxes_intersect(a, b, epsilon=1e-9):
+    return (
+        a[0] < b[2] - epsilon
+        and b[0] < a[2] - epsilon
+        and a[1] < b[3] - epsilon
+        and b[1] < a[3] - epsilon
+    )
+
+
+def _point_in_box(point, box, epsilon=1e-6):
+    return (
+        box[0] - epsilon <= point[0] <= box[2] + epsilon
+        and box[1] - epsilon <= point[1] <= box[3] + epsilon
+    )
+
+
+SUPPORT_SOURCE_ROLES = ("belt", "provider", "part", "building", "requester")
+SUPPORT_CONSUMER_ROLES = ("belt", "requester", "building")
+
+
+def validate_custom_cell_plan(proposal, facts):
+    errors = []
+    machines = facts.get("machines", {})
+
+    def plan_name(plan):
+        return plan["n"]
+
+    def role(plan):
+        return plan["r"]
+
+    if not isinstance(proposal, dict):
+        return ["Proposal must be a JSON object."]
+
+    plans = proposal.get("plans")
+
+    def emit_schema_error(message):
+        errors.append(message)
+
+    if proposal.get("layout") != "custom":
+        emit_schema_error('layout must be exactly "custom".')
+    if not isinstance(plans, list) or not plans:
+        emit_schema_error("plans must be a non-empty list of entries.")
+        plans = []
+    if len(plans) > custom_plan_max_entities:
+        emit_schema_error(
+            f"plans has {len(plans)} entities; the limit is "
+            f"{custom_plan_max_entities}."
+        )
+    area = proposal.get("area")
+    if (
+        not isinstance(area, list)
+        or len(area) != 4
+        or not all(isinstance(v, (int, float)) for v in area)
+    ):
+        emit_schema_error("area must be [x1, y1, x2, y2] numbers.")
+        area = [0, 0, 0, 0]
+    if isinstance(proposal.get("pole"), bool):
+        wants_pole = proposal["pole"]
+    else:
+        emit_schema_error("pole must be true or false.")
+        wants_pole = None
+    wants_requester = proposal.get("req")
+    if not isinstance(wants_requester, bool):
+        emit_schema_error("req must be true or false.")
+
+    checked_plans = []
+    for index, plan in enumerate(plans):
+        if not isinstance(plan, dict):
+            emit_schema_error(f"plans[{index}] must be an object.")
+            continue
+        name = plan.get("n")
+        role_name = plan.get("r")
+        x = plan.get("x")
+        y = plan.get("y")
+        direction = plan.get("d", "")
+        problems = []
+        if not isinstance(name, str) or not name:
+            problems.append("n must be a non-empty prototype name")
+        if role_name not in custom_plan_roles:
+            problems.append(
+                f"r must be one of {', '.join(custom_plan_roles)}"
+            )
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            problems.append("x and y must be numbers")
+        else:
+            if not (math.isfinite(x) and math.isfinite(y)):
+                problems.append("x and y must be finite")
+            if (x * 2) % 1 != 0 or (y * 2) % 1 != 0:
+                problems.append("x and y must sit on half-tile centers")
+        if direction not in ("",) + tuple(CUSTOM_PLAN_DIRECTIONS):
+            problems.append(
+                "d must be empty or one of north, south, west, east"
+            )
+        if problems:
+            emit_schema_error(
+                f"plans[{index}] ({name}): " + "; ".join(problems) + "."
+            )
+            continue
+        checked_plans.append({
+            "n": name,
+            "x": float(x),
+            "y": float(y),
+            "d": direction,
+            "r": role_name,
+        })
+
+    buildings = [plan for plan in checked_plans if role(plan) == "building"]
+    if len(buildings) != 1:
+        emit_schema_error(
+            f"exactly one entry with r='building' is required "
+            f"(found {len(buildings)})."
+        )
+    else:
+        machine_dims = machines.get(buildings[0]["n"])
+        if machine_dims is None:
+            emit_schema_error(
+                f"machine '{buildings[0]['n']}' is not among the compatible "
+                "machines listed in the facts."
+            )
+
+    boxes = []
+    for plan in checked_plans:
+        box = _plan_box(plan, machines)
+        if box is None:
+            if plan["r"] == "building":
+                continue
+            emit_schema_error(f"unknown entity name '{plan['n']}'.")
+            continue
+        boxes.append((plan, box))
+
+    area_box = (float(area[0]), float(area[1]), float(area[2]), float(area[3]))
+    for index, (plan, box) in enumerate(boxes):
+        for other_index in range(index + 1, len(boxes)):
+            other_plan, other_box = boxes[other_index]
+            if _boxes_intersect(box, other_box):
+                errors.append(
+                    f"'{plan_name(plan)}' at {plan['x']}:{plan['y']} overlaps "
+                    f"'{plan_name(other_plan)}' at {other_plan['x']}:"
+                    f"{other_plan['y']}."
+                )
+        if not _point_in_box(
+            ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2), area_box
+        ):
+            errors.append(
+                f"'{plan_name(plan)}' lies outside the declared area."
+            )
+
+    span_x = area_box[2] - area_box[0]
+    span_y = area_box[3] - area_box[1]
+    if span_x <= 0 or span_y <= 0:
+        errors.append("area must have positive extent.")
+    elif (
+        span_x > custom_plan_max_area_tiles
+        or span_y > custom_plan_max_area_tiles
+    ):
+        errors.append(
+            f"area spans {span_x:g}x{span_y:g} tiles; the limit is "
+            f"{custom_plan_max_area_tiles} per side."
+        )
+
+    pole_plans = [plan for plan in checked_plans if role(plan) == "pole"]
+    requester_plans = [
+        plan for plan in checked_plans if role(plan) == "requester"
+    ]
+    if wants_pole is True and len(pole_plans) != 1:
+        errors.append(
+            "pole=true requires exactly one entry with r='pole' "
+            f"(found {len(pole_plans)})."
+        )
+    if wants_pole is False and pole_plans:
+        errors.append(
+            "pole=false but the plans include a pole; make them agree."
+        )
+    if wants_pole is False and not wants_requester:
+        errors.append(
+            "a plan with neither a pole nor chests cannot receive power; "
+            "set pole=true (recommended) or req=true."
+        )
+    if wants_requester is True and len(requester_plans) != 1:
+        errors.append(
+            "req=true requires exactly one requester-chest entry "
+            f"(found {len(requester_plans)})."
+        )
+    if wants_requester is False and requester_plans:
+        errors.append(
+            "req=false but the plans include a requester-chest; make them "
+            "agree."
+        )
+
+    buildings_only = [
+        plan for plan in checked_plans if role(plan) == "building"
+    ]
+    if len(buildings_only) == 1 and machines.get(buildings_only[0]["n"]):
+        machine_box = _plan_box(buildings_only[0], machines)
+        supply = facts.get("pole_supply")
+        if wants_pole is True and pole_plans and supply is not None:
+            pole = pole_plans[0]
+            if (
+                abs(pole["x"] - (machine_box[0] + machine_box[2]) / 2) > supply
+                or abs(pole["y"] - (machine_box[1] + machine_box[3]) / 2) > supply
+            ):
+                errors.append(
+                    f"the planned pole cannot power the machine: distance "
+                    f"exceeds the medium pole supply radius {supply:g}."
+                )
+
+        non_inserter_boxes = [
+            (plan, box)
+            for plan, box in boxes
+            if role(plan) != "inserter"
+        ]
+        consumer_boxes = [
+            (plan, box)
+            for plan, box in non_inserter_boxes
+            if role(plan) in SUPPORT_CONSUMER_ROLES
+        ]
+        source_boxes = [
+            (plan, box)
+            for plan, box in non_inserter_boxes
+            if role(plan) in SUPPORT_SOURCE_ROLES
+        ]
+        belt_positions = set()
+
+        def register_belt(plan):
+            belt_positions.add((plan["x"], plan["y"]))
+
+        for plan, box in boxes:
+            if role(plan) == "belt":
+                register_belt(plan)
+
+        for plan in checked_plans:
+            if role(plan) != "inserter":
+                continue
+            reaches = cell_reach_constants.get(plan["n"])
+            if reaches is None:
+                errors.append(
+                    f"'{plan['n']}' is not a supported inserter type "
+                    f"({', '.join(sorted(cell_reach_constants))})."
+                )
+                continue
+            vector = CUSTOM_PLAN_DIRECTIONS.get(plan["d"])
+            if vector is None:
+                errors.append(
+                    f"inserter '{plan['n']}' at {plan['x']}:{plan['y']} needs "
+                    "a facing direction d (north/south/west/east)."
+                )
+                continue
+            pickup_point = (
+                plan["x"] - vector[0] * reaches["pickup"],
+                plan["y"] - vector[1] * reaches["pickup"],
+            )
+            drop_point = (
+                plan["x"] + vector[0] * reaches["drop"],
+                plan["y"] + vector[1] * reaches["drop"],
+            )
+            if not any(
+                _point_in_box(pickup_point, box)
+                for _, box in source_boxes
+            ):
+                errors.append(
+                    f"inserter '{plan['n']}' at {plan['x']}:{plan['y']} picks "
+                    f"up at {pickup_point[0]:g},{pickup_point[1]:g} "
+                    f"(reach {reaches['pickup']:g}) where nothing stands; "
+                    "aim its back side at a belt, chest, or machine."
+                )
+            if not any(
+                _point_in_box(drop_point, box)
+                for _, box in consumer_boxes
+            ):
+                errors.append(
+                    f"inserter '{plan['n']}' at {plan['x']}:{plan['y']} drops "
+                    f"at {drop_point[0]:g},{drop_point[1]:g} "
+                    f"(reach {reaches['drop']:g}) where nothing stands; aim "
+                    "its front side at the machine, a chest, or a belt."
+                )
+
+        adjacency = {}
+        for position in belt_positions:
+            x = position[0]
+            y = position[1]
+            neighbours = []
+            for offset in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbour = (x + offset[0], y + offset[1])
+                if neighbour in belt_positions:
+                    neighbours.append(neighbour)
+            adjacency[position] = neighbours
+        seen = set()
+        for position in belt_positions:
+            if position in seen:
+                continue
+            component = []
+            queue = deque([position])
+            seen.add(position)
+            while queue:
+                current = queue.popleft()
+                component.append(current)
+                for neighbour in adjacency[current]:
+                    if neighbour not in seen:
+                        seen.add(neighbour)
+                        queue.append(neighbour)
+            if len(component) < 2:
+                errors.append(
+                    f"a transport-belt at {position[0]:g},{position[1]:g} is "
+                    "isolated; belts must form connected lanes of two or "
+                    "more tiles."
+                )
+
+    deduplicated = []
+    for error in errors:
+        if error not in deduplicated:
+            deduplicated.append(error)
+    return deduplicated
+
+
+def parse_custom_plan_proposal(text):
+    if not text:
+        return None
+    candidate = strip_code_fences(text).strip()
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        return json.loads(candidate[start:end + 1])
+    except ValueError:
+        return None
+
+
+def collect_custom_site_facts(client, surface, item, requesting_player, hint):
+    relative_hint = parse_production_cell_relative_hint(hint)
+    if relative_hint is not None:
+        relative_location, direction = relative_hint
+    else:
+        relative_location = ""
+        direction = ""
+    candidates, error = query_production_cell_candidates(
+        client, surface, item, requesting_player, relative_location
+    )
+    if error:
+        return None, error
+
+    explicit = False
+    ax_value = 0.0
+    ay_value = 0.0
+    if hint.startswith("[gps=") and hint.endswith("]"):
+        coords = [part.strip() for part in hint[5:-1].split(",")]
+        if len(coords) >= 2:
+            try:
+                ax_value = math.floor(float(coords[0]))
+                ay_value = math.floor(float(coords[1]))
+                explicit = True
+            except ValueError:
+                return None, "ERROR: Invalid GPS location hint"
+
+    player_lua = json.dumps(requesting_player)
+    surface_lua = json.dumps(surface)
+    direction_lua = json.dumps(direction)
+    relative_lua = json.dumps(relative_location)
+    explicit_lua = "true" if explicit else "false"
+    radius = produce_job_survey_radius
+
+    origin_cmd = (
+        "/silent-command "
+        f"local request_player=game.get_player({player_lua});"
+        f"local requested_surface={surface_lua};"
+        f"local relative_location={relative_lua};"
+        f"local direction={direction_lua};"
+        f"local s=nil;"
+        f"if requested_surface=='current' then "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: Current location requires the requesting player "
+        f"online') return end;"
+        f"s=request_player.surface "
+        f"else s=game.surfaces[requested_surface] end;"
+        f"if not s then rcon.print('ERROR: Surface not found') return end;"
+        f"local explicit={explicit_lua};"
+        f"local explicit_ax={ax_value};local explicit_ay={ay_value};"
+        f"local ox,oy;"
+        f"if explicit then ox=explicit_ax;oy=explicit_ay "
+        f"elseif relative_location=='standing' then "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: Standing location requires the requesting player "
+        f"online') return end;"
+        f"ox=request_player.physical_position.x;oy=request_player.physical_position.y "
+        f"elseif relative_location=='view' or direction~='' then "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: View-relative location requires the requesting "
+        f"player online') return end;"
+        f"ox=request_player.position.x;oy=request_player.position.y "
+        f"elseif request_player and request_player.connected "
+        f"then ox=request_player.position.x;oy=request_player.position.y "
+        f"else local spawn=game.forces.player.get_spawn_position(s);"
+        f"ox=spawn.x;oy=spawn.y end;"
+        f"rcon.print('ORIGIN:'..string.format('%.1f:%.1f:%s',ox,oy,s.name))"
+    )
+    try:
+        response = client.run(origin_cmd, retry=True)
+    except Exception as e:
+        return None, f"[error: {e}]"
+    text = (response or "").strip()
+    if not text.startswith("ORIGIN:"):
+        return None, text or "ERROR: empty response"
+    origin_parts = text[len("ORIGIN:"):].split(":")
+    if len(origin_parts) != 3:
+        return None, "ERROR: Invalid location response"
+    try:
+        origin_x = float(origin_parts[0])
+        origin_y = float(origin_parts[1])
+    except ValueError:
+        return None, "ERROR: Invalid location response"
+    resolved_surface = origin_parts[2]
+
+    pole_proto = "prototypes.entity['medium-electric-pole']"
+    recipe = f"prototypes.recipe[{json.dumps(item)}]"
+    survey_cmd = (
+        "/silent-command "
+        f"local s=game.surfaces[{json.dumps(resolved_surface)}];"
+        f"local ox={origin_x};local oy={origin_y};"
+        f"local out={{}};"
+        f"local pole={pole_proto};"
+        f"if pole then "
+        f"out[#out+1]='P:'..string.format('%.2f:%.2f',"
+        f"pole.get_supply_area_distance('normal'),"
+        f"pole.get_max_wire_distance('normal')) end;"
+        f"local r={recipe};"
+        f"if r then "
+        f"local ing={{}};for _,i in ipairs(r.ingredients) do "
+        f"ing[#ing+1]=i.amount..' '..i.name end;"
+        f"out[#out+1]='R:'..table.concat(ing,',') end;"
+        f"local cliffs=s.find_entities_filtered{{type='cliff',"
+        f"area={{{{ox-{radius},oy-{radius}}},{{ox+{radius},oy+{radius}}}}}}};"
+        f"local cl={{}};for i,c in ipairs(cliffs) do "
+        f"if i>40 then break end;"
+        f"cl[#cl+1]=string.format('%.0f:%.0f',c.position.x,c.position.y) end;"
+        f"out[#out+1]='C:'..#cliffs..'/'..table.concat(cl,';');"
+        f"local waters={{}};"
+        f"for ty=math.floor((oy-{radius})/16)*16,oy+{radius},16 do "
+        f"for tx=math.floor((ox-{radius})/16)*16,ox+{radius},16 do "
+        f"local tile=s.get_tile(tx,ty);"
+        f"if tile and tile.name:find('water') then "
+        f"waters[#waters+1]=string.format('%.0f:%.0f',tx,ty) end end end;"
+        f"if #waters>60 then waters={{waters[1],waters[31],waters[61],waters[90]}} end;"
+        f"out[#out+1]='W:'..table.concat(waters,';')"
+    )
+    try:
+        response = client.run(survey_cmd, retry=True)
+    except Exception as e:
+        return None, f"[error: {e}]"
+    context_text = (response or "").strip()
+
+    entities_cmd = (
+        "/silent-command "
+        f"local s=game.surfaces[{json.dumps(resolved_surface)}];"
+        f"local ox={origin_x};local oy={origin_y};"
+        f"local radius={radius};"
+        f"local list=s.find_entities_filtered{{"
+        f"area={{{{ox-radius,oy-radius}},{{ox+radius,oy+radius}}}}}};"
+        f"local ranked={{}};"
+        f"for _,e in ipairs(list) do "
+        f"local dx=e.position.x-ox;local dy=e.position.y-oy;"
+        f"ranked[#ranked+1]={{e=e,d=dx*dx+dy*dy}} end;"
+        f"table.sort(ranked,function(a,b) return a.d<b.d end);"
+        f"local cap={produce_job_survey_max_entities};"
+        f"local out={{'T:'..#list}};"
+        f"for i,entry in ipairs(ranked) do "
+        f"if i>cap then break end;"
+        f"local e=entry.e;"
+        f"out[#out+1]='E:'..e.name..'|'..string.format('%.1f:%.1f',"
+        f"e.position.x,e.position.y)..'|'..tostring("
+        f"e.prototype.tile_width or 1)..':'..tostring("
+        f"e.prototype.tile_height or 1) end;"
+        f"rcon.print(table.concat(out,'\n'))"
+    )
+    try:
+        response = client.run(entities_cmd, retry=True)
+    except Exception as e:
+        return None, f"[error: {e}]"
+    entity_text = (response or "").strip()
+
+    facts = {
+        "surface": resolved_surface,
+        "origin": [origin_x, origin_y],
+        "machines": {
+            name: {"w": w, "h": h} for name, w, h in candidates
+        },
+        "pole_supply": None,
+        "ingredients": [],
+        "cliffs": [],
+        "cliff_count": 0,
+        "water_samples": [],
+        "entities": [],
+        "entity_count": 0,
+    }
+    for line in context_text.split("\n"):
+        line = line.strip()
+        prefix, separator, rest = line.partition(":")
+        if not separator:
+            continue
+        if prefix == "P":
+            supply_text, _, wire_text = rest.partition(":")
+            try:
+                facts["pole_supply"] = float(supply_text)
+                facts["pole_wire"] = float(wire_text)
+            except ValueError:
+                pass
+        elif prefix == "R":
+            facts["ingredients"] = [
+                part.strip() for part in rest.split(",") if part.strip()
+            ]
+        elif prefix == "C":
+            count_text, _, positions = rest.partition("/")
+            try:
+                facts["cliff_count"] = int(count_text)
+            except ValueError:
+                pass
+            facts["cliffs"] = [
+                part.strip() for part in positions.split(";") if part.strip()
+            ]
+        elif prefix == "W":
+            facts["water_samples"] = [
+                part.strip() for part in rest.split(";") if part.strip()
+            ]
+    for line in entity_text.split("\n"):
+        line = line.strip()
+        if line.startswith("T:"):
+            try:
+                facts["entity_count"] = int(line[2:])
+            except ValueError:
+                pass
+            continue
+        prefix, separator, rest = line.partition(":")
+        if prefix != "E" or not separator:
+            continue
+        fields = rest.split("|")
+        if len(fields) != 3:
+            continue
+        position_text, _, dims_text = fields[1], fields[2], fields[2]
+        name = fields[0]
+        try:
+            x_text, y_text = position_text.split(":")
+            w_text, h_text = dims_text.split(":")
+            facts["entities"].append({
+                "n": name,
+                "x": float(x_text),
+                "y": float(y_text),
+                "w": float(w_text),
+                "h": float(h_text),
+            })
+        except ValueError:
+            continue
+    return facts, None
+
+
+def build_custom_plan_prompt(job, errors, iteration):
+    facts = job["facts"]
+    item = job["item"]
+    surface = facts.get("surface", job["surface"])
+
+    machine_lines = ", ".join(
+        f"{name} ({dims['w']}x{dims['h']})"
+        for name, dims in sorted(facts.get("machines", {}).items())
+    )
+    ingredient_text = ", ".join(facts.get("ingredients", [])) or "(none)"
+    nearby_lines = []
+    for entity in facts.get("entities", [])[:40]:
+        nearby_lines.append(
+            f"{entity['n']} at {entity['x']:g},{entity['y']:g} "
+            f"({entity['w']:g}x{entity['h']:g})"
+        )
+    nearby_text = "\n".join(nearby_lines) or "(nothing nearby)"
+    cliff_text = (
+        f"{facts.get('cliff_count', 0)} cliffs total; nearest: "
+        + (", ".join(facts.get("cliffs", [])[:20]) or "(none)")
+    )
+    water_text = (
+        "water tiles sampled at: "
+        + (", ".join(facts.get("water_samples", [])) or "(none found)")
+    )
+
+    example = {
+        "layout": "custom",
+        "plans": [
+            {"n": "assembling-machine-1", "x": 1.5, "y": 1.5,
+             "d": "", "r": "building"},
+            {"n": "inserter", "x": 1.5, "y": -0.5, "d": "north",
+             "r": "inserter"},
+            {"n": "transport-belt", "x": 0.5, "y": -1.5, "d": "east",
+             "r": "belt"},
+            {"n": "transport-belt", "x": 1.5, "y": -1.5, "d": "east",
+             "r": "belt"},
+            {"n": "medium-electric-pole", "x": 3.5, "y": 0.5, "d": "",
+             "r": "pole"},
+        ],
+        "area": [-1, -2, 4, 3],
+        "pole": True,
+        "req": False,
+    }
+
+    error_block = ""
+    if errors:
+        formatted = "\n".join(f"- {error}" for error in errors)
+        error_block = (
+            f"\nYour previous proposal was rejected for these exact reasons:"
+            f"\n{formatted}\nFix every listed problem. Do not change parts "
+            "that were accepted.\n"
+        )
+
+    return (
+        f"You are Jimbo's layout designer for the Factorio server. Design a "
+        f"small ghost-only production cell for '{item}' on surface "
+        f"'{surface}' requested by {job['requesting_player']}. Player ask: "
+        f"\"{job['hint'] or 'design a working cell'}\".\n\n"
+        "Coordinate conventions: offsets are relative to the crafting "
+        "machine's TOP-left corner (its own center sits at half its width, "
+        "half its height). Positive x goes EAST, positive y goes SOUTH. Every "
+        "entity sits on half-tile centers (multiples of 0.5). Inserters pick "
+        "up BEHIND themselves and drop IN FRONT along their facing direction "
+        "d.\n\n"
+        "Measured reach constants you must honor exactly: regular inserter "
+        "(inserter or burner-inserter) picks up 1.00 tiles behind and drops "
+        "1.20 ahead; long-handed-inserter picks up 2.00 behind and drops 2.20 "
+        "ahead. The pickup/drop point computed from those distances must land "
+        "inside the target entity's footprint.\n\n"
+        f"Available compatible machines (name w x h): {machine_lines}.\n"
+        f"Recipe ingredients for {item}: {ingredient_text}.\n"
+        f"Medium pole supply radius: {facts.get('pole_supply', '?')} tiles "
+        f"(the pole center must stay within that Chebyshev distance of the "
+        f"machine center).\n"
+        f"Site survey around the origin {facts.get('origin')}:\n"
+        f"Nearby entities ({facts.get('entity_count', 0)} total, closest "
+        f"first):\n{nearby_text}\n"
+        f"{cliff_text}\n{water_text}\n\n"
+        "Hard requirements:\n"
+        "- Exactly one building entry whose r='building'; its n must be one "
+        "of the available machines.\n"
+        "- Every inserter needs a facing direction and a real source behind "
+        "it plus a real destination in front of it at reach distance.\n"
+        "- Belts must form connected lanes of at least two tiles feeding "
+        "their inserter targets; no isolated belts.\n"
+        "- No two entities may overlap footprints; everything stays inside "
+        f"the declared area; area is at most {custom_plan_max_area_tiles} "
+        "tiles per side; at most "
+        f"{custom_plan_max_entities} entities total.\n"
+        "- Include one medium electric pole (r='pole') covering the machine "
+        "center unless the site already provides power; keep pole and req "
+        "flags consistent with the plans (req=true means exactly one "
+        "requester-chest entry).\n"
+        "- Avoid the surveyed water tiles, cliffs, and every listed nearby "
+        "entity footprint.\n"
+        "- Keep the design simple and buildable: this will be stamped as "
+        "ghosts that players fill by hand or bots complete.\n\n"
+        f"Iteration {iteration} of {produce_worker_max_iterations}."
+        f"{error_block}\n"
+        "Reply with ONLY a JSON object in exactly this shape (this example "
+        "is illustrative, not a template to copy):\n"
+        f"{json.dumps(example)}\n"
+    )
+
+
+def run_produce_worker(job_path):
+    started = time.monotonic()
+    job_id = os.path.basename(os.path.dirname(os.path.abspath(job_path)))
+    paths = _job_paths(job_id)
+    job = _read_json(job_path)
+
+    def log(message):
+        try:
+            with open(paths["log"], "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%H:%M:%S} {message}\n")
+        except OSError:
+            pass
+
+    def fail(reason):
+        _write_json(
+            paths["result"],
+            {"ok": False, "reason": reason},
+        )
+        update_job_status(
+            job_id,
+            status="designed_failed",
+            reported=False,
+            failure=reason,
+        )
+        log(f"FAILED: {reason}")
+        return 1
+
+    if not job:
+        print(f"Unreadable job file {job_path}", flush=True)
+        return 2
+    update_job_status(job_id, status="running", pid=os.getpid())
+    log(f"Worker started for {job_id}")
+
+    errors = []
+    for iteration in range(1, produce_worker_max_iterations + 1):
+        elapsed = time.monotonic() - started
+        if elapsed >= produce_worker_max_seconds:
+            return fail(
+                f"budget exhausted after {iteration - 1} iterations "
+                f"({elapsed / 60:.0f} minutes)"
+            )
+        update_job_status(job_id, iterations=iteration)
+        prompt = build_custom_plan_prompt(job, errors, iteration)
+        try:
+            raw = ask_ai(prompt)
+        except Exception as e:
+            log(f"Model call failed on iteration {iteration}: {e}")
+            errors = [f"The model call itself failed: {e}. Try again."]
+            continue
+        proposal = parse_custom_plan_proposal(raw)
+        if proposal is None:
+            log(f"Iteration {iteration}: response was not JSON")
+            errors = [
+                "Your reply was not a single JSON object. Reply with only "
+                "the JSON object in the required shape."
+            ]
+            continue
+        errors = validate_custom_cell_plan(proposal, job.get("facts", {}))
+        if not errors:
+            _write_json(paths["result"], {"ok": True, "variant": proposal})
+            update_job_status(job_id, status="designed_ok", reported=False)
+            log(f"Iteration {iteration}: accepted proposal")
+            return 0
+        log(
+            f"Iteration {iteration}: rejected with {len(errors)} problem(s)"
+        )
+        for error in errors:
+            log(f"  - {error}")
+    remaining_minutes = max(
+        0, (produce_worker_max_seconds - (time.monotonic() - started)) // 60
+    )
+    return fail(
+        f"no valid layout within {produce_worker_max_iterations} iterations; "
+        f"{remaining_minutes:.0f} minutes of budget remained"
+    )
+
+
+def build_job_completion_prompt(job, outcome_text):
+    return (
+        "You are Jimbo, a helpful Factorio bot. "
+        f"{model_identity}\n"
+        f"The server is owned and operated by {server_owner}.\n"
+        f"Earlier, {job.get('requesting_player', 'a player')} asked Jimbo to "
+        f"design and place a custom production cell for "
+        f"'{job.get('item')}' on '{job.get('surface')}'. The background work "
+        "has now finished. Compose ONE short chat line addressed to them "
+        "reporting the outcome below.\n"
+        f'Outcome text: "{outcome_text}"\n'
+        "Report exactly what the outcome states: if the cell was placed, "
+        "include the anchor map ping markup verbatim and the entities named; "
+        "repeat any WARNING verbatim; if it failed, say so plainly and give "
+        "the stated reason. Never claim success when the outcome reports an "
+        "error. Do not invent details.\n"
+    )
+
+
+def report_finished_cell_job(client, dialogue, recent_chat, job_id):
+    paths = _job_paths(job_id)
+    job = _read_json(paths["job"], {})
+    result = _read_json(paths["result"], {})
+    status = _read_json(paths["status"], {})
+
+    if result.get("ok"):
+        variant = result.get("variant")
+        knobs = dict(default_production_cell_knobs())
+        knobs.update({k: v for k, v in job.get("knobs", {}).items()
+                      if k != "layout"})
+        knobs["layout"] = "custom"
+        knobs["custom_variant"] = variant
+        outcome = place_production_cell(
+            client,
+            job.get("surface", "current"),
+            job.get("item", ""),
+            job.get("hint", ""),
+            requesting_player=job.get("requesting_player", ""),
+            knobs=knobs,
+        )
+        print(f"CUSTOM CELL stamping response: {outcome}", flush=True)
+        final_state = (
+            "done_placed" if outcome.startswith("SUCCESS") else "done_failed"
+        )
+    else:
+        outcome = (
+            "ERROR: " + str(result.get("reason") or "custom design failed")
+        )
+        final_state = "done_failed"
+
+    update_job_status(
+        job_id, status=final_state, reported=False, outcome=outcome
+    )
+
+    announcement = None
+    try:
+        announcement = ask_ai(build_job_completion_prompt(job, outcome))
+    except Exception as e:
+        print(f"Job completion model call failed: {e}", flush=True)
+    if not announcement or announcement.strip().upper() == "SKIP":
+        if outcome.startswith("SUCCESS"):
+            announcement = outcome
+        else:
+            announcement = (
+                f"Heads up: the custom {job.get('item')} cell did not get "
+                f"built. {outcome[len('ERROR: '):] if outcome.startswith('ERROR: ') else outcome}"
+            )
+    sent_lines, send_error = send_jimbo_lines(client, announcement)
+    record_direct_reply(
+        dialogue,
+        recent_chat,
+        sent_lines,
+        rcon_command="RCON: production cell",
+        rcon_response=outcome,
+    )
+    if send_error is not None:
+        print(f"RCON error announcing job {job_id}: {send_error}", flush=True)
+        update_job_status(job_id, reported=False)
+        return False
+    update_job_status(job_id, reported=True)
+    return True
+
+
+def poll_produce_jobs(client, dialogue, recent_chat, state):
+    now = time.time()
+    if now - state.get("last_poll", 0) < produce_job_poll_interval:
+        return
+    state["last_poll"] = now
+    reap_stale_cell_jobs()
+    for job_id in iter_job_ids():
+        status = _read_json(_job_paths(job_id)["status"])
+        if (
+            status
+            and status.get("kind") == "custom-cell"
+            and status.get("status") in ("designed_ok", "designed_failed")
+            and not status.get("reported")
+        ):
+            update_job_status(job_id, reported=True)
+            try:
+                report_finished_cell_job(
+                    client, dialogue, recent_chat, job_id
+                )
+            except Exception as e:
+                print(f"Job {job_id} reporting failed: {e}", flush=True)
+                update_job_status(job_id, reported=False)
+
+
+def maybe_start_custom_cell_job(
+    client, produce_request, username, reason=""
+):
+    surface, item, hint, knobs = produce_request
+    facts, error = collect_custom_site_facts(
+        client, surface, item, username, hint
+    )
+    if error:
+        return error
+    key = produce_job_key(surface, item, hint)
+    active = find_active_cell_job(key)
+    if active:
+        status = _read_json(_job_paths(active)["status"], {})
+        return (
+            f"PENDING: a custom {item} design is already underway "
+            f"(started {max(0, int(time.time() - status.get('created', time.time()))) // 60} "
+            "minutes ago); I'll report back when it finishes."
+        )
+    job_id = create_cell_job(surface, item, hint, knobs, username, facts)
+    if job_id is None:
+        return "ERROR: could not record the custom design job"
+    spawn_cell_worker(job_id)
+    print(f"CUSTOM CELL job {job_id} spawned ({reason})", flush=True)
+    if knobs.get("layout") == "custom":
+        preamble = (
+            f"I'm designing a custom {item} cell for "
+            f"'{facts.get('surface', surface)}' in the background"
+        )
+    else:
+        preamble = (
+            f"no standard shape fits there, so I'm designing a custom "
+            f"{item} cell for '{facts.get('surface', surface)}' in the "
+            "background"
+        )
+    return (
+        f"PENDING: {preamble}; I'll report back here when it's placed "
+        "or if I fail."
+    )
 
 def reply_uses_research_context(reply, research_text):
     normalized_reply = reply.lower().replace("-", " ")
@@ -2327,9 +3859,8 @@ def build_classification_prompt(username, message, history_text):
         "surface, or wants a grand total of an item that exists, use LOOKUP — "
         "it composes an inventory-aware count and reports exactly what it "
         "scanned.\n"
-         "- PRODUCE|surface|item-name|optional-location — place a compact "
-        "production cell with a crafting machine, requester and provider chests, "
-        "two inserters, and a power pole. Use lowercase internal names when the "
+         "- PRODUCE|surface|item-name|optional-location|optional-knobs — place a "
+        "compact production cell. Use lowercase internal names when the "
         "current player asks Jimbo to make, produce, craft, build, or set up "
         "manufacturing of a specific item. Copy an explicit player-supplied GPS "
         "map ping exactly; never invent or adjust coordinates. Otherwise use "
@@ -2342,10 +3873,25 @@ def build_classification_prompt(username, message, history_text):
         "south-west, west, and north-west. A direction without an explicit origin "
         "remains relative to the current view. Use an empty fourth field when no "
         "location was supplied. Use surface 'current' when the request is relative "
-        "to the player and does not name a surface. Examples: "
+        "to the player and does not name a surface. The optional fifth field is a "
+        "comma-separated key=value list of build options the player explicitly "
+        "requested; omit the field entirely otherwise. Keys and allowed values: "
+        "layout=standard (default; machine with requester and provider chests "
+        "and a power pole), layout=belt-fed (machine between two parallel "
+        "east-flowing belt lanes fed by inserters, no logistics chests), or "
+        "layout=custom (only when the player explicitly asks Jimbo to design a "
+        "custom or one-off layout; it runs in the background and Jimbo reports "
+        "back when placed); "
+        "rotation=east|south|west|north (belt-fed only, default east); "
+        "lanes=1|2 (belt-fed only, default 1); tier=fastest|smallest (which "
+        "compatible machine to prefer, default fastest). Never invent values "
+        "outside these lists. Examples: "
         "PRODUCE|current|electronic-circuit|standing:north, "
-        "PRODUCE|current|electronic-circuit|view and "
-        "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis].\n"
+        "PRODUCE|current|electronic-circuit|view, "
+        "PRODUCE|nauvis|electronic-circuit|[gps=-622,51,nauvis], "
+        "PRODUCE|current|iron-gear-wheel|standing:north|layout=belt-fed, "
+        "PRODUCE|nauvis|iron-plate|[gps=13,7]|"
+        "layout=belt-fed,rotation=east,lanes=1.\n"
         "- TAG|surface|entity-type|optional-label — find every entity of a given "
         "type on a surface and add a chart tag at each position. Use lowercase "
         "internal entity type names such as artillery-turret, electric-pole, "
@@ -2474,11 +4020,12 @@ def build_classification_prompt(username, message, history_text):
         "Do not use this for where an item or material comes from; a planet list "
         "does not establish material sources. Use NONE for established Factorio "
         "knowledge or query relevant prototypes when live data is needed.\n"
-         "- PRODUCE|surface|item-name|optional-location — the current player asks "
+         "- PRODUCE|surface|item-name|optional-location|optional-knobs — the current player asks "
         "Jimbo to place a production cell for a specific item. Use their explicit "
         "GPS ping, view, standing, an origin-qualified normalized direction, a "
         "backward-compatible view-relative direction, or an empty fourth field "
-        "as described above.\n"
+        "as described above. Add the fifth knobs field only when the player "
+        "explicitly asks how the cell should be built.\n"
         "- TAG|surface|entity-type|optional-label — the current player asks Jimbo "
         "to tag, ping, or mark entities of a specific type, such as "
         "artillery-turret, rocket-silo, or player corpses (entity type "
@@ -2519,6 +4066,11 @@ def build_classification_prompt(username, message, history_text):
         "nauvis, "
         "LOOKUP|LuaSurface,LuaEntity|how many iron-plate items are stored in "
         "chests on nauvis.\n"
+        "- JOBSTATUS — someone asks Jimbo what custom production design work is "
+        "in progress or pending. Return JOBSTATUS when the player asks about the "
+        "status, progress, or outcome of a custom/belt layout Jimbo is designing "
+        "or was asked to design, or asks what Jimbo is currently building or "
+        "working on for them.\n"
 
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
@@ -2601,12 +4153,34 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
             produce_hint = (
                 "This response is the verified result of a production-cell "
                 "placement request. On SUCCESS, report the anchor map ping and "
-                "every created entity named in the response. If SUCCESS includes "
+                "every created entity named in the response. Describe only the "
+                "layout and parts the response names, exactly as it names "
+                "them: never claim extra features such as specific belt "
+                "arrangements, chest types, or a different orientation than "
+                "the response states. If SUCCESS includes "
                 "a WARNING, clearly say the cell was placed but repeat every "
                 "reported heat, power, logistics, or construction issue that still "
                 "needs attention. On ERROR, clearly say the cell was not placed "
                 "and explain the reported reason. Never claim that placement "
-                "succeeded when the response reports an error.\n"
+                "succeeded when the response reports an error. If the response "
+                "starts with PENDING, the placement is running in the background "
+                "and has not finished yet: confirm the design work has started, "
+                "do NOT claim the cell was placed or any entities exist, and tell "
+                "the player Jimbo will report back here when it finishes. Factorio "
+                "furnaces have no recipe to set: they automatically smelt "
+                "whatever ore is inserted, so never tell players to configure "
+                "a furnace recipe.\n"
+            )
+        job_status_hint = ""
+        if rcon_command == "RCON: produce job status":
+            job_status_hint = (
+                "This response lists custom production-cell design work in "
+                "progress or awaiting report. Report it literally: if it names "
+                "active designs with their age and requester, say which are "
+                "still running; if it lists finished-but-unreported work, say "
+                "it will be announced shortly; if it says no designs are in "
+                "progress, say plainly that Jimbo has no custom designs running. "
+                "Never invent details not in the response.\n"
             )
         tag_hint = ""
         if rcon_command == "RCON: map tags":
@@ -2670,6 +4244,7 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
             + planet_hint
             + logistics_hint
             + produce_hint
+            + job_status_hint
             + tag_hint
             + untag_hint
             + none_hint
@@ -2872,6 +4447,8 @@ def maybe_spontaneous(
 
 # Tail the chat log and print messages
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--produce-worker":
+        exit(run_produce_worker(sys.argv[2]))
     script_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(script_dir, "rconpw")) as f:
         password = f.read().strip()
@@ -2892,6 +4469,7 @@ if __name__ == "__main__":
         "stall_announced": False,
         "alerts_prev_keys": set(),
     }
+    produce_job_state = {"last_poll": 0.0}
     known_players_path = os.path.join(script_dir, "known_players.txt")
     known_players = set()
     if os.path.exists(known_players_path):
@@ -2921,6 +4499,8 @@ if __name__ == "__main__":
                     flush=True,
                 )
         warm_up_ai()
+        reap_stale_cell_jobs()
+        poll_produce_jobs(client, dialogue, recent_chat, produce_job_state)
 
         while True:
             try:
@@ -2948,6 +4528,9 @@ if __name__ == "__main__":
                         last_spontaneous = maybe_spontaneous(
                             client, recent_chat, dialogue, last_spontaneous,
                             spontaneous_state,
+                        )
+                        poll_produce_jobs(
+                            client, dialogue, recent_chat, produce_job_state
                         )
                         continue
                     line = line.strip()
@@ -3048,6 +4631,7 @@ if __name__ == "__main__":
                     top_damage_request = None
                     lookup_request = None
                     remove_request = None
+                    job_status_request = None
 
                     if not loosely_refers_to_jimbo(msg):
                         print("Model decided to skip", flush=True)
@@ -3120,6 +4704,12 @@ if __name__ == "__main__":
                             remove_request = parse_remove_decision(raw)
                             print(
                                 f"Model requested REMOVE: {remove_request}",
+                                flush=True,
+                            )
+                        elif parse_job_status_decision(raw) is not None:
+                            job_status_request = parse_job_status_decision(raw)
+                            print(
+                                f"Model requested JOBSTATUS: {job_status_request}",
                                 flush=True,
                             )
                         elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
@@ -3246,6 +4836,14 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(f"RCON error: {e}", flush=True)
                             rcon_response = f"[error: {e}]"
+
+                    if job_status_request is not None:
+                        rcon_cmd = "RCON: produce job status"
+                        reap_stale_cell_jobs()
+                        rcon_response = describe_produce_jobs()
+                        print(
+                            f"JOBSTATUS response: {rcon_response}", flush=True
+                        )
 
                     if lookup_request is not None:
                         rcon_cmd = "RCON: scripted lookup"

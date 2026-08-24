@@ -285,6 +285,34 @@ mention them unprompted.
     references, same refusal to import its framework); the active step-by-step
     plan lives in `FIX_PLAN.md` item 3.
 
+13. **Belt-fed cells are a pre-bot capability.** The owner's stated purpose
+    for the belt-fed layout is early-game use before logistics or
+    construction networks exist: ghosts are hand-filled with items exactly
+    like blueprint placement, no roboport required. Consequences to honor:
+    missing logistic/construction coverage is an expected condition for this
+    layout, not a defect, so support warnings should stay informative rather
+    than alarming; the medium-electric-pole requirement assumes Electric
+    Energy Distribution 1 research, so a small-pole variant (or poleless
+    placement beside an existing line) may be wanted for truly earliest-game
+    use; and any future belt-fed work should be validated the way pre-bot
+    players would actually experience it — hand-building from ghosts — not
+    only through bot-driven construction.
+
+14. **Custom-cell worker design quality.** The Step 2 worker subprocess
+    scaffolding is live and validated (FIX_PLAN item 3 Step 2): the first
+    live `layout=custom` design was accepted on iteration 2, stamped, and
+    reported. The produced cell was functional but minimal — it chose the
+    base `assembling-machine-1` over the fastest unlocked machine and used a
+    short 2-belt tail rather than a through-flowing lane pair. Future
+    quality work (separate from scaffolding) could: steer the worker toward
+    the fastest available compatible machine from the surveyed candidates;
+    prefer longer, through-connected lanes that both feed and can be
+    extended; and ask the validator/prompt to prefer a balanced inserter
+    direction so input and output lanes run parallel as in the belt-fed
+    variant. Any change here is a player-visible behavior change and must
+    update `startup_change_summary` + `STARTUP_ANNOUNCEMENTS.md` and be
+    re-validated live.
+
 ## Alert Awareness Design
 
 Give Jimbo awareness of active game alerts (entity damage, destroyed buildings,

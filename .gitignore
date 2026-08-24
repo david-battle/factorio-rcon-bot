@@ -11,6 +11,7 @@ last_commit.txt
 last_startup_summary.txt
 last_chat_review.txt
 known_players.txt
+produce_jobs/
 rconpw
 groq-api-key.txt
 *.key
