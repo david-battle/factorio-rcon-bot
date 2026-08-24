@@ -147,18 +147,15 @@ production_cell_directions = (
 production_cell_relative_locations = ("view", "standing")
 production_cell_search_max_radius = 128
 production_cell_search_max_candidates = 256
+remove_area_radius = 64
 
 # IMPORTANT: Update this player-facing summary whenever a change will alter what
 # players observe Jimbo doing after restart — code OR prompt edits. Describe why
 # the behavior changed, not implementation details.
 startup_change_summary = (
-    "I now use the paid DeepSeek V4 Flash via OpenCode Zen instead of the "
-    "free tier, so I shouldn't run out of quota mid-conversation anymore. My "
-    "first message after a restart no longer gets swallowed, I warm up at "
-    "startup so my first answer comes faster, I've studied this server's "
-    "exact Factorio version so my commands land more reliably, and I can now "
-    "dig into live server details on request. When I count things I say "
-    "exactly what I scanned instead of guessing at a grand total."
+    "I can clean up now too: ask me to remove or demolish things and I'll "
+    "delete ghosts outright while marking real structures for your "
+    "construction bots to dismantle — and I'll keep those reports short."
 )
 
 opencode_config = json.dumps({
@@ -520,6 +517,8 @@ def _is_recognized_classification(raw):
             parse_tag_decision(line),
             parse_untag_decision(line),
             parse_top_damage_decision(line),
+            parse_lookup_decision(line),
+            parse_remove_decision(line),
         )
     )
 
@@ -542,7 +541,7 @@ def classify_current_message(username, message, history_text):
         raw = ask_ai(retry_prompt).split("\n")[0].strip()
     if not _is_recognized_classification(raw):
         print(
-            "Classifier returned an unrecognized response; retrying",
+            f"Classifier returned an unrecognized response {raw!r}; retrying",
             flush=True,
         )
         retry_prompt = (
@@ -873,6 +872,153 @@ def parse_produce_decision(raw):
         except ValueError:
             return None
     return surface, item, hint
+
+
+def parse_remove_decision(raw):
+    if not raw.startswith("REMOVE|"):
+        return None
+    parts = raw.split("|")
+    if len(parts) not in (3, 4):
+        return None
+    surface = parts[1].strip()
+    entity_type = parts[2].strip()
+    hint = parts[3].strip() if len(parts) == 4 else ""
+
+    def valid_name(name):
+        return bool(name) and all(
+            char.islower() or char.isdigit() or char in "-_" for char in name
+        )
+
+    if not valid_name(surface):
+        return None
+    if entity_type != "any" and not valid_name(entity_type):
+        return None
+    if hint:
+        if parse_production_cell_relative_hint(hint) is not None:
+            return surface, entity_type, hint
+        try:
+            if not (hint.startswith("[gps=") and hint.endswith("]")):
+                return None
+            coords = [part.strip() for part in hint[5:-1].split(",")]
+            if len(coords) not in (2, 3):
+                return None
+            x = float(coords[0])
+            y = float(coords[1])
+            if not math.isfinite(x) or not math.isfinite(y):
+                return None
+            if len(coords) == 3 and coords[2] != surface:
+                return None
+        except ValueError:
+            return None
+    return surface, entity_type, hint
+
+
+def remove_entities(client, surface, entity_type, hint="", requesting_player=""):
+    if not requesting_player:
+        return "ERROR: Requesting player is required"
+
+    explicit = False
+    ax = 0
+    ay = 0
+    direction = ""
+    relative_location = ""
+    relative_hint = parse_production_cell_relative_hint(hint)
+    if relative_hint is not None:
+        relative_location, direction = relative_hint
+    elif hint:
+        inner = hint[1:-1] if hint.startswith("[") and hint.endswith("]") else ""
+        if not inner.startswith("gps="):
+            return "ERROR: Invalid location hint"
+        coords = [part.strip() for part in inner[4:].split(",")]
+        if len(coords) not in (2, 3):
+            return "ERROR: Invalid GPS location hint"
+        try:
+            ax_value = float(coords[0])
+            ay_value = float(coords[1])
+        except ValueError:
+            return "ERROR: Invalid GPS location hint"
+        if not math.isfinite(ax_value) or not math.isfinite(ay_value):
+            return "ERROR: Invalid GPS location hint"
+        explicit = True
+        ax = math.floor(ax_value)
+        ay = math.floor(ay_value)
+
+    surface_lua = json.dumps(surface)
+    entity_lua = json.dumps(entity_type)
+    player_lua = json.dumps(requesting_player)
+    direction_lua = json.dumps(direction)
+    relative_location_lua = json.dumps(relative_location)
+    explicit_lua = "true" if explicit else "false"
+    cmd = (
+        f"/silent-command "
+        f"local scope={surface_lua};"
+        f"local et={entity_lua};"
+        f"local request_player=game.get_player({player_lua});"
+        f"local relative_location={relative_location_lua};"
+        f"local direction={direction_lua};"
+        f"local explicit={explicit_lua};"
+        f"local explicit_ax={ax};local explicit_ay={ay};"
+        f"local radius={remove_area_radius};"
+        f"local surfaces={{}};"
+        f"if scope=='all' then "
+        f"for _,candidate in pairs(game.surfaces) do "
+        f"surfaces[#surfaces+1]=candidate end "
+        f"elseif scope=='current' then "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: Removal needs the requesting player online') "
+        f"return end;"
+        f"if relative_location=='standing' then "
+        f"surfaces[1]=request_player.physical_surface "
+        f"else surfaces[1]=request_player.surface end "
+        f"else "
+        f"local s=game.surfaces[scope];"
+        f"if not s then rcon.print('ERROR: Surface not found') return end;"
+        f"surfaces[1]=s end;"
+        f"if relative_location=='' then relative_location='view' end;"
+        f"local ox=nil;local oy=nil;"
+        f"if explicit then ox=explicit_ax;oy=explicit_ay "
+        f"else "
+        f"if not request_player or not request_player.connected then "
+        f"rcon.print('ERROR: Removal needs the requesting player online') "
+        f"return end;"
+        f"if relative_location=='standing' then "
+        f"ox=request_player.physical_position.x;"
+        f"oy=request_player.physical_position.y "
+        f"else ox=request_player.position.x;oy=request_player.position.y end "
+        f"end;"
+        f"local destroyed=0;local marked=0;local already=0;local skipped=0;"
+        f"local res={{}};"
+        f"for _,s in ipairs(surfaces) do "
+        f"local area={{{{ox-radius,oy-radius}},{{ox+radius,oy+radius}}}};"
+        f"local list={{}};"
+        f"if et~='any' then "
+        f"list=s.find_entities_filtered{{area=area,name=et}};"
+        f"if #list==0 then "
+        f"list=s.find_entities_filtered{{area=area,type=et}} end "
+        f"else list=s.find_entities_filtered{{area=area}} end;"
+        f"local d=0;local m=0;local a=0;local k=0;"
+        f"for _,e in ipairs(list) do "
+        f"if e.valid then "
+        f"if e.type=='entity-ghost' or e.type=='tile-ghost' then "
+        f"if e.destroy() then d=d+1 else k=k+1 end "
+        f"elseif e.to_be_deconstructed() then a=a+1 "
+        f"else "
+        f"local ok,marked_now=pcall(function() "
+        f"return e.order_deconstruction('player',request_player) end);"
+        f"if ok and marked_now==true then m=m+1 else k=k+1 end "
+        f"end end end;"
+        f"destroyed=destroyed+d;marked=marked+m;already=already+a;"
+        f"skipped=skipped+k;"
+        f"if d+m+a+k>0 then "
+        f"res[#res+1]=s.name..' (removed '..d..', marked '..m..', "
+        f"already marked '..a..', skipped '..k..')' end end;"
+        f"rcon.print('Removed '..destroyed..' ghosts, newly marked '..marked.."
+        f"' for deconstruction, '..already..' already marked'"
+        f"..(skipped>0 and ', skipped '..skipped or '')"
+        f"..(#res>0 and ' on '..table.concat(res,'; ') or ''))"
+    )
+    response = client.run(cmd, retry=True)
+    return response.strip() if response else "ERROR: empty response"
 
 
 def place_production_cell(client, surface, item, hint="", requesting_player=""):
@@ -2129,6 +2275,19 @@ def build_lookup_prompt(question, slices):
 def compose_lookup_command(question, slices):
     raw = ask_ai(build_lookup_prompt(question, slices))
     command = strip_code_fences(raw).splitlines()[0].strip() if raw else ""
+    if command and not command.startswith("/"):
+        print(
+            "LOOKUP composition omitted the slash prefix; wrapping "
+            f"response: {command[:200]}",
+            flush=True,
+        )
+        command = f"/silent-command {command}"
+    elif not command:
+        print(
+            f"LOOKUP composition produced no command line; raw response: "
+            f"{raw!r}",
+            flush=True,
+        )
     return command
 
 
@@ -2210,6 +2369,19 @@ def build_classification_prompt(username, message, history_text):
         "to search all machine types for the one with the most products_finished. "
         "Examples: TOP_DAMAGE|nauvis|artillery-turret, "
         "TOP_DAMAGE|nauvis|rocket-silo, TOP_DAMAGE|nauvis|any.\n"
+        "- REMOVE|surface|entity-type|optional-location — delete ghosts and "
+        "mark real entities for bot deconstruction around a location. Use "
+        "lowercase internal entity type names, or \"any\" for everything in "
+        "the area. Prefer the specific type the player names (ghosts are "
+        "\"entity-ghost\", ghost belts are \"entity-ghost\" too); reserve "
+        "\"any\" for requests that clearly mean everything. Surface may be "
+        "'all'. Copy an explicit player-supplied GPS map ping exactly; "
+        "otherwise use the same location grammar as PRODUCE (view, standing, "
+        "directions), and omit the location entirely to target the player's "
+        "current view area. Requests to remove, delete, demolish, clear out, "
+        "or clean up things belong here. Examples: "
+        "REMOVE|nauvis|entity-ghost|[gps=6,-39,nauvis], "
+        "REMOVE|nauvis|any|standing:north, REMOVE|all|character-corpse|.\n"
 
         "- Any other Factorio slash command needed to perform a requested server "
         "action. Use one-line /silent-command Lua for scripted actions and call "
@@ -2480,6 +2652,15 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
                 "in your reply so it renders as a clickable ping; never "
                 "invent or change the coordinates.\n"
             )
+        remove_hint = ""
+        if rcon_command == "RCON: remove entities":
+            remove_hint = (
+                "This response is the result of a removal request. Reply in "
+                "one short sentence and mention only the counts that are "
+                "nonzero (ghosts removed, entities newly marked for "
+                "deconstruction, skipped); never claim more was removed than "
+                "the response says.\n"
+            )
         return (
             context
             + f'{username} currently asked: "{message}".\n'
@@ -2494,6 +2675,7 @@ def build_reply_prompt(username, message, history_text, rcon_command, rcon_respo
             + none_hint
             + top_damage_hint
             + lookup_hint
+            + remove_hint
             + "You are Jimbo, a helpful Factorio bot. "
             + f"{model_identity}\n"
             + f"The server is owned and operated by {server_owner}.\n"
@@ -2865,6 +3047,7 @@ if __name__ == "__main__":
                     untag_request = None
                     top_damage_request = None
                     lookup_request = None
+                    remove_request = None
 
                     if not loosely_refers_to_jimbo(msg):
                         print("Model decided to skip", flush=True)
@@ -2931,6 +3114,12 @@ if __name__ == "__main__":
                             lookup_request = parse_lookup_decision(raw)
                             print(
                                 f"Model requested LOOKUP: {lookup_request}",
+                                flush=True,
+                            )
+                        elif parse_remove_decision(raw) is not None:
+                            remove_request = parse_remove_decision(raw)
+                            print(
+                                f"Model requested REMOVE: {remove_request}",
                                 flush=True,
                             )
                         elif raw in ("/players online", "/players", "/evolution", "/time", "/version") or raw.startswith("/"):
@@ -3038,6 +3227,20 @@ if __name__ == "__main__":
                             )
                             print(
                                 f"TOP_DAMAGE response: {rcon_response}",
+                                flush=True,
+                            )
+                        except Exception as e:
+                            print(f"RCON error: {e}", flush=True)
+                            rcon_response = f"[error: {e}]"
+
+                    if remove_request is not None:
+                        rcon_cmd = "RCON: remove entities"
+                        try:
+                            rcon_response = remove_entities(
+                                client, *remove_request, requesting_player=username
+                            )
+                            print(
+                                f"REMOVE response: {rcon_response}",
                                 flush=True,
                             )
                         except Exception as e:

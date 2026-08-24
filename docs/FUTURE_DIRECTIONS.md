@@ -272,6 +272,19 @@ understand continuously, beginning with per-surface power health, then decide ho
 players can ask about those conditions conversationally and when Jimbo should
 mention them unprompted.
 
+12. **Request-time layout synthesis.** Extend PRODUCE from one pre-planned
+    cell shape toward on-demand layouts: parameterized entity tables with
+    declared knobs first (rotation, lanes-per-side, belt-vs-chest input and
+    output; first shape is a belt-fed cell modeled on a hand-built example),
+    then a short-lived worker subprocess that composes and validates plans
+    offline against sliced API docs and read-only site surveys, then a library
+    of tested layout primitives ported from the old repository. The chat model
+    never places geometry directly; every plan must be an artifact of code
+    that ran and passed checks, stamped only through the existing gated phase-2
+    path. This is the request-time sibling of direction 8 (same old-repo
+    references, same refusal to import its framework); the active step-by-step
+    plan lives in `FIX_PLAN.md` item 3.
+
 ## Alert Awareness Design
 
 Give Jimbo awareness of active game alerts (entity damage, destroyed buildings,

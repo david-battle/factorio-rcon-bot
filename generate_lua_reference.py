@@ -32,6 +32,10 @@ offline players), game.forces.
 - Filtered searches: surface.find_entities_filtered{name=..., type=..., \
 position={x,y}, radius=..., area={{x1,y1},{x2,y2}}}. Area bounds are \
 exclusive: a w x h box anchored at tile (x,y) is {{x,y},{x+w,y+h}}.
+- Ghosts: identify with e.type == "entity-ghost" ("tile-ghost" for tiles); \
+no e.ghost field exists. Only on a real ghost do e.ghost_type and \
+e.ghost_name give the contained prototype; on anything else they RAISE, so \
+pcall-wrap them like any uncertain read.
 - LuaInventory.get_contents() returns an array of {name=..., quality=..., \
 count=...} entries indexed by slot; prefer get_item_count(name).
 - Compare entity status against defines.entity_status.<name> constants; the \

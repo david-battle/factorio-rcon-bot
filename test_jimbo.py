@@ -721,6 +721,17 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("LuaSurface, LuaEntity", text)
         self.assertIn("CORE RULES", text)
 
+    def test_lua_essentials_generator_includes_ghost_idiom(self):
+        import generate_lua_reference as gen
+
+        text = gen.build_essentials(
+            {"application_version": "9.9.9-test"}, "runtime-api.json"
+        )
+        self.assertIn('e.type == "entity-ghost"', text)
+        self.assertIn("no e.ghost field exists", text)
+        self.assertIn("e.ghost_type", text)
+        self.assertIn("e.ghost_name", text)
+
 
     def test_untag_classifier_guidance_for_just_tagged_entity(self):
         prompt = jimbo.build_classification_prompt(
@@ -1199,6 +1210,41 @@ class DialogueTests(unittest.TestCase):
         self.assertEqual(result, "NONE")
         ask_ai.assert_called_once()
 
+    def test_lookup_classification_is_recognized_without_retry(self):
+        decision = (
+            "LOOKUP|LuaSurface,LuaEntity|how many iron-plate items exist on "
+            "nauvis"
+        )
+        with patch.object(jimbo, "ask_ai", return_value=decision) as ask_ai:
+            result = jimbo.classify_current_message(
+                "dlbattle",
+                "Jimbo how many iron plates are in chests on Nauvis?",
+                "(none)",
+            )
+
+        self.assertEqual(result, decision)
+        ask_ai.assert_called_once()
+
+    def test_unrecognized_classification_logs_raw_response(self):
+        prose = (
+            "The user is asking for small power poles. This is a direct "
+            "request to Jimbo. The appropriate command is LOGISTICS."
+        )
+        with patch.object(
+            jimbo,
+            "ask_ai",
+            side_effect=[prose, "LOGISTICS|all|small-electric-pole"],
+        ), patch("builtins.print") as output:
+            result = jimbo.classify_current_message(
+                "Threevee", "Jimbo i need small power poles", "(none)"
+            )
+
+        self.assertEqual(
+            result, "LOGISTICS|all|small-electric-pole"
+        )
+        logged = "".join(str(call.args[0]) for call in output.call_args_list)
+        self.assertIn(prose, logged)
+
     def test_classifier_requests_executable_commands_for_server_actions(self):
         prompt = jimbo.build_classification_prompt(
             jimbo.server_owner,
@@ -1571,6 +1617,140 @@ class ProduceCellTests(unittest.TestCase):
 
     def test_parse_produce_decision_invalid_surface(self):
         self.assertIsNone(jimbo.parse_produce_decision("PRODUCE|Nauvis|iron-plate|"))
+
+    def test_parse_remove_decision_valid_forms(self):
+        self.assertEqual(
+            jimbo.parse_remove_decision("REMOVE|nauvis|entity-ghost|[gps=6,-39]"),
+            ("nauvis", "entity-ghost", "[gps=6,-39]"),
+        )
+        self.assertEqual(
+            jimbo.parse_remove_decision("REMOVE|nauvis|entity-ghost|[gps=6,-39,nauvis]"),
+            ("nauvis", "entity-ghost", "[gps=6,-39,nauvis]"),
+        )
+        self.assertEqual(
+            jimbo.parse_remove_decision("REMOVE|nauvis|any"),
+            ("nauvis", "any", ""),
+        )
+        self.assertEqual(
+            jimbo.parse_remove_decision("REMOVE|all|character-corpse|"),
+            ("all", "character-corpse", ""),
+        )
+        self.assertEqual(
+            jimbo.parse_remove_decision("REMOVE|current|any|standing:north"),
+            ("current", "any", "standing:north"),
+        )
+
+    def test_parse_remove_decision_invalid_forms(self):
+        self.assertIsNone(jimbo.parse_remove_decision("DELETE|nauvis|any"))
+        self.assertIsNone(jimbo.parse_remove_decision("REMOVE|nauvis|Iron-Chest"))
+        self.assertIsNone(jimbo.parse_remove_decision("REMOVE|Nauvis|any"))
+        self.assertIsNone(
+            jimbo.parse_remove_decision("REMOVE|nauvis|any|[gps=1,2,vulcanus]")
+        )
+        self.assertIsNone(
+            jimbo.parse_remove_decision("REMOVE|nauvis|any|[gps=nan,2]")
+        )
+        self.assertIsNone(
+            jimbo.parse_remove_decision("REMOVE|nauvis|any|over-there")
+        )
+
+    def test_recognized_classification_accepts_remove_without_retry(self):
+        decision = "REMOVE|nauvis|entity-ghost|[gps=6,-39,nauvis]"
+        with patch.object(jimbo, "ask_ai", return_value=decision) as ask_ai:
+            result = jimbo.classify_current_message(
+                "Koopix",
+                "Jimbo delete the ghosts you placed there",
+                "(none)",
+            )
+
+        self.assertEqual(result, decision)
+        ask_ai.assert_called_once()
+
+    def test_remove_entities_requires_requesting_player(self):
+        client = Mock()
+        self.assertEqual(
+            jimbo.remove_entities(client, "nauvis", "any"),
+            "ERROR: Requesting player is required",
+        )
+        client.run.assert_not_called()
+
+    def test_remove_entities_rejects_unstructured_hint(self):
+        client = Mock()
+        result = jimbo.remove_entities(
+            client, "nauvis", "any", "somewhere-over-there", "dlbattle"
+        )
+        self.assertEqual(result, "ERROR: Invalid location hint")
+        client.run.assert_not_called()
+
+    def test_remove_entities_runs_command_and_returns_response(self):
+        client = Mock()
+        client.run.return_value = (
+            "Removed 6 ghosts, newly marked 0 for deconstruction, "
+            "0 already marked on nauvis (removed 6, marked 0, "
+            "already marked 0, skipped 0)"
+        )
+        result = jimbo.remove_entities(
+            client,
+            "nauvis",
+            "entity-ghost",
+            "[gps=6,-39]",
+            requesting_player="dlbattle",
+        )
+
+        command = client.run.call_args.args[0]
+        self.assertTrue(command.startswith("/silent-command "))
+        self.assertIn('"nauvis"', command)
+        self.assertIn('"entity-ghost"', command)
+        self.assertIn(f"radius={jimbo.remove_area_radius}", command)
+        self.assertIn('"dlbattle"', command)
+        self.assertIn("{ox-radius,oy-radius},{ox+radius,oy+radius}", command)
+        self.assertIn("order_deconstruction('player',request_player)", command)
+        self.assertIn("to_be_deconstructed()", command)
+        self.assertIn("'entity-ghost'", command)
+        self.assertIn("'tile-ghost'", command)
+        self.assertEqual(result, client.run.return_value.strip())
+
+    def test_remove_entities_defaults_empty_location_to_view(self):
+        client = Mock()
+        client.run.return_value = "Removed 0 ghosts"
+        jimbo.remove_entities(client, "nauvis", "any", "", "dlbattle")
+        command = client.run.call_args.args[0]
+        self.assertIn('relative_location=""', command)
+        self.assertNotIn("explicit=true", command)
+
+    def test_remove_entities_resolves_current_surface(self):
+        client = Mock()
+        client.run.return_value = "Removed 3 ghosts"
+        result = jimbo.remove_entities(
+            client,
+            "current",
+            "transport-belt",
+            "standing:north",
+            requesting_player="dlbattle",
+        )
+
+        command = client.run.call_args.args[0]
+        self.assertIn("scope=='current'", command)
+        self.assertIn("request_player.physical_surface", command)
+        self.assertEqual(result, "Removed 3 ghosts")
+
+    def test_remove_entities_any_type_searches_unfiltered(self):
+        client = Mock()
+        client.run.return_value = "Removed 0 ghosts"
+        jimbo.remove_entities(
+            client, "nauvis", "any", "[gps=0,0]", requesting_player="dlbattle"
+        )
+        command = client.run.call_args.args[0]
+        self.assertIn("et~='any'", command)
+        self.assertIn("find_entities_filtered{area=area}", command)
+
+    def test_remove_entities_empty_response_becomes_error(self):
+        client = Mock()
+        client.run.return_value = ""
+        result = jimbo.remove_entities(
+            client, "nauvis", "any", "[gps=0,0]", requesting_player="dlbattle"
+        )
+        self.assertEqual(result, "ERROR: empty response")
 
     def test_dispatch_production_cell_passes_only_placement_fields_and_player(self):
         client = Mock()
@@ -2547,6 +2727,27 @@ class LookupTests(unittest.TestCase):
         self.assertIn("scope line", prompt)
         self.assertIn("EXCLUDED", prompt)
         self.assertEqual(command, "/silent-command rcon.print(1)")
+
+    def test_compose_lookup_command_wraps_bare_lua_with_slash_prefix(self):
+        bare = 'local c=0;rcon.print("scanned "..c)'
+        with patch.object(jimbo, "ask_ai", return_value=bare):
+            command = jimbo.compose_lookup_command("count chests", "SLICES")
+        self.assertEqual(command, f"/silent-command {bare}")
+
+    def test_compose_lookup_command_leaves_prefixed_command_untouched(self):
+        prefixed = "/silent-command local c=0;rcon.print(c)"
+        with patch.object(jimbo, "ask_ai", return_value=prefixed):
+            command = jimbo.compose_lookup_command("count chests", "SLICES")
+        self.assertEqual(command, prefixed)
+
+    def test_compose_lookup_command_logs_raw_when_nothing_usable(self):
+        with patch.object(jimbo, "ask_ai", return_value=""), patch(
+            "builtins.print"
+        ) as output:
+            command = jimbo.compose_lookup_command("count chests", "SLICES")
+        self.assertEqual(command, "")
+        logged = "".join(str(call.args[0]) for call in output.call_args_list)
+        self.assertIn("no command line", logged)
 
     def test_build_lookup_prompt_includes_essentials_when_present(self):
         with patch.object(jimbo, "lua_essentials_text", "SENTINEL SHEET"):

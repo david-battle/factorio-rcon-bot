@@ -231,10 +231,16 @@ learnings here as briefly as possible.
   means the entity was newly marked for deconstruction, `false` means it was
   not (already marked or not deconstructable) — not an error string. It never
   raises on an ordinary deconstructable entity, so a pcall-wrapped call that
-  returns `false` means "already handled", not failure.
+  returns `false` means "already handled", not failure. The signature also
+  takes optional `player` and `undo_index` parameters (verified against the
+  installed runtime-api.json), so attribution to the requesting player works.
 - On 2.1.14, `LuaEntity.to_be_deconstructed` is a **method**:
   `e.to_be_deconstructed()`. Reading it as a property yields the function
   itself (tostring prints "function"), silently defeating boolean checks.
+- `surface.find_entities_filtered{name=X}` RAISES "Unknown entity name: X"
+  when X is not a real prototype instead of returning an empty table — a
+  sentinel such as `"any"` must be branched off before filtering (observed
+  live in the REMOVE path on 2026-08-23).
 - `game.forces.player.alerts` is a table of `LuaAlert` objects. Useful fields:
   `type`, `target`, `surface`, `icon`, `ticks_to_live`, `message`,
   `show_on_map`.

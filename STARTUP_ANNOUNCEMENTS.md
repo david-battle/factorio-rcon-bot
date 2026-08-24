@@ -219,3 +219,12 @@ listed as announcements.
   exact Factorio version so my commands land more reliably, and I can now
   dig into live server details on request. When I count things I say
   exactly what I scanned instead of guessing at a grand total.
+- Live lookups got sturdier: when I compose a scripted query I no longer
+  fumble it if the command line comes back missing its slash prefix, so
+  inventory counts should fail less often.
+- I studied up on ghosts: my scripted commands now identify them by type
+  instead of poking fields that don't exist, so asking me to clean up
+  placed ghosts should stop erroring out.
+- I can clean up now too: ask me to remove or demolish things and I'll
+  delete ghosts outright while marking real structures for your
+  construction bots to dismantle — and I'll keep those reports short.

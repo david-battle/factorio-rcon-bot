@@ -326,6 +326,30 @@ entity name — the `TOP_DAMAGE` tag text is
 `<entity-name> <unit-number> highest <stat>: <value>` — "remove the tags on
 that foundry I just pinged" is `UNTAG|nauvis|foundry|` with an empty label.
 
+## Entity Removal
+
+The model returns a structured `REMOVE|surface|entity-type|optional-location`
+line during classification; `remove_entities()` handles it. Removal follows
+the owner's 2026-08-23 decision: no ownership tracking and no engineered
+guardrails — Factorio players can already box the whole base with a
+deconstruction planner, so abuse is handled socially, not by restricting the
+tool.
+
+- `surface` — lowercase internal surface name or `all`.
+- `entity-type` — lowercase internal entity type name, or `any` for every
+  entity in scope.
+- `optional-location` — the same grammar as PRODUCE: exact GPS pings,
+  view/standing origins, and directions. When omitted entirely, removal
+  centers on the requesting player's current view position; relative origins
+  require the requesting player online.
+
+Removal scans a fixed radius around the resolved anchor. Ghosts
+(`entity-ghost`, `tile-ghost`) are destroyed outright. Real entities are
+marked for deconstruction with `order_deconstruction('player', player)` so
+construction bots dismantle them and items are recovered — never destroyed
+directly. The reply reports grounded counts (removed, newly marked, already
+marked, skipped) rather than erroring on individual refusals.
+
 ## Parsing
 
 A new `parse_produce_decision(raw)` function mirrors
