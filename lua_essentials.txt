@@ -1,4 +1,4 @@
-FACTORIO 2.1.14 SCRIPTING REFERENCE (authoritative for this server; generated from runtime-api.json):
+FACTORIO 2.1.16 SCRIPTING REFERENCE (authoritative for this server; generated from runtime-api.json):
 
 GLOBAL OBJECTS:
 - commands :: LuaCommandProcessor — Allows registration of custom commands for the in-game console.
@@ -34,17 +34,18 @@ LuaAISettings, LuaAccumulatorControlBehavior, LuaAchievementPrototype,
   LuaEquipmentCategoryPrototype, LuaEquipmentGrid, LuaEquipmentGridPrototype,
   LuaEquipmentPrototype, LuaFlowStatistics, LuaFluidBoxPrototype, LuaFluidEnergySourcePrototype,
   LuaFluidPrototype, LuaFontPrototype, LuaForce, LuaFuelCategoryPrototype,
-  LuaFurnaceControlBehavior, LuaGameScript, LuaGenericOnOffControlBehavior, LuaGroup, LuaGui,
+  LuaFurnaceControlBehavior, LuaGameScript, LuaGenericOnOffControlBehavior, LuaGui,
   LuaGuiElement, LuaHeatBufferPrototype, LuaHeatEnergySourcePrototype,
   LuaHeatPipeControlBehavior, LuaHelpers, LuaInserterControlBehavior, LuaInventory, LuaItem,
-  LuaItemCommon, LuaItemPrototype, LuaItemStack, LuaLabControlBehavior, LuaLampControlBehavior,
-  LuaLandMineControlBehavior, LuaLazyLoadedValue, LuaLoaderControlBehavior, LuaLogisticCell,
-  LuaLogisticContainerControlBehavior, LuaLogisticNetwork, LuaLogisticPoint, LuaLogisticSection,
-  LuaLogisticSections, LuaMiningDrillControlBehavior, LuaModData, LuaModSettingPrototype,
-  LuaModuleCategoryPrototype, LuaNamedNoiseExpression, LuaNamedNoiseFunction,
-  LuaNotificationQueue, LuaParticlePrototype, LuaPermissionGroup, LuaPermissionGroups, LuaPin,
-  LuaPlanet, LuaPlayer, LuaProcessionLayerInheritanceGroupPrototype, LuaProcessionPrototype,
-  LuaProfiler, LuaProgrammableSpeakerControlBehavior, LuaPrototypeBase, LuaPrototypes,
+  LuaItemCommon, LuaItemGroup, LuaItemPrototype, LuaItemStack, LuaItemSubGroup,
+  LuaLabControlBehavior, LuaLampControlBehavior, LuaLandMineControlBehavior, LuaLazyLoadedValue,
+  LuaLoaderControlBehavior, LuaLogisticCell, LuaLogisticContainerControlBehavior,
+  LuaLogisticNetwork, LuaLogisticPoint, LuaLogisticSection, LuaLogisticSections,
+  LuaMiningDrillControlBehavior, LuaModData, LuaModSettingPrototype, LuaModuleCategoryPrototype,
+  LuaNamedNoiseExpression, LuaNamedNoiseFunction, LuaNotificationQueue, LuaParticlePrototype,
+  LuaPermissionGroup, LuaPermissionGroups, LuaPin, LuaPlanet, LuaPlayer,
+  LuaProcessionLayerInheritanceGroupPrototype, LuaProcessionPrototype, LuaProfiler,
+  LuaProgrammableSpeakerControlBehavior, LuaPrototypeBase, LuaPrototypes,
   LuaProxyContainerControlBehavior, LuaPumpControlBehavior, LuaQualityPrototype, LuaRCON,
   LuaRadarControlBehavior, LuaRailEnd, LuaRailPath, LuaRailSignalBaseControlBehavior,
   LuaRandomGenerator, LuaReactorControlBehavior, LuaRecipe, LuaRecipeCategoryPrototype,

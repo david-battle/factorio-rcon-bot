@@ -1,9 +1,11 @@
 # RCON & Lua Notes
 
 Operational quirks learned from direct RCON/Lua work against the live server
-(Factorio 2.1.12). Context is precious: these cost real time to rediscover.
+(Factorio 2.1.16). Context is precious: these cost real time to rediscover.
 Consult this file before composing new RCON or Lua queries, and add new
-learnings here as briefly as possible.
+learnings here as briefly as possible. Learnings are stamped with the version
+they were verified on (some below predate 2.1.16); re-verify before relying on
+a version-sensitive behavior after an upgrade.
 
 > # FIRST RULE: probe any entity field with `pcall` unless you are certain it
 > reads on that entity type. Factorio often **raises an error instead of

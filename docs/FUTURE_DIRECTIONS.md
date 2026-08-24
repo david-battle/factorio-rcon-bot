@@ -152,7 +152,7 @@ natural interaction, and restrained behavior.
     The fix is not more piecemeal notes: the authoritative, version-exact
     reference already exists as machine-readable JSON shipped inside every full
     install — `/mnt/d/factorio-standalone/current/doc-html/runtime-api.json`
-    reported `application_version` 2.1.14, matching the live server, alongside
+    reported `application_version` 2.1.16, matching the live server, alongside
     `prototype-api.json`. Sizes forbid wholesale injection: full runtime JSON
     is about 2 MB (~500K tokens), signatures-only about 0.64 MB; a single class
     slice is 2–40 KB, so delivery must be layered.

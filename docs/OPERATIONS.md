@@ -27,9 +27,9 @@ seeding, or one of the documented runtime pitfalls.
   binary is ever lost). The 4.6 GB Factorio downloads are extracted with
   Windows `tar.exe` instead; `unzip` is only used for quick `-l`/`-t` checks.
 - The standalone install under `/mnt/d/factorio-standalone/` was upgraded to
-  Factorio `2.1.14` on 2026-08-06; `current` is a Windows junction to the
+  Factorio `2.1.16` on 2026-08-24; `current` is a Windows junction to the
   version directory (see "Upgrade The Game Version" below). `/version` was
-  rechecked on 2026-08-06 and reports `2.1.14`. Recheck `/version` before
+  rechecked on 2026-08-24 and reports `2.1.16`. Recheck `/version` before
   relying on version-sensitive runtime API behavior.
 
 When the user says the "old repository," they mean
@@ -358,7 +358,7 @@ explicit confirmation before stopping the server, then:
 ### Upgrade The Game Version
 
 Each Factorio zip extracts to a version-named folder (e.g.
-`Factorio_2.1.14/`). The dedicated server always launches from
+`Factorio_2.1.16/`). The dedicated server always launches from
 `D:\factorio-standalone\current`, so an upgrade repoints that junction; all
 server data stays in `D:\factorio-server`. The server must be stopped.
 Downloads land in `/mnt/c/Users/dlbat/Downloads/` as
@@ -374,8 +374,8 @@ the file is a growing `Unconfirmed <id>.crdownload` and must not be touched.
    done after ten minutes, and its kill left a partial tree that had to be
    overwritten.
 3. Confirm `bin/x64/factorio.exe` exists and `data/base/info.json` reports the
-   expected version; compare the file count against `unzip -l` (20,832 files
-   for 2.1.14).
+   expected version; compare the file count against `unzip -l` (20,833 files
+   for 2.1.16).
 4. Confirm no `factorio.exe` is running, then replace the junction:
    `cmd.exe /c "mklink /J D:\factorio-standalone\current D:\factorio-standalone\<version>"`.
    (`current` is a Windows junction, not a WSL symlink; `mklink /J` needs no
