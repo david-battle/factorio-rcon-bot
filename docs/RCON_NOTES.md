@@ -46,6 +46,10 @@ learnings here as briefly as possible.
 - Plain Lua often returns nothing; use `rcon.print()` inside `/silent-command`.
 - Raw RCON text without a leading slash appears in chat as `<server>`.
 - Online player count: `/silent-command rcon.print(#game.connected_players)`.
+- The singular `game.player` is a client-only global and is `nil` over RCON
+  (live 2026-08-24: a freeform ghost-wall command indexing `game.player`
+  failed with "attempt to index local 'p' (a nil value)"). Resolve a player
+  server-side with `game.get_player("name")` or by iterating `game.players`.
 
 ## Map Pings
 
@@ -360,6 +364,12 @@ learnings here as briefly as possible.
 - `create_entity` snaps positions that are not valid entity centers to a
   nearby valid position rather than failing: a 1x1 ghost asked for x=261
   (integer) landed at x=261.5. Give 1x1 entities half-tile centers.
+- Creating an `entity-ghost` WITHOUT an explicit `force` defaults it to the
+  `enemy` force (live 2026-08-24): RCON could see the ghosts but players saw
+  nothing and could not build them. Always set `force=game.forces.player` on
+  `create_entity` for player-visible ghosts. Do not destroy entities while
+  iterating a `find_entities_filtered` result directly; the iteration and any
+  count both become unreliable.
 
 ### "Who Is Requesting Item X?" — Working Recipe (2.1.14)
 

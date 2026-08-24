@@ -606,6 +606,17 @@ class DialogueTests(unittest.TestCase):
         )
         self.assertEqual(merged, reply)
 
+    def test_ensure_gps_ping_appends_ping_for_freeform_placement(self):
+        reply = "Done! I placed the ghost-wall castle."
+        response = "placed at [gps=-96,-25,nauvis]"
+        merged = jimbo.ensure_gps_ping(
+            reply,
+            "/silent-command local s=game.surfaces["
+            "\"nauvis\"];s.create_entity{name=\"entity-ghost\"}",
+            response,
+        )
+        self.assertTrue(merged.endswith("Placed at: [gps=-96,-25,nauvis]"))
+
     def test_ensure_gps_ping_skips_failure_or_other_commands(self):
         failure = jimbo.ensure_gps_ping(
             "No tesla-turret found.",

@@ -32,8 +32,10 @@ configuration frameworks.
 - The development assistant is not Jimbo. Report any direct RCON work as an
   assistant action, even when using the in-game `Jimbo says ` prefix.
 - If a change will alter player-visible behavior after restart — code or
-  prompt — update `startup_change_summary` and append its exact text to
-  `STARTUP_ANNOUNCEMENTS.md` in the same edit.
+  prompt — REPLACE `startup_change_summary` with a concise (1-2 sentence)
+  description of only the new change (never append onto the old summary) and
+  append its exact text to `STARTUP_ANNOUNCEMENTS.md` in the same edit. The
+  durable history file grows; the live summary must not.
 - Validate Python changes with `python -m py_compile`; use relevant deterministic
   tests as described in Operations. Ask rather than inventing missing
   project-specific values.

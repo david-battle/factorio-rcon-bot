@@ -29,6 +29,9 @@ total output under ~4000 characters.
 returns nil. Wrap every uncertain read: pcall(function() return obj.key end)
 - Iterate collections with pairs(): game.surfaces, game.players (includes \
 offline players), game.forces.
+- The singular game.player is a CLIENT-ONLY global and is nil over RCON; \
+resolve a player server-side with game.get_player("name") or by iterating \
+game.players. Never index game.player.
 - Filtered searches: surface.find_entities_filtered{name=..., type=..., \
 position={x,y}, radius=..., area={{x1,y1},{x2,y2}}}. Area bounds are \
 exclusive: a w x h box anchored at tile (x,y) is {{x,y},{x+w,y+h}}.

@@ -225,17 +225,19 @@ def parse_production_cell_knobs(raw):
 # IMPORTANT: Update this player-facing summary whenever a change will alter what
 # players observe Jimbo doing after restart — code OR prompt edits. Describe why
 # the behavior changed, not implementation details.
+#
+# This summary holds ONLY the changes that are new since the previous restart's
+# announcement. Each edit must REPLACE the entire string with a concise (1-2
+# sentence) description of the latest change; never append new text onto the old
+# summary, or the announcement keeps growing. The durable history of every
+# announcement lives in STARTUP_ANNOUNCEMENTS.md; do not duplicate older
+# entries here.
 startup_change_summary = (
-    "I learned a new way to build: ask me for a belt-fed production cell "
-    "and I'll place the machine between two flowing belt lanes with no "
-    "logistics chests — you can pick its facing direction and lane count. "
-    "Everything is just ghosts, so you can build it by hand before you "
-    "have construction bots. Smelting cells like iron or copper plates "
-    "work too; furnaces simply smelt whatever ore you feed them. I can "
-    "also design a custom one-off layout when no standard shape fits — "
-    "that runs in the background and I'll report back here when it's "
-    "placed. Ask me \"Jimbo, what are you building?\" to check on it."
+    "I can now place freeform or decorative ghost layouts — belt art, "
+    "spelling names, pixel drawings, or a little castle — as real buildable "
+    "ghosts you can see and construct, with a clickable GPS link to the spot."
 )
+
 
 opencode_config = json.dumps({
     "model": model_name,
@@ -485,14 +487,23 @@ def filtered_reply_lines(reply):
 
 
 def ensure_gps_ping(reply, rcon_command, rcon_response):
-    if rcon_command != "RCON: top damage":
-        return reply
     if not reply or "[gps=" in reply:
+        return reply
+    is_placement = rcon_command == "RCON: top damage" or (
+        (rcon_command or "").startswith("/silent-command")
+        and "create_entity" in rcon_command
+    )
+    if not is_placement:
         return reply
     match = re.search(r"\[gps=[^\]\n]+\]", rcon_response or "")
     if not match:
         return reply
-    return reply + f"\nRequested location: {match.group(0)}"
+    label = (
+        "Requested location:"
+        if rcon_command == "RCON: top damage"
+        else "Placed at:"
+    )
+    return reply + f"\n{label} {match.group(0)}"
 
 
 def record_jimbo_says(text):
@@ -603,8 +614,48 @@ def _is_recognized_classification(raw):
     )
 
 
-def classify_current_message(username, message, history_text):
-    prompt = build_classification_prompt(username, message, history_text)
+def query_player_location(client, username):
+    """Read-only RCON: the requesting player's physical position and surface.
+
+    Used so freeform slash-commands can anchor on 'my current location' with
+    concrete coordinates instead of indexing the client-only game.player. An
+    empty result means the player is offline or unavailable.
+    """
+    command = (
+        "/silent-command local p=game.get_player(%s);"
+        "if p and p.connected and p.physical_surface then "
+        "rcon.print(p.position.x..','..p.position.y..','..p.physical_surface.name) "
+        "else rcon.print('') end" % json.dumps(username)
+    )
+    try:
+        raw = (client.run(command) or "").strip()
+    except Exception as e:
+        print(f"Location query failed for {username}: {e}", flush=True)
+        return ""
+    if not raw or raw.startswith("["):
+        return ""
+    parts = raw.split(",")
+    if len(parts) != 3:
+        return ""
+    try:
+        x, y = float(parts[0]), float(parts[1])
+    except ValueError:
+        return ""
+    surf = parts[2]
+    return (
+        f"{username} is currently at ({x:.1f}, {y:.1f}) on surface "
+        f"'{surf}'. If the request locates something relative to the player's "
+        "current location, anchor on this position (north is decreasing Y, "
+        "south increasing Y, west decreasing X, east increasing X) and use "
+        "these concrete coordinates in the /silent-command; game.player is not "
+        "available over RCON."
+    )
+
+
+def classify_current_message(username, message, history_text, location_context=""):
+    prompt = build_classification_prompt(
+        username, message, history_text, location_context=location_context
+    )
     raw = ask_ai(prompt).split("\n")[0].strip()
     if raw == "SKIP" and directly_addresses_jimbo(message):
         print(
@@ -3823,7 +3874,12 @@ def compose_lookup_command(question, slices):
     return command
 
 
-def build_classification_prompt(username, message, history_text):
+def build_classification_prompt(
+    username, message, history_text, location_context=""
+):
+    location_block = ""
+    if location_context:
+        location_block = f"Current player location (authoritative): {location_context}\n"
     essentials_block = ""
     if lua_essentials_text:
         essentials_block = (
@@ -3836,6 +3892,7 @@ def build_classification_prompt(username, message, history_text):
         "You are Jimbo, a Factorio server bot. You control the server via RCON.\n"
         f"{model_identity}\n"
         f"The server is owned and operated by {server_owner}.\n"
+        f"{location_block}"
         "Available commands:\n"
         "- /players online — list currently connected players\n"
         "- /players — list all players who have ever played\n"
@@ -3862,7 +3919,15 @@ def build_classification_prompt(username, message, history_text):
          "- PRODUCE|surface|item-name|optional-location|optional-knobs — place a "
         "compact production cell. Use lowercase internal names when the "
         "current player asks Jimbo to make, produce, craft, build, or set up "
-        "manufacturing of a specific item. Copy an explicit player-supplied GPS "
+        "manufacturing of a specific item. Use PRODUCE only for a functional "
+        "production build. When the player frames the placement as creative, "
+        "decorative, or freeform (belt art, spelling names, pixel drawings, "
+        "decorative structures, or explicitly says 'freeform', 'best-guess', "
+        "'without design crunching', or 'like you did when you wrote your "
+        "name'), do NOT use PRODUCE — route it to the general slash-command "
+        "path and compose a one-off /silent-command directly, exactly like "
+        "the freeform placement that spelled Jimbo's name. Copy an explicit "
+        "player-supplied GPS "
         "map ping exactly; never invent or adjust coordinates. Otherwise use "
         "the normalized location 'view' for 'here', 'where I am looking', or the "
         "current remote view; use 'standing' only for the player's physical "
@@ -4075,7 +4140,24 @@ def build_classification_prompt(username, message, history_text):
         "- /players online, /players, /evolution, /time, /version — for those "
         "specific queries directed at Jimbo.\n"
         "- /<Factorio command> — an executable slash command when the player asks "
-        "Jimbo to perform another server action. Never literally reply 'A Factorio "
+        "Jimbo to perform another server action. Creative freeform ghost "
+        "placement belongs here as a composed one-off /silent-command: belt "
+        "art, spelling names, pixel drawings, decorative structures such as "
+        "castles, and any placement the player frames as 'freeform', "
+        "'best-guess', 'without design crunching', or 'like you did when you "
+        "wrote your name'. Compose the geometry yourself and do not route "
+        "these to PRODUCE. When creating ghosts, use exact internal prototype "
+        "names — a stone wall is 'stone-wall', never 'wall' — and ALWAYS set "
+        "force=game.forces.player: create them with s.create_entity{name="
+        "'entity-ghost', position={x,y}, inner_name='stone-wall', "
+        "ghost_type='wall', force=game.forces.player}. A ghost created "
+        "without an explicit force defaults to the enemy force and is "
+        "invisible and non-buildable to players. After placing, print the "
+        "exact spot as a clickable Factorio GPS link in your rcon.print, using "
+        "the placement surface and a center coordinate, like "
+        "rcon.print('placed at [gps='..cx..','..cy..','..s.name..']'), so the "
+        "reply can link players right to it. Never guess a prototype name; "
+        "enumerate with pairs() if unsure. Never literally reply 'A Factorio "
         "slash command'. Do not return NONE for an actionable request.\n"
         "- NONE — someone directly addressing Jimbo by name but just chatting "
         "(greetings, thanks) with no server info needed. Also use NONE when the "
@@ -4636,9 +4718,15 @@ if __name__ == "__main__":
                     if not loosely_refers_to_jimbo(msg):
                         print("Model decided to skip", flush=True)
                     else:
+                        location_context = (
+                            query_player_location(client, username)
+                            if directly_addressed
+                            else ""
+                        )
                         try:
                             raw = classify_current_message(
-                                username, msg, history_text
+                                username, msg, history_text,
+                                location_context=location_context,
                             )
                             skip = False
                         except Exception as e:

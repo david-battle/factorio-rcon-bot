@@ -13,6 +13,13 @@ alter player-visible behavior after restart — code or prompt — not only code
 Record each distinct change summary once; do not add generic unchanged-summary
 restarts. The always-loaded requirement is also in `AGENTS.md`.
 
+`startup_change_summary` is a delta, not a running feature list: it must describe
+only what is new since the previous restart. Every edit REPLACES the whole string
+with a concise 1-2 sentence description of the latest change; never append new
+text onto the old summary. Older announcements stay here (in history) and must not
+be copied back into the live summary, or the in-game message grows without bound.
+This file grows by design; the live summary must not.
+
 The entries through 2026-07-29 were recovered from the live Factorio server log.
 Times are the observed server-chat timestamps. Two early entries predate the
 handcrafted-summary mechanism and were generated from Git changes by the model;
@@ -251,3 +258,10 @@ listed as announcements.
   also design a custom one-off layout when no standard shape fits —
   that runs in the background and I'll report back here when it's
   placed. Ask me "Jimbo, what are you building?" to check on it.
+  And when you ask for freeform or decorative placement — belt art,
+  spelling names, pixel drawings, or a little castle — I'll compose it
+  directly like when I spelled my name, and I can anchor it to your
+  current location or a map ping.
+- I can now place freeform or decorative ghost layouts — belt art,
+  spelling names, pixel drawings, or a little castle — as real buildable
+  ghosts you can see and construct, with a clickable GPS link to the spot.
