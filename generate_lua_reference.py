@@ -43,6 +43,13 @@ pcall-wrap them like any uncertain read.
 count=...} entries indexed by slot; prefer get_item_count(name).
 - Compare entity status against defines.entity_status.<name> constants; the \
 numbers are not reverse-indexable.
+- A crafting machine's current recipe is read ONLY via the method \
+entity.get_recipe() (nil when unset); there is no recipe field on LuaEntity, \
+and reading it RAISES. pcall-wrap it on machines that may not be crafting.
+- Chart tags: game.create_chart_tag does NOT exist. Create one with \
+game.forces.player.add_chart_tag(surface, {position={x,y}, \
+icon={type='entity',name=...}, text=...}); iterate surfaces with \
+pairs(game.surfaces) when asked for "all".
 - Lua 5.1: use string.char(...) (no chr()); never place a number literal \
 directly before .. (write (n) .. ' suffix').
 """

@@ -75,6 +75,13 @@ a version-sensitive behavior after an upgrade.
 - To find which technology unlocks a recipe, iterate `prototypes.technology` and
   match effects with `type=="unlock-recipe"` and `recipe==name`, then read
   researched/prerequisites from `game.forces.player.technologies[tech]`.
+- To pick a crafting machine the player can actually build yet: an entity is
+  researched when the item it places (`e.items_to_place_this[1]`) is craftable,
+  i.e. any `game.forces.player.recipes[r].enabled` recipe produces that item.
+  Build the enabled-item set once from `pairs(game.forces.player.recipes)` then
+  check membership. Prefer researched machines; only fall back to any machine
+  when none is researched, so a locked Electromagnetic Plant is never placed
+  before its tech.
 - Machine status is numeric. `defines.entity_status` maps name->number, so the
   value `e.status` cannot be indexed back by number (`defines.entity_status[28]`
   is nil); compare against a named constant (`e.status ==

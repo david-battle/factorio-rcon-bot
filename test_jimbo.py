@@ -1337,7 +1337,8 @@ class DialogueTests(unittest.TestCase):
         )
         self.assertIn("resolve references such as 'those materials'", prompt)
         self.assertIn("available, on hand, or in stock", prompt)
-        self.assertIn("even when the player does not explicitly say", prompt)
+        self.assertIn("'In storage', 'stash', 'where is X kept/stored'", prompt)
+        self.assertIn("is NOT the logistic network", prompt)
         self.assertIn("Use surface 'all' when asked about", prompt)
         self.assertIn("the whole solar system", prompt)
         self.assertIn("Never literally reply 'A Factorio slash command'", prompt)
@@ -1926,6 +1927,19 @@ class ProduceCellTests(unittest.TestCase):
         self.assertEqual(result, "ERROR: No compatible crafting machine")
         self.assertEqual(client.run.call_count, 1)
 
+    def test_probe_filters_machines_to_researched_unlocks(self):
+        client = Mock()
+        client.run.return_value = "CANDIDATES:assembling-machine-3:3:3"
+        result, error = jimbo.query_production_cell_candidates(
+            client, "nauvis", "speed-module-2", "dlbattle", ""
+        )
+        probe = client.run.call_args.args[0]
+        self.assertIn("pairs(game.forces.player.recipes)", probe)
+        self.assertIn("if rr.enabled then", probe)
+        self.assertIn("if next(unlocked)~=nil then by_name=unlocked end", probe)
+        self.assertIsNone(error)
+        self.assertEqual(result, [("assembling-machine-3", 3, 3)])
+
     def test_place_cell_looks_up_entity_dimensions(self):
         client = Mock()
         client.run.side_effect = [
@@ -2013,6 +2027,27 @@ class ProduceCellTests(unittest.TestCase):
         self.assertNotIn("TRACE", result)
         self.assertEqual(client.run.call_count, 2)
         self.assertTrue(client.run.call_args.kwargs["retry"])
+
+    def test_place_cell_filters_machines_to_researched_unlocks(self):
+        client = Mock()
+        client.run.side_effect = [
+            self.candidates_response(),
+            "ERROR: No suitable production-cell location within 128 tiles "
+            "(last: 3 entities in area)|TRACE:surface=nauvis origin=0.0:0.0 "
+            "direction=any machines=1 anchors=0 structural=0 occupied=0 "
+            "unplaceable=0 heat=0 logistics=0 construction=0 power=0 "
+            "selected=none:0:0:none",
+        ]
+        result = jimbo.place_production_cell(
+            client, "nauvis", "speed-module-2", "", "dlbattle"
+        )
+
+        phase1 = client.run.call_args_list[1].args[0]
+        self.assertIn("pairs(game.forces.player.recipes)", phase1)
+        self.assertIn("if r.enabled then", phase1)
+        self.assertIn("enabled_items[p.name]=true", phase1)
+        self.assertIn("e.items_to_place_this and e.items_to_place_this[1]", phase1)
+        self.assertIn("if #unlocked>0 then candidates=unlocked end", phase1)
 
     def test_place_cell_uses_bounded_footprint_aware_location_search(self):
         client = Mock()
@@ -3238,8 +3273,9 @@ class LookupTests(unittest.TestCase):
         self.assertIn(
             "asks to COUNT an item's quantity stored physically", prompt
         )
+        self.assertIn("grand total of an item that exists", prompt)
         self.assertIn(
-            "grand total of an item that exists, use LOOKUP", prompt
+            "OR asks where an item is stored or kept physically", prompt
         )
         self.assertIn(
             "how many iron-plate items are stored in chests on nauvis", prompt

@@ -265,3 +265,6 @@ listed as announcements.
 - I can now place freeform or decorative ghost layouts — belt art,
   spelling names, pixel drawings, or a little castle — as real buildable
   ghosts you can see and construct, with a clickable GPS link to the spot.
+- When I place a production cell I now use a crafting machine whose tech
+  you've actually researched, instead of the fastest one overall (which
+  could be an un-researched Electromagnetic Plant).
