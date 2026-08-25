@@ -29,7 +29,10 @@ seeding, or one of the documented runtime pitfalls.
 - The standalone install under `/mnt/d/factorio-standalone/` was upgraded to
   Factorio `2.1.16` on 2026-08-24; `current` is a Windows junction to the
   version directory (see "Upgrade The Game Version" below). `/version` was
-  rechecked on 2026-08-24 and reports `2.1.16`. Recheck `/version` before
+  rechecked live via RCON on 2026-08-25 and reports `2.1.16` — it matches the
+  standalone install the `lua_essentials.txt` reference is generated from, so
+  the reference is up to date with the running server (no re-verify needed
+  unless the server or standalone is upgraded). Recheck `/version` before
   relying on version-sensitive runtime API behavior.
 
 When the user says the "old repository," they mean
@@ -185,25 +188,6 @@ truncated replies). Jimbo makes no model call during startup, so
 `warm_up_ai()` fires a throwaway call right after the online announcement to
 absorb the penalty while nobody is waiting. `ask_ai` logs each call duration
 to `jimbo.log`; check those timings before chasing perceived slowness.
-
-### Provider History
-
-Jimbo began on local Ollama, moved to hosted DeepSeek because the local model
-competed with the Factorio client for GPU memory, and moved to OpenAI after the
-free DeepSeek quota was exhausted. It later moved through Groq, Nemotron 3 Ultra
-via OpenRouter, DeepSeek V4 Flash via OpenCode Zen, Big Pickle via OpenCode Zen,
-Free Models Router via OpenRouter, and now runs on the paid DeepSeek V4 Flash
-via OpenCode Zen after the owner added OpenCode credit. The predefined profiles
-retain these working paths for manual selection; there is no automatic fallback.
-
-### Groq
-
-The `groq` profile is no longer defined in `jimbo.py`. Historically it used
-`openai/gpt-oss-120b` through the OpenAI-compatible adapter with gitignored
-`groq-api-key.txt`, limited replies to 256 tokens, requested low reasoning effort,
-and excluded reasoning from the response. Rate and account quotas were its main
-operational risk. If re-adding this profile, keep `groq-api-key.txt` gitignored
-and restore those settings.
 
 ### Local Ollama (manual alternative)
 

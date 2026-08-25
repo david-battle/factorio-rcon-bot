@@ -14,35 +14,33 @@
 - **Factorio `2.1.16`** (unchanged from last handoff). Server log at
   `/mnt/d/factorio-server/server-console.log`.
 
-## Completed Work (2026-08-25) — Overnight interaction triage + two RCON/Lua fix items
+## Completed Work (2026-08-25) — Documentation cruft archived
 
-This session was triage, not code. I reviewed the overnight chat
-(2026-08-24 21:00 → 2026-08-25 07:30) in the server console log plus
-`jimbo_says.log` / `jimbo_commands.log` for Jimbo interaction data, then turned
-the two real Lua bugs found into documented fix-plan items and durable notes.
-One commit; doc-only, no player-visible behavior change.
+Doc-only session, no code change. To reduce context bloat, no-longer-relevant
+historical content was moved out of the live docs into `docs/ARCHIVE.md`
+(564 lines), which NO live `.md` file links to; a future context opens it only
+if explicitly pointed there. `git diff --check` clean.
 
-- **FIX_PLAN items 7 and 8** appended (both standalone, no dependencies on
-  preceding items):
-  - **7 — `LuaInventory.get_item_count` rejects a quality argument.**
-    `get_item_count("solar-panel","rare")` failed live (2026-08-25 04:34,
-    Koopix's rare solar/accumulator scan across non-nauvis surfaces) with
-    "Expected 0 or 1 arguments but 2 were given". Fix: iterate
-    `get_contents()` and match on `name`/`quality`.
-  - **8 — Map-tag placement fails on surface spawn lookup.**
-    `game.surfaces["nauvis"].spawn_position` and `.spawn` both raise
-    "doesn't contain key" (darklich14's map-tag request, 2026-08-25 04:08-04:09).
-    Spawn coords live on map settings, not the surface object. Fix: read them
-    from map settings and update prompt guidance.
-- **docs/RCON_NOTES.md hints** added for both (get_item_count quality overload
-  extends the existing 2.1.14 name-arg note; LuaSurface has no spawn key).
+- Created `docs/ARCHIVE.md` with archived retrospectives and experiment
+  write-ups sectioned by source.
+- `FIX_PLAN.md` (175 → 79): kept only active items (3 Step 3, 6, 7, 8) plus a
+  one-line status header; shipped item 3 Steps 1–2 retrospectives archived.
+- `docs/FUTURE_DIRECTIONS.md` (772 → 314): kept intro + directions 1–14;
+  "Alert Awareness Design" and all "Tested Implementation Findings" archived
+  (their features are implemented and documented in `BOT_CONTRACTS.md`).
+- `docs/OPERATIONS.md` (494 → 475): removed "Provider History" and "Groq"
+  (archived); also recorded the 2026-08-25 live `/version`=2.1.16 recheck.
+- `AGENTS.md`: noted `CLAUDE.md` is a tracked symlink to `AGENTS.md` so it
+  stops surfacing as a separate file.
+- Untouched by agreement: `STARTUP_ANNOUNCEMENTS.md`, `docs/RCON_NOTES.md`,
+  `docs/BOT_CONTRACTS.md`.
 
 ## Validation Run
 
 - `git diff --check` clean.
 - No code changed this session, so no `py_compile`/`pytest` run. No live RCON
-  commands run (no authority to act on the live server); both findings are
-  already recorded live failures.
+  commands run (none needed; the earlier `/version` recheck is already
+  recorded in OPERATIONS).
 
 ## Operational Caveats
 
@@ -52,6 +50,8 @@ One commit; doc-only, no player-visible behavior change.
 - Version-stamped learnings in `docs/RCON_NOTES.md` /
   `docs/FUTURE_DIRECTIONS.md` may predate 2.1.16; re-verify before relying on
   them (see RCON_NOTES header).
+- `docs/ARCHIVE.md` is intentionally unreferenced; do not add links to it from
+  live docs. The user points future contexts at it manually only if needed.
 - Do not restart/stop Jimbo or Factorio as part of a handoff unless asked; the
   running process (PID 5223) should be left alone.
 - Only intentional files are staged. `rconpw`, `*.key`, `jimbo.log`,

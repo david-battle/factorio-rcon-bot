@@ -23,6 +23,8 @@ configuration frameworks.
 ## Key paths
 
 - Server console log (source of all server activity): `/mnt/d/factorio-server/server-console.log`.
+- `CLAUDE.md` is a tracked symlink to this file (`AGENTS.md`) for Claude Code;
+  it is not a separate document and never needs independent edits.
 
 ## Always preserve
 
