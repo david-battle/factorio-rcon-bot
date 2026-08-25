@@ -172,13 +172,24 @@ belt_fed_input_lane_offset = 2.5
 produce_jobs_dirname = "produce_jobs"
 produce_worker_max_seconds = 3600
 produce_worker_max_iterations = 15
+generator_run_timeout_seconds = 300
 produce_job_poll_interval = 5
 produce_job_survey_radius = 128
 produce_job_survey_max_entities = 120
-custom_plan_max_area_tiles = 48
-custom_plan_max_entities = 80
+custom_plan_max_area_tiles = 64
+custom_plan_max_entities = 200
 custom_plan_roles = (
-    "building", "requester", "provider", "inserter", "pole", "belt", "part",
+    "building", "requester", "provider", "chest", "inserter", "pole", "belt",
+    "splitter", "underground-belt", "combinator", "part",
+)
+# Fixed role vocabulary the custom worker may compose beyond the item's own
+# crafting machines: building prototype names surveyed generically by type
+# (FIX_PLAN item 3 Step 3 replan). Dimensions for these are merged into the
+# worker's `machines` facts by collect_custom_site_facts.
+custom_plan_support_buildings = (
+    "recycler", "foundry", "chemical-plant", "electric-furnace",
+    "steel-furnace", "assembling-machine-1", "assembling-machine-2",
+    "assembling-machine-3",
 )
 cell_reach_constants = {
     "inserter": {"pickup": 1.0, "drop": 1.2},
@@ -233,9 +244,13 @@ def parse_production_cell_knobs(raw):
 # announcement lives in STARTUP_ANNOUNCEMENTS.md; do not duplicate older
 # entries here.
 startup_change_summary = (
-    "When I place a production cell I now use a crafting machine whose tech "
-    "you've actually researched, instead of the fastest one overall (which "
-    "could be an un-researched Electromagnetic Plant)."
+    "Custom builds got smarter: when you ask me to design a layout that "
+    "doesn't fit a standard shape, I can now compose multi-building designs "
+    "(like a crafting machine feeding a recycler, or a whole parallel bank of "
+    "machines sharing one input belt and one output belt), and I design them "
+    "by writing and running a small program rather than hand-picking tiles, "
+    "so almost any build you can describe in words can be worked out and "
+    "stamped."
 )
 
 
@@ -1741,7 +1756,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
         "local function instantiate(v,ax,ay,en) "
         "local plans={};"
         "for i,off in ipairs(v.plans) do "
-        "local pname=off.r=='building' and en or off.n;"
+        "local pname=(off.r=='building' and off.n=='building') and en or off.n;"
         "plans[i]={name=pname,key=off.n,"
         "position={ax+off.x,ay+off.y},"
         "direction=(off.d and off.d~='') and DIR[off.d] or nil,role=off.r} "
@@ -2048,6 +2063,10 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
     ) + "}"
     phase2_surface_lua = json.dumps(resolved_surface)
     entity_summary = summarize_cell_plans(selected_variant, en)
+    crafting_machine = next(
+        (p["n"] for p in selected_variant["plans"] if p.get("r") == "building"),
+        en,
+    )
 
     phase2 = (
         f"/silent-command "
@@ -2055,6 +2074,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
         f"local x={anchor_ax};local y={anchor_ay};"
         f"local w={anchor_w};local h={anchor_h};"
         f"local en={json.dumps(en)};"
+        f"local cm={json.dumps(crafting_machine)};"
         f"local item={item_lua};"
         f"local layout={json.dumps(layout)};"
         f"local allow_support_warnings="
@@ -2087,7 +2107,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
         "local r=prototypes.recipe[item];"
         "local plans={};"
         "for i,off in ipairs(offs) do "
-        "local pname=off.r=='building' and en or off.n;"
+        "local pname=(off.r=='building' and off.n=='building') and en or off.n;"
         "plans[i]={name=pname,key=off.n,"
         "position={x+off.x,y+off.y},"
         "direction=(off.d and off.d~='') and DIR[off.d] or nil,role=off.r} "
@@ -2255,11 +2275,11 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
         "local args={name='entity-ghost',position=plan.position,"
         "force='player',inner_name=plan.name};"
         "if plan.direction then args.direction=plan.direction end;"
-        "if plan.role=='building' then args.recipe=item end;"
+        "        if plan.role=='building' and plan.name==cm then args.recipe=item end;"
         "local ghost=s.create_entity(args);"
         "if not ghost then error(plan.key) end;"
         "cleanup[#cleanup+1]=ghost;created[#created+1]=ghost;"
-        "if plan.role=='building' then b=ghost end;"
+        "if plan.role=='building' and plan.name==cm then b=ghost end;"
         "if plan.role=='requester' then req=ghost end end;"
         "for _,pos in ipairs(extensions) do "
         "local extra=s.create_entity{name='entity-ghost',position=pos,"
@@ -2268,7 +2288,7 @@ def place_production_cell(client, surface, item, hint="", requesting_player="", 
         "cleanup[#cleanup+1]=extra end;"
         "local actual_recipe=b.get_recipe();"
         "if not actual_recipe then "
-        "local bp=prototypes.entity[en];"
+        "local bp=prototypes.entity[cm];"
         + (
             "if bp.type=='furnace' then "
             "inherent_issue('furnace has no recipe; requester chest filters "
@@ -2581,8 +2601,13 @@ def _point_in_box(point, box, epsilon=1e-6):
     )
 
 
-SUPPORT_SOURCE_ROLES = ("belt", "provider", "part", "building", "requester")
-SUPPORT_CONSUMER_ROLES = ("belt", "requester", "building")
+SUPPORT_SOURCE_ROLES = (
+    "belt", "provider", "chest", "part", "building", "requester", "splitter",
+    "underground-belt",
+)
+SUPPORT_CONSUMER_ROLES = (
+    "belt", "requester", "chest", "building", "splitter", "underground-belt",
+)
 
 
 def validate_custom_cell_plan(proposal, facts):
@@ -2672,16 +2697,15 @@ def validate_custom_cell_plan(proposal, facts):
         })
 
     buildings = [plan for plan in checked_plans if role(plan) == "building"]
-    if len(buildings) != 1:
+    if len(buildings) < 1:
         emit_schema_error(
-            f"exactly one entry with r='building' is required "
+            f"at least one entry with r='building' is required "
             f"(found {len(buildings)})."
         )
-    else:
-        machine_dims = machines.get(buildings[0]["n"])
-        if machine_dims is None:
+    for building in buildings:
+        if machines.get(building["n"]) is None:
             emit_schema_error(
-                f"machine '{buildings[0]['n']}' is not among the compatible "
+                f"machine '{building['n']}' is not among the compatible "
                 "machines listed in the facts."
             )
 
@@ -2729,10 +2753,9 @@ def validate_custom_cell_plan(proposal, facts):
     requester_plans = [
         plan for plan in checked_plans if role(plan) == "requester"
     ]
-    if wants_pole is True and len(pole_plans) != 1:
+    if wants_pole is True and not pole_plans:
         errors.append(
-            "pole=true requires exactly one entry with r='pole' "
-            f"(found {len(pole_plans)})."
+            "pole=true requires at least one entry with r='pole'."
         )
     if wants_pole is False and pole_plans:
         errors.append(
@@ -2743,10 +2766,9 @@ def validate_custom_cell_plan(proposal, facts):
             "a plan with neither a pole nor chests cannot receive power; "
             "set pole=true (recommended) or req=true."
         )
-    if wants_requester is True and len(requester_plans) != 1:
+    if wants_requester is True and not requester_plans:
         errors.append(
-            "req=true requires exactly one requester-chest entry "
-            f"(found {len(requester_plans)})."
+            "req=true requires at least one requester-chest entry."
         )
     if wants_requester is False and requester_plans:
         errors.append(
@@ -2757,19 +2779,26 @@ def validate_custom_cell_plan(proposal, facts):
     buildings_only = [
         plan for plan in checked_plans if role(plan) == "building"
     ]
-    if len(buildings_only) == 1 and machines.get(buildings_only[0]["n"]):
-        machine_box = _plan_box(buildings_only[0], machines)
+    if buildings_only and all(
+        machines.get(building["n"]) for building in buildings_only
+    ):
         supply = facts.get("pole_supply")
         if wants_pole is True and pole_plans and supply is not None:
-            pole = pole_plans[0]
-            if (
-                abs(pole["x"] - (machine_box[0] + machine_box[2]) / 2) > supply
-                or abs(pole["y"] - (machine_box[1] + machine_box[3]) / 2) > supply
-            ):
-                errors.append(
-                    f"the planned pole cannot power the machine: distance "
-                    f"exceeds the medium pole supply radius {supply:g}."
+            for building in buildings_only:
+                building_box = _plan_box(building, machines)
+                covered = any(
+                    abs(pole["x"] - (building_box[0] + building_box[2]) / 2)
+                    <= supply
+                    and abs(pole["y"] - (building_box[1] + building_box[3]) / 2)
+                    <= supply
+                    for pole in pole_plans
                 )
+                if not covered:
+                    errors.append(
+                        f"the planned pole(s) cannot power '{building['n']}' "
+                        f"at {building['x']:g}:{building['y']:g}: distance "
+                        f"exceeds the medium pole supply radius {supply:g}."
+                    )
 
         non_inserter_boxes = [
             (plan, box)
@@ -2792,7 +2821,7 @@ def validate_custom_cell_plan(proposal, facts):
             belt_positions.add((plan["x"], plan["y"]))
 
         for plan, box in boxes:
-            if role(plan) == "belt":
+            if role(plan) in ("belt", "splitter", "underground-belt"):
                 register_belt(plan)
 
         for plan in checked_plans:
@@ -3044,6 +3073,26 @@ def collect_custom_site_facts(client, surface, item, requesting_player, hint):
         return None, f"[error: {e}]"
     entity_text = (response or "").strip()
 
+    support_names_lua = ",".join(
+        json.dumps(name) for name in custom_plan_support_buildings
+    )
+    support_cmd = (
+        "/silent-command "
+        f"local names={{{support_names_lua}}};"
+        "local out={};"
+        "for _,name in ipairs(names) do "
+        "local p=prototypes.entity[name];"
+        "if p then "
+        "out[#out+1]='M:'..name..'|'..tostring(p.tile_width)..'|'.."
+        "tostring(p.tile_height) end end;"
+        "rcon.print(table.concat(out,'\\n'))"
+    )
+    try:
+        support_response = client.run(support_cmd, retry=True)
+    except Exception as e:
+        return None, f"[error: {e}]"
+    support_text = (support_response or "").strip()
+
     facts = {
         "surface": resolved_surface,
         "origin": [origin_x, origin_y],
@@ -3087,6 +3136,21 @@ def collect_custom_site_facts(client, surface, item, requesting_player, hint):
             facts["water_samples"] = [
                 part.strip() for part in rest.split(";") if part.strip()
             ]
+    for line in support_text.split("\n"):
+        line = line.strip()
+        prefix, separator, rest = line.partition(":")
+        if prefix != "M" or not separator:
+            continue
+        fields = rest.split("|")
+        if len(fields) != 3:
+            continue
+        try:
+            name = fields[0]
+            width = float(fields[1])
+            height = float(fields[2])
+        except ValueError:
+            continue
+        facts["machines"][name] = {"w": width, "h": height}
     for line in entity_text.split("\n"):
         line = line.strip()
         if line.startswith("T:"):
@@ -3167,9 +3231,9 @@ def build_custom_plan_prompt(job, errors, iteration):
     if errors:
         formatted = "\n".join(f"- {error}" for error in errors)
         error_block = (
-            f"\nYour previous proposal was rejected for these exact reasons:"
+            f"\nYour previous generator was rejected for these exact reasons:"
             f"\n{formatted}\nFix every listed problem. Do not change parts "
-            "that were accepted.\n"
+            "that were accepted. Rewrite the generator and resend it.\n"
         )
 
     return (
@@ -3198,30 +3262,124 @@ def build_custom_plan_prompt(job, errors, iteration):
         f"first):\n{nearby_text}\n"
         f"{cliff_text}\n{water_text}\n\n"
         "Hard requirements:\n"
-        "- Exactly one building entry whose r='building'; its n must be one "
-        "of the available machines.\n"
+        "- One or more building entries whose r='building'; each n must be one "
+        "of the available machines. Put the primary item-crafting machine "
+        "FIRST — it is the anchor the plan is positioned around. Every "
+        "building whose name matches that primary machine is automatically "
+        "recipe-set, so a BANK of N identical machines producing the same item "
+        "just uses the same machine name N times. Non-crafting buildings "
+        "(recycler, foundry, chemical-plant) may be added when listed in the "
+        "available machines, but they receive no recipe.\n"
+        "- Parallel banks are the dominant Factorio pattern and fully "
+        "supported: many identical machines in a row, a shared input belt "
+        "feeding them all (one inserter each), and a shared output belt "
+        "aggregating them (one inserter each). Use the layout_helpers.bank() "
+        "helper to build one — it lays out the machines, feed/aggregate belts, "
+        "inserters, and poles with correct reach so the result validates. For "
+        "high throughput or any ask implying volume, use a bank rather than a "
+        "single machine.\n"
         "- Every inserter needs a facing direction and a real source behind "
         "it plus a real destination in front of it at reach distance.\n"
         "- Belts must form connected lanes of at least two tiles feeding "
-        "their inserter targets; no isolated belts.\n"
+        "their inserter targets; no isolated belts. Splitters and "
+        "underground-belts count as belt lane.\n"
         "- No two entities may overlap footprints; everything stays inside "
         f"the declared area; area is at most {custom_plan_max_area_tiles} "
         "tiles per side; at most "
         f"{custom_plan_max_entities} entities total.\n"
-        "- Include one medium electric pole (r='pole') covering the machine "
-        "center unless the site already provides power; keep pole and req "
-        "flags consistent with the plans (req=true means exactly one "
+        "- Include at least one medium electric pole (r='pole') covering every "
+        "building center unless the site already provides power; keep pole "
+        "and req flags consistent with the plans (req=true means at least one "
         "requester-chest entry).\n"
+        "- A deterministic throughput/balance tool is available: after "
+        "arranging the machines and belts, keep every building fed and its "
+        "output flowing to avoid a bottleneck; a slow single recycler behind "
+        "fast assemblers is a bottleneck you must size for.\n"
         "- Avoid the surveyed water tiles, cliffs, and every listed nearby "
         "entity footprint.\n"
         "- Keep the design simple and buildable: this will be stamped as "
         "ghosts that players fill by hand or bots complete.\n\n"
         f"Iteration {iteration} of {produce_worker_max_iterations}."
         f"{error_block}\n"
-        "Reply with ONLY a JSON object in exactly this shape (this example "
-        "is illustrative, not a template to copy):\n"
-        f"{json.dumps(example)}\n"
+        "You must reply with ONLY a complete Python program that COMPUTES the "
+        "layout rather than hand-listing coordinates. Run as a script in the "
+        "job directory, it is invoked as:\n"
+        "    python generator.py facts.json\n"
+        "It must print a single JSON object to stdout and exit 0. The object "
+        "has exactly this shape:\n"
+        f"{json.dumps(example)}\n\n"
+        "The script receives facts as a JSON file whose first argument is the "
+        "path. Use the helper library by importing it (it is on the "
+        "sys.path):\n"
+        "    from layout_helpers import *\n"
+        "Helpers available: plan(name,x,y,d,role), building, inserter, belt, "
+        "pole, requester, provider, splitter, underground_belt, and bank("
+        "facts,name,count,row_x,row_y) which builds a complete parallel bank "
+        "(shared input belt -> machines -> shared output belt + poles) and "
+        "returns a ready plan dict; dims(facts,name), center(facts,name,x,y), "
+        "box, boxes_intersect, point_in_box, bounding_box, rotate, "
+        "rotate_offset, rotate_direction; and the REACH dict.\n"
+        "Write real logic (loops, symmetry, quality/throughput math, "
+        "layering) so the design is computed from the goal, not typed out "
+        "coordinate by coordinate. The plan must satisfy every hard "
+        "requirement above; check your own geometry with the helpers before "
+        "you finish (e.g. assert no boxes_intersect and that points fall in "
+        "their target boxes). Size every stage for throughput so no stage is "
+        "the bottleneck.\n"
+        "Reply with ONLY the program, in a single ```python fenced block.\n"
     )
+
+
+def run_layout_generator(job_id, facts, code):
+    """Execute a model-authored generator script and return its plan.
+
+    The code runs as a normal Python subprocess in the job's subdirectory
+    (cwd) with the same user and reach as Jimbo itself, per owner direction:
+    no artificial sandbox. The generator reads the site facts from the JSON
+    file passed as its first argument, computes a layout, and prints a single
+    plan dict to stdout. Its OUTPUT is still gated by the deterministic
+    validator before any ghost is stamped.
+    """
+    paths = _job_paths(job_id)
+    try:
+        os.makedirs(paths["dir"], exist_ok=True)
+        generator_path = os.path.join(paths["dir"], "generator.py")
+        facts_path = os.path.join(paths["dir"], "facts.json")
+        with open(generator_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        with open(facts_path, "w", encoding="utf-8") as f:
+            json.dump(facts, f)
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        env = dict(os.environ)
+        env["PYTHONPATH"] = module_dir + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.run(
+            [sys.executable, generator_path, facts_path],
+            cwd=paths["dir"],
+            capture_output=True,
+            text=True,
+            timeout=generator_run_timeout_seconds,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return None, (
+            f"the generator exceeded {generator_run_timeout_seconds}s and "
+            "was killed; make it terminate quickly"
+        )
+    except OSError as e:
+        return None, f"could not run the generator: {e}"
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return None, (
+            "the generator crashed (nonzero exit). Runtime error:\n"
+            + (detail or "(no output)")
+        )
+    proposal = parse_custom_plan_proposal(proc.stdout)
+    if proposal is None:
+        return None, (
+            "the generator printed no single JSON object on stdout. Ensure "
+            "the program prints exactly one plan dict and exits 0."
+        )
+    return proposal, None
 
 
 def run_produce_worker(job_path):
@@ -3273,13 +3431,20 @@ def run_produce_worker(job_path):
             log(f"Model call failed on iteration {iteration}: {e}")
             errors = [f"The model call itself failed: {e}. Try again."]
             continue
-        proposal = parse_custom_plan_proposal(raw)
-        if proposal is None:
-            log(f"Iteration {iteration}: response was not JSON")
+        code = strip_code_fences(raw)
+        if not code:
+            log(f"Iteration {iteration}: response was not a Python program")
             errors = [
-                "Your reply was not a single JSON object. Reply with only "
-                "the JSON object in the required shape."
+                "Your reply was not a Python program in a single ```python "
+                "fenced block. Reply with only the generator program."
             ]
+            continue
+        proposal, run_error = run_layout_generator(
+            job_id, job.get("facts", {}), code
+        )
+        if proposal is None:
+            log(f"Iteration {iteration}: generator did not produce a plan")
+            errors = [f"The generator did not produce a plan: {run_error}"]
             continue
         errors = validate_custom_cell_plan(proposal, job.get("facts", {}))
         if not errors:

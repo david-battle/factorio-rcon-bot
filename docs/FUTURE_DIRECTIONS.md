@@ -274,16 +274,26 @@ mention them unprompted.
 
 12. **Request-time layout synthesis.** Extend PRODUCE from one pre-planned
     cell shape toward on-demand layouts: parameterized entity tables with
-    declared knobs first (rotation, lanes-per-side, belt-vs-chest input and
-    output; first shape is a belt-fed cell modeled on a hand-built example),
+    declared knobs (rotation, lanes-per-side, belt-vs-chest input and output),
     then a short-lived worker subprocess that composes and validates plans
-    offline against sliced API docs and read-only site surveys, then a library
-    of tested layout primitives ported from the old repository. The chat model
-    never places geometry directly; every plan must be an artifact of code
-    that ran and passed checks, stamped only through the existing gated phase-2
-    path. This is the request-time sibling of direction 8 (same old-repo
-    references, same refusal to import its framework); the active step-by-step
-    plan lives in `FIX_PLAN.md` item 3.
+    offline against read-only site surveys. Per the 2026-08-25 owner replan,
+    the goal is NOT to port the old repo's finished cells (qup/solar-chunk/
+    display-panel-array); it is to give Jimbo the old repo's PLANNING TOOLING
+    so he composes new layouts from scratch with no reference to old plan
+    outputs. That tooling lives on as: the AI+validation worker loop, a
+    deterministic throughput/balance tool (`layout_analysis.py`), and a fixed
+    role vocabulary of surveyed building prototypes. The chat model never
+    places geometry directly; every plan must be an artifact of code that ran
+    and passed checks, stamped only through the existing gated phase-2 path.
+    The active step-by-step plan lives in `FIX_PLAN.md` item 3.
+    Per the 2026-08-25 owner replan, the worker was pivoted from "model emits
+    a static JSON blob" to "model AUTHORS a Python generator program that we
+    run and iterate against" (`layout_helpers.py`, `run_layout_generator`) —
+    the coding-agent loop. Because the design intent is the free-text player
+    hint expressed as code, this is the mechanism that lets Jimbo design
+    almost anything words can describe. Remaining breadth gap: the job framing
+    is still item-centric (the candidate/machine survey targets an item);
+    broadening the survey vocabulary to arbitrary designs is the next step.
 
 13. **Belt-fed cells are a pre-bot capability.** The owner's stated purpose
     for the belt-fed layout is early-game use before logistics or

@@ -743,6 +743,27 @@ class DialogueTests(unittest.TestCase):
         self.assertIn("e.ghost_type", text)
         self.assertIn("e.ghost_name", text)
 
+    def test_lua_essentials_generator_includes_quality_count_idiom(self):
+        import generate_lua_reference as gen
+
+        text = gen.build_essentials(
+            {"application_version": "9.9.9-test"}, "runtime-api.json"
+        )
+        self.assertIn("get_item_count()", text)
+        self.assertIn("NO name or quality argument", text)
+        self.assertIn("inv.get_contents()", text)
+        self.assertIn("sum matching entries", text)
+
+    def test_lua_essentials_generator_includes_spawn_lookup_idiom(self):
+        import generate_lua_reference as gen
+
+        text = gen.build_essentials(
+            {"application_version": "9.9.9-test"}, "runtime-api.json"
+        )
+        self.assertIn("spawn_position", text)
+        self.assertIn("NO spawn_position or spawn key", text)
+        self.assertIn("get_spawn_position(surface)", text)
+
 
     def test_untag_classifier_guidance_for_just_tagged_entity(self):
         prompt = jimbo.build_classification_prompt(
@@ -3303,6 +3324,15 @@ class CustomCellWorkerTests(unittest.TestCase):
             "entity_count": 0,
         }
 
+    def generator_program(self, proposal):
+        return (
+            "import json\n"
+            "from layout_helpers import *\n"
+            "def build_layout(facts):\n"
+            f"    return {proposal!r}\n"
+            "print(json.dumps(build_layout(None)))\n"
+        )
+
     def valid_proposal(self):
         return {
             "layout": "custom",
@@ -3342,7 +3372,56 @@ class CustomCellWorkerTests(unittest.TestCase):
         proposal["plans"] = proposal["plans"][1:]
         errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
         self.assertTrue(
-            any("exactly one" in e and "building" in e for e in errors)
+            any("at least one" in e and "building" in e for e in errors)
+        )
+
+    def test_validator_accepts_multiple_buildings(self):
+        proposal = self.valid_proposal()
+        recycler = {
+            "n": "recycler",
+            "x": 6.5,
+            "y": 1.5,
+            "d": "",
+            "r": "building",
+        }
+        proposal["plans"].insert(2, recycler)
+        proposal["area"] = [-2, -2, 10, 6]
+        facts = self.facts()
+        facts["machines"]["recycler"] = {"w": 4, "h": 4}
+        errors = jimbo.validate_custom_cell_plan(proposal, facts)
+        self.assertEqual(errors, [])
+
+    def test_validator_rejects_unknown_second_building(self):
+        proposal = self.valid_proposal()
+        proposal["plans"].append({
+            "n": "recycler",
+            "x": 6.5,
+            "y": 1.5,
+            "d": "",
+            "r": "building",
+        })
+        proposal["area"] = [-2, -2, 10, 6]
+        facts = self.facts()
+        errors = jimbo.validate_custom_cell_plan(proposal, facts)
+        self.assertTrue(
+            any("not among the compatible machines" in e for e in errors)
+        )
+
+    def test_validator_rejects_pole_not_covering_every_building(self):
+        proposal = self.valid_proposal()
+        proposal["plans"].append({
+            "n": "recycler",
+            "x": 40.0,
+            "y": 1.5,
+            "d": "",
+            "r": "building",
+        })
+        proposal["area"] = [-2, -2, 44, 6]
+        facts = self.facts()
+        facts["machines"]["recycler"] = {"w": 4, "h": 4}
+        errors = jimbo.validate_custom_cell_plan(proposal, facts)
+        self.assertTrue(
+            any("cannot power" in e and "recycler" in e for e in errors)
         )
 
     def test_validator_rejects_unknown_machine(self):
@@ -3377,7 +3456,7 @@ class CustomCellWorkerTests(unittest.TestCase):
                 plan["x"] = 30.0
         errors = jimbo.validate_custom_cell_plan(proposal, self.facts())
         self.assertTrue(
-            any("cannot power the machine" in e for e in errors)
+            any("cannot power" in e and "supply radius" in e for e in errors)
         )
 
     def test_validator_rejects_overlapping_entities(self):
@@ -3438,8 +3517,9 @@ class CustomCellWorkerTests(unittest.TestCase):
                 self.assertEqual(status["status"], "designed_failed")
                 self.assertIn("interrupted", status["failure"])
 
-    def test_run_worker_accepts_valid_proposal(self):
+    def test_run_worker_accepts_valid_generator(self):
         proposal = self.valid_proposal()
+        program = "```python\n" + self.generator_program(proposal) + "\n```"
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
                 job_id = jimbo.create_cell_job(
@@ -3447,7 +3527,7 @@ class CustomCellWorkerTests(unittest.TestCase):
                     "dlbattle", self.facts(),
                 )
                 job_path = jimbo._job_paths(job_id)["job"]
-                with patch.object(jimbo, "ask_ai", return_value=json.dumps(proposal)):
+                with patch.object(jimbo, "ask_ai", return_value=program):
                     rc = jimbo.run_produce_worker(job_path)
                 self.assertEqual(rc, 0)
                 result = jimbo._read_json(jimbo._job_paths(job_id)["result"])
@@ -3457,11 +3537,13 @@ class CustomCellWorkerTests(unittest.TestCase):
                 self.assertEqual(status["status"], "designed_ok")
 
     def test_run_worker_fails_after_iterations(self):
+        invalid = {"layout": "custom", "plans": [
+            {"n": "assembling-machine-3", "x": 1.5, "y": 1.5,
+             "d": "", "r": "building"},
+        ], "area": [0, 0, 3, 3], "pole": False, "req": False}
+
         def bad_ai(prompt):
-            return json.dumps({"layout": "custom", "plans": [
-                {"n": "assembling-machine-3", "x": 1.5, "y": 1.5,
-                 "d": "", "r": "building"},
-            ], "area": [0, 0, 3, 3], "pole": False, "req": False})
+            return "```python\n" + self.generator_program(invalid) + "\n```"
 
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
@@ -3481,7 +3563,7 @@ class CustomCellWorkerTests(unittest.TestCase):
                 self.assertEqual(status["status"], "designed_failed")
                 self.assertIn("iterations", status["failure"])
 
-    def test_run_worker_handles_non_json_response(self):
+    def test_run_worker_handles_non_program_response(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
                 job_id = jimbo.create_cell_job(
@@ -3490,10 +3572,78 @@ class CustomCellWorkerTests(unittest.TestCase):
                 )
                 job_path = jimbo._job_paths(job_id)["job"]
                 with patch.object(
-                    jimbo, "ask_ai", side_effect=lambda p: "I think you should..."
+                    jimbo, "ask_ai", side_effect=lambda p: ""
                 ):
                     rc = jimbo.run_produce_worker(job_path)
                 self.assertEqual(rc, 1)
+
+    def test_run_layout_generator_returns_plan(self):
+        proposal = self.valid_proposal()
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                plan, error = jimbo.run_layout_generator(
+                    job_id, self.facts(), self.generator_program(proposal)
+                )
+                self.assertIsNone(error)
+                self.assertEqual(plan["layout"], "custom")
+                self.assertEqual(len(plan["plans"]), len(proposal["plans"]))
+
+    def test_bank_helper_produces_valid_layout(self):
+        from layout_helpers import bank
+
+        facts = self.facts()
+        plan = bank(facts, "assembling-machine-3", 4, 0, 0)
+        self.assertEqual(len([p for p in plan["plans"]
+                              if p["r"] == "building"]), 4)
+        errors = jimbo.validate_custom_cell_plan(plan, facts)
+        self.assertEqual(errors, [])
+
+    def test_bank_helper_different_machine(self):
+        from layout_helpers import bank
+
+        facts = self.facts()
+        facts["machines"]["electric-furnace"] = {"w": 3, "h": 3}
+        plan = bank(facts, "electric-furnace", 6, 0, 0)
+        errors = jimbo.validate_custom_cell_plan(plan, facts)
+        self.assertEqual(errors, [])
+
+    def test_bank_flows_through_worker(self):
+        from layout_helpers import bank
+
+        proposal = bank(self.facts(), "assembling-machine-3", 3, 0, 0)
+        program = "```python\n" + self.generator_program(proposal) + "\n```"
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                job_path = jimbo._job_paths(job_id)["job"]
+                with patch.object(jimbo, "ask_ai", return_value=program):
+                    rc = jimbo.run_produce_worker(job_path)
+                self.assertEqual(rc, 0)
+                result = jimbo._read_json(jimbo._job_paths(job_id)["result"])
+                buildings = [p for p in result["variant"]["plans"]
+                             if p["r"] == "building"]
+                self.assertEqual(len(buildings), 3)
+
+    def test_run_layout_generator_reports_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(jimbo, "produce_jobs_dir", lambda: directory):
+                job_id = jimbo.create_cell_job(
+                    "nauvis", "iron-plate", "[gps=13,7]", {},
+                    "dlbattle", self.facts(),
+                )
+                plan, error = jimbo.run_layout_generator(
+                    job_id, self.facts(),
+                    "this is not python {{{",
+                )
+                self.assertIsNone(plan)
+                self.assertIn("crash", error)
 
     def test_normalize_custom_variant_recenters_building(self):
         variant = self.valid_proposal()
@@ -3658,6 +3808,115 @@ class CustomCellWorkerTests(unittest.TestCase):
         self.assertIn("assembling-machine-3 (3x3)", prompt)
         self.assertIn("copper-cable", prompt)
         self.assertIn("Medium pole supply radius: 7.0", prompt)
+        self.assertIn("generator.py facts.json", prompt)
+        self.assertIn("from layout_helpers import *", prompt)
+        self.assertIn("python generator.py", prompt)
+
+
+class LayoutAnalysisTests(unittest.TestCase):
+    def test_quality_distribution_documented_values(self):
+        import layout_analysis
+
+        d = layout_analysis.quality_chance_distribution(0.1)
+        self.assertAlmostEqual(d["normal"], 0.9)
+        self.assertAlmostEqual(d["uncommon"], 0.09)
+        self.assertAlmostEqual(d["rare"], 0.009)
+        self.assertAlmostEqual(d["epic"], 0.0009)
+        self.assertAlmostEqual(d["legendary"], 0.0001)
+        self.assertAlmostEqual(sum(d.values()), 1.0)
+
+    def test_quality_distribution_no_quality(self):
+        import layout_analysis
+
+        d = layout_analysis.quality_chance_distribution(0.0)
+        self.assertEqual(d["normal"], 1.0)
+        self.assertEqual(d["legendary"], 0.0)
+        self.assertAlmostEqual(sum(d.values()), 1.0)
+
+    def test_quality_distribution_rejects_out_of_range(self):
+        import layout_analysis
+
+        with self.assertRaises(ValueError):
+            layout_analysis.quality_chance_distribution(-0.1)
+        with self.assertRaises(ValueError):
+            layout_analysis.quality_chance_distribution(1.5)
+
+    def test_machine_quality_chance_adds_module_effects(self):
+        import layout_analysis
+
+        effects = {
+            "quality-module-3": {"quality": 0.062, "speed": -0.05},
+        }
+        chance = layout_analysis.machine_quality_chance(
+            ["quality-module-3", "quality-module-3"], effects
+        )
+        self.assertAlmostEqual(chance, 0.124)
+
+    def test_speed_multiplier_adds_bonuses(self):
+        import layout_analysis
+
+        effects = {
+            "speed-module-3": {"quality": 0.0, "speed": 0.50},
+        }
+        multiplier = layout_analysis.effective_speed_multiplier(
+            ["speed-module-3", "speed-module-3"], effects
+        )
+        self.assertAlmostEqual(multiplier, 2.0)
+
+    def test_throughput_and_analysis(self):
+        import layout_analysis
+
+        recipe = {"name": "iron-plate", "energy": 3.2, "products": 1}
+        buildings = [
+            {
+                "name": "assembling-machine-3",
+                "count": 4,
+                "recipe_energy": 3.2,
+                "product_amount": 1,
+                "machine_speed": 1.25,
+                "modules": ["quality-module-3"] * 4,
+                "recipe_quality": "normal",
+            }
+        ]
+        effects = {"quality-module-3": {"quality": 0.062, "speed": -0.05}}
+        results, bottleneck, summary = layout_analysis.analyze_layout(
+            recipe, buildings, effects
+        )
+        self.assertEqual(len(results), 1)
+        self.assertIsNone(bottleneck)
+        self.assertIn("Throughput analysis for 'iron-plate'", summary)
+        self.assertIn("assembling-machine-3 x4", summary)
+        self.assertGreater(results[0]["throughput"], 0)
+
+    def test_bottleneck_identifies_slowest_stage(self):
+        import layout_analysis
+
+        recipe = {"name": "x", "energy": 1.0, "products": 1}
+        buildings = [
+            {
+                "name": "assembling-machine-3",
+                "count": 1,
+                "recipe_energy": 1.0,
+                "product_amount": 1,
+                "machine_speed": 1.25,
+                "modules": [],
+                "recipe_quality": "normal",
+            },
+            {
+                "name": "recycler",
+                "count": 1,
+                "recipe_energy": 4.0,
+                "product_amount": 1,
+                "machine_speed": 1.0,
+                "modules": [],
+                "recipe_quality": "normal",
+            },
+        ]
+        results, bottleneck, _ = layout_analysis.analyze_layout(
+            recipe, buildings, {}
+        )
+        self.assertEqual(len(results), 2)
+        self.assertIn("recycler", bottleneck)
 
 
 if __name__ == "__main__":

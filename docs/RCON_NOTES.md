@@ -142,8 +142,10 @@ a version-sensitive behavior after an upgrade.
 - `LuaSurface` has **no** spawn-coordinate key: reading `surface.spawn_position`
   or `surface.spawn` both raise "doesn't contain key" (live 2026-08-25 while
   placing a default-location map tag). Spawn coordinates live on the map
-  settings, not the surface object — read them from there rather than guessing a
-  surface key when defaulting a chart-tag position.
+  settings, not the surface object. The reliable API is
+  `game.forces.player.get_spawn_position(surface)` (returns a `LuaPosition`);
+  use it when defaulting a chart-tag position or any spawn-anchored location,
+  and never guess a `surface.spawn*` key.
 - Enumerate platforms via surfaces where `surface.platform` is set
   (`surface.platform.name`) and planets via `surface.planet.name`.
 
@@ -213,8 +215,10 @@ a version-sensitive behavior after an upgrade.
 - `LuaInventory.get_contents()` changed in 2.1: it returns an array of
   `ItemWithQualityCount` (each `{name=..., quality=..., count=...}`), keyed by
   slot index, NOT the 2.0 `{name=count}` dictionary. Verified on a wooden
-  chest and a platform hub. Read counts with `get_item_count(name)` or the new
-  `get_item_quality_counts(name)` instead. New 2.1 inventory methods:
+  chest and a platform hub. `get_item_count()` takes NO name or quality
+  argument on 2.1, so read any specific count by iterating `get_contents()`
+  and summing matching entries on `name` (and `quality` when it matters).
+  New 2.1 inventory methods:
   `transfer_from_stack(source)` and `transfer_from_inventory(source, filter?)`.
 - `game.active_mods` no longer exists on 2.1.12 (raised `LuaGameScript
   doesn't contain key active_mods`); do not rely on it.

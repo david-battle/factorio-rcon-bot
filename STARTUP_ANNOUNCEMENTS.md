@@ -268,3 +268,19 @@ listed as announcements.
 - When I place a production cell I now use a crafting machine whose tech
   you've actually researched, instead of the fastest one overall (which
   could be an un-researched Electromagnetic Plant).
+
+## 2026-08-25
+
+- Counting items now works for quality too: when I count what's in your
+  chests or storage I sum the matching items by name and quality instead
+  of using a count call that doesn't accept those arguments.
+- Map tags and build placement at a default location now work on every
+  planet: I read a surface's spawn point the right way instead of using
+  a key the surface doesn't have.
+- Custom builds got smarter: when you ask me to design a layout that
+  doesn't fit a standard shape, I can now compose multi-building designs
+  (like a crafting machine feeding a recycler, or a whole parallel bank of
+  machines sharing one input belt and one output belt), and I design them
+  by writing and running a small program rather than hand-picking tiles,
+  so almost any build you can describe in words can be worked out and
+  stamped.

@@ -6,72 +6,91 @@
   worktree is clean after this session's commit; the changes are captured in
   the handoff commit (pending the user's manual push).
 - **Jimbo is RUNNING** (PID `5223`, `python -u jimbo.py`, gitignored
-  `jimbo.log`), restarted 2026-08-24 so he loads the 08-24 prompt/routing and
-  Lua-reference changes. Leave it running unless the user says otherwise.
+  `jimbo.log`) with the PRE-change code. A restart is needed to load the new
+  worker prompt/routing, the widened constants, and the new startup summary.
+  Do not restart unless the user says so.
 - `ai_profile_name = "deepseek"` (jimbo.py, top config block) — paid
   `deepseek-v4-flash` via OpenCode Zen; `server_owner` / `ai_profiles` stay in
   that single block per the always-preserve rule.
-- **Factorio `2.1.16`** (unchanged from last handoff). Server log at
-  `/mnt/d/factorio-server/server-console.log`.
+- **Factorio `2.1.16`**. Server log at `/mnt/d/factorio-server/server-console.log`.
 
-## Completed Work (2026-08-25) — Documentation cruft archived
+## Completed Work (2026-08-25)
 
-Doc-only session, no code change. To reduce context bloat, no-longer-relevant
-historical content was moved out of the live docs into `docs/ARCHIVE.md`
-(564 lines), which NO live `.md` file links to; a future context opens it only
-if explicitly pointed there. `git diff --check` clean.
+Shipped FIX_PLAN items 7 and 8 (quality-aware counting + spawn-aware default
+placement), then replanned item 3 per owner direction and landed its core
+capability. All validated; see Validation Run.
 
-- Created `docs/ARCHIVE.md` with archived retrospectives and experiment
-  write-ups sectioned by source.
-- `FIX_PLAN.md` (175 → 79): kept only active items (3 Step 3, 6, 7, 8) plus a
-  one-line status header; shipped item 3 Steps 1–2 retrospectives archived.
-- `docs/FUTURE_DIRECTIONS.md` (772 → 314): kept intro + directions 1–14;
-  "Alert Awareness Design" and all "Tested Implementation Findings" archived
-  (their features are implemented and documented in `BOT_CONTRACTS.md`).
-- `docs/OPERATIONS.md` (494 → 475): removed "Provider History" and "Groq"
-  (archived); also recorded the 2026-08-25 live `/version`=2.1.16 recheck.
-- `AGENTS.md`: noted `CLAUDE.md` is a tracked symlink to `AGENTS.md` so it
-  stops surfacing as a separate file.
-- Untouched by agreement: `STARTUP_ANNOUNCEMENTS.md`, `docs/RCON_NOTES.md`,
-  `docs/BOT_CONTRACTS.md`.
+### Items 7 & 8 (quality counting + spawn placement)
+- Fixed Lua-idiom guidance in `generate_lua_reference.py` `RULES`; regenerated
+  `lua_essentials.txt`; reconciled `docs/RCON_NOTES.md`; updated the startup
+  announcement; removed items 7/8 from `FIX_PLAN.md`.
+
+### Item 3 replan + code-authoring worker (the "coding agent goodness")
+Per the 2026-08-25 owner replan, Jimbo does NOT port old-repo cells; he
+composes layouts from scratch by WRITING a Python generator program that is
+executed and iterated against — the coding-agent loop, replacing the old
+"emit a static JSON blob" worker.
+
+- **`layout_analysis.py`** (new): deterministic throughput/balance/quality
+  tool (`analyze_layout`, `quality_chance_distribution`, bottleneck sizing).
+- **`layout_helpers.py`** (new): library generated code imports — plan
+  builders, reach constants, boxes, rotate, and `bank(...)`.
+- **`run_layout_generator`** (jimbo.py): writes the model's `generator.py` +
+  `facts.json` into the job subdir and runs it as a normal subprocess. Owner
+  chose NO restrictive sandbox (code runs with Jimbo's own reach); only the
+  generator's OUTPUT is gated by the deterministic validator.
+- **`build_custom_plan_prompt`**: asks for a complete program that computes
+  the layout from the free-text hint + facts and prints a plan dict to stdout;
+  runtime errors and validator rejections are fed back each iteration.
+- **Parallel-bank support**: the recipe is now set on every building matching
+  the plan's primary crafting machine (not the placement search's `en`) —
+  see jimbo.py:2271/2280/2289 — so a homogeneous bank gets its recipe on all
+  machines. `bank(facts, name, count, row_x, row_y)` builds a full
+  validator-ready bank (shared input belt -> one inserter per machine ->
+  shared output belt -> pole per machine). Geometry verified for 3x3..5x5
+  footprints, banks to 8 machines.
 
 ## Validation Run
 
+- `python -m py_compile jimbo.py layout_analysis.py layout_helpers.py
+  generate_lua_reference.py` clean.
+- `python -m pytest -q test_jimbo.py` → **225 passed, 51 subtests passed**.
 - `git diff --check` clean.
-- No code changed this session, so no `py_compile`/`pytest` run. No live RCON
-  commands run (none needed; the earlier `/version` recheck is already
-  recorded in OPERATIONS).
+- Bank layout geometry checked ad hoc across `recycler`(4x4), `foundry`(5x5),
+  `chemical-plant`(3x3), `electric-furnace`(3x3) at 8 machines: 0 validator
+  errors each. No live RCON commands run.
 
 ## Operational Caveats
 
-- `lua_essentials.txt` is a generated artifact; edit its source
-  `generate_lua_reference.py` `RULES` block and regenerate — do not edit the
-  `.txt` by hand. Never commit the source `doc-html/runtime-api.json`.
+- `lua_essentials.txt` is generated from `generate_lua_reference.py` `RULES`;
+  edit the source, never the `.txt`. Never commit `doc-html/runtime-api.json`.
+- Generated design programs run as a subprocess in the job subdir with the
+  same reach as Jimbo (owner's explicit choice, not a sandbox). The
+  deterministic validator is the safety gate on whatever they output.
+- `layout_analysis.py` module-effect/recipe values are INPUTS, pending server
+  verification — not hardcoded assumptions.
 - Version-stamped learnings in `docs/RCON_NOTES.md` /
-  `docs/FUTURE_DIRECTIONS.md` may predate 2.1.16; re-verify before relying on
-  them (see RCON_NOTES header).
-- `docs/ARCHIVE.md` is intentionally unreferenced; do not add links to it from
-  live docs. The user points future contexts at it manually only if needed.
-- Do not restart/stop Jimbo or Factorio as part of a handoff unless asked; the
-  running process (PID 5223) should be left alone.
+  `docs/FUTURE_DIRECTIONS.md` may predate 2.1.16; re-verify before relying.
+- `docs/ARCHIVE.md` is intentionally unreferenced; do not link it from live docs.
+- Do not restart/stop Jimbo or Factorio as part of a handoff unless asked.
 - Only intentional files are staged. `rconpw`, `*.key`, `jimbo.log`,
   `jimbo.pid`, `jimbo_says.log`, `jimbo_commands.log`,
   `last_startup_summary.txt`, `backup_loop.*`, `known_players.txt`,
   `restart_server.py`, `new_game.py`, and `produce_jobs/` remain
   ignored/untracked (machine-local operator data). Ollama stays a
-  manually-selected alternative provider (set `ai_profile_name = "ollama"`),
-  never a dynamic fallback.
-- The old repo at
-  `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints` is reference
-  material only; never treat it as authoritative.
+  manually-selected alternative provider, never a dynamic fallback.
+- Old repo `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints` is
+  reference-only; never authoritative.
 
 ## Natural Next Action
 
-- Implement FIX_PLAN items 7 and 8: make quality-specific container counts
-  iterate `get_contents()` (item 7), and make default-location map tags read
-  spawn from map settings rather than `surface.spawn*` (item 8). Both are
-  standalone Lua-idiom fixes; fold the working idiom into `docs/RCON_NOTES.md`
-  in the same edit.
-- FIX_PLAN item 3 Step 3 (verified primitive library) remains the larger
-  next step; item 6 (tech-aware placement) stays deferred until item 3 lands.
-- Then push this handoff commit (user pushes manually).
+1. Broaden the still item-centric job framing to arbitrary designs (FIX_PLAN
+   item 3 follow-on): the code-authoring loop is in place and geometry-general,
+   but `query_production_cell_candidates` and the survey vocabulary still
+   target an item. Make the survey hint-driven so any build (including
+   defensive/combat structures) can be surveyed and stamped; keep the
+   validator as-is.
+2. Mechanically invoke `layout_analysis` each worker iteration (the proposal
+   schema must first carry module/recipe flow inputs) — currently described in
+   the prompt and importable by generators, but not fed back per-iteration.
+3. Then push this handoff commit (user pushes manually).

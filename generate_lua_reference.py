@@ -39,8 +39,9 @@ exclusive: a w x h box anchored at tile (x,y) is {{x,y},{x+w,y+h}}.
 no e.ghost field exists. Only on a real ghost do e.ghost_type and \
 e.ghost_name give the contained prototype; on anything else they RAISE, so \
 pcall-wrap them like any uncertain read.
-- LuaInventory.get_contents() returns an array of {name=..., quality=..., \
-count=...} entries indexed by slot; prefer get_item_count(name).
+- LuaInventory.get_item_count() takes NO name or quality argument on 2.1; \
+for any specific count iterate inv.get_contents() and sum matching entries \
+on name (and quality when quality matters).
 - Compare entity status against defines.entity_status.<name> constants; the \
 numbers are not reverse-indexable.
 - A crafting machine's current recipe is read ONLY via the method \
@@ -50,6 +51,8 @@ and reading it RAISES. pcall-wrap it on machines that may not be crafting.
 game.forces.player.add_chart_tag(surface, {position={x,y}, \
 icon={type='entity',name=...}, text=...}); iterate surfaces with \
 pairs(game.surfaces) when asked for "all".
+- Spawn coordinates: LuaSurface has NO spawn_position or spawn key. Read a \
+surface's spawn with game.forces.player.get_spawn_position(surface).
 - Lua 5.1: use string.char(...) (no chr()); never place a number literal \
 directly before .. (write (n) .. ' suffix').
 """

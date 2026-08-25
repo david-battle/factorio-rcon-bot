@@ -234,10 +234,43 @@ Contract:
   with a `PENDING:` "already underway" line.
 - The worker returns a JSON object in the same variant schema Step 1 stamps
   (`layout=custom`, `plans` as `n/x/y/d/r` offsets, `area`, `pole`, `req`).
-  Coordinates are offsets relative to the machine's TOP-left corner; positive
-  x east, positive y south; every entity center on a half-tile; inserters pick
-  up behind and drop ahead along their facing. Reaches honored exactly: regular
-  inserter pickup 1.00 / drop 1.20, long-handed 2.00 / 2.20.
+  Coordinates are offsets relative to the anchor machine's TOP-left corner;
+  positive x east, positive y south; every entity center on a half-tile;
+  inserters pick up behind and drop ahead along their facing. Reaches honored
+  exactly: regular inserter pickup 1.00 / drop 1.20, long-handed 2.00 / 2.20.
+- Plans may contain MORE than one `building` (FIX_PLAN item 3 Step 3 replan):
+  the first building entry is the anchor — the one the plan is positioned
+  around. The recipe is set on every building whose name equals the plan's
+  primary crafting machine (not the placement search's chosen machine), so a
+  BANK of N identical machines producing the same item uses the same machine
+  name N times and all N get the recipe. Non-crafting buildings (recycler,
+  foundry, chemical-plant) are placed by name and receive no recipe. Every
+  building's dimensions must be present in the `machines` facts (the parent
+  surveys the fixed role vocabulary in `custom_plan_support_buildings` by
+  type). A deterministic throughput/balance tool (`layout_analysis.py`) sizes
+  stages so a design does not bottleneck; the worker prompt tells the designer
+  to keep every building fed and its output flowing.
+- Parallel banks (the dominant Factorio pattern) are a first-class target:
+  many identical machines in a row, one shared input belt feeding them via one
+  inserter each, one shared output belt aggregating them via one inserter
+  each, and a pole per machine. `layout_helpers.bank(facts, name, count,
+  row_x, row_y)` builds a complete, validator-ready bank; the worker prompt
+  points the model at it for any volume ask.
+- The worker does NOT emit geometry as a static JSON blob. Each iteration the
+  model AUTHORS a small Python generator program (`generator.py`) that
+  computes the layout from the site facts using `layout_helpers` (plan
+  builders, reach constants, boxes, rotate) and prints a single plan dict to
+  stdout. The parent runs it as a normal subprocess in the job directory (no
+  restrictive sandbox, per owner: the code runs with Jimbo's own reach) and
+  feeds back both the runtime error and the deterministic validation
+  rejections for the model to fix — the coding-agent loop. Only the generator's
+  OUTPUT is gated; it never touches the live server.
+- Because the generator is real code, the design intent is the free-text
+  player hint: "anything words can describe" maps to "any program the model
+  can write" within the validator's general geometric rules (overlap, reach,
+  power, in-area, belt lanes). The current job framing is still item-centric
+  (the candidate/machine survey targets an item); broadening the survey
+  vocabulary to arbitrary designs is a follow-on (FIX_PLAN item 3).
 - Python re-validates deterministically (overlap, area containment and size,
   connected belt lanes of ≥2 tiles, inserter source/destination reach, pole
   coverage within Chebyshev supply radius, building count = 1, pole/req flag
