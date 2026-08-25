@@ -139,6 +139,11 @@ a version-sensitive behavior after an upgrade.
   exist on 2.1.12; chart tags are created only through
   `game.forces.player.add_chart_tag(surface, {position=..., icon=..., text=...})`.
   Iterate every surface with `pairs(game.surfaces)` when a request says "all".
+- `LuaSurface` has **no** spawn-coordinate key: reading `surface.spawn_position`
+  or `surface.spawn` both raise "doesn't contain key" (live 2026-08-25 while
+  placing a default-location map tag). Spawn coordinates live on the map
+  settings, not the surface object — read them from there rather than guessing a
+  surface key when defaulting a chart-tag position.
 - Enumerate platforms via surfaces where `surface.platform` is set
   (`surface.platform.name`) and planets via `surface.planet.name`.
 
@@ -354,7 +359,10 @@ a version-sensitive behavior after an upgrade.
   `type(f.value)` before treating it as a name. Also
   `LuaInventory.get_item_count(name)` rejects the name argument on 2.1.14
   ("Expected 0 or 1 arguments but 2 were given"); sum
-  `inv.get_contents()` entries (`name`/`count`) instead.
+  `inv.get_contents()` entries (`name`/`count`) instead. It also rejects a
+  quality argument (`get_item_count("solar-panel","rare")`, live 2026-08-25)
+  with the same error — quality-specific counts require iterating
+  `get_contents()` and matching on the `quality` field.
 - On 2.1.14, `defines.direction` prints eight directions at even steps:
   north=0, north-east=2, east=4, south-east=6, south=8, south-west=10,
   west=12, north-west=14. Belt and inserter `direction` reads use these

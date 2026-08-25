@@ -138,3 +138,38 @@ day (with furnace-warning corrections 2026-08-24). Item 3 Step 2 (custom-cell
 worker subprocess) shipped and was live-validated 2026-08-24. Item 3 Step 3
 (verified primitive library) is the natural next step. Item 6
 (tech-level-aware placement) stays deferred until item 3 lands.
+
+## 7. `LuaInventory.get_item_count` rejects a quality argument
+
+Evidence: 2026-08-25 04:34:58, Koopix asked Jimbo to count rare solar panels and
+accumulators in containers across non-nauvis surfaces. The Lua
+`inv.get_item_count("solar-panel","rare")` call failed with
+`Arguments count error for 'get_item_count': Expected 0 or 1 arguments but 2
+were given` (recorded in `jimbo_commands.log`). On Factorio 2.1
+`get_item_count` does not take a quality parameter, contradicting the
+OPERATIONS.md note that `LuaLogisticNetwork.get_contents()` returns
+quality-aware entries — that API path is not universally mirrored by
+`get_item_count`.
+
+Fix: for quality-specific container counts, iterate `get_contents()` and sum
+matching `name`/`quality` entries (as the earlier rare solar/accumulator query
+already did on nauvis) instead of passing a quality argument to
+`get_item_count`. Fold the finding into `docs/RCON_NOTES.md` in the same edit.
+
+Dependency: none. Standalone RCON/Lua correctness fix, unrelated to items 3 or 6.
+
+## 8. Map-tag placement fails on surface spawn coordinate lookup
+
+Evidence: 2026-08-25 04:08-04:09, darklich14 asked Jimbo to set a map tag.
+Jimbo's command referenced `game.surfaces["nauvis"].spawn_position` and then
+`.spawn`; both errored ("LuaSurface doesn't contain key spawn_position/spawn").
+Spawn coordinates are not a surface property in Factorio 2.1; they live on the
+map settings, not the surface object.
+
+Fix: read spawn coordinates from the map settings (or a reliable public API)
+when placing a default-location map tag, and re-issue the tag. Update the
+relevant prompt guidance so Jimbo stops guessing surface spawn keys. Add the
+correct lookup to `docs/RCON_NOTES.md` in the same edit.
+
+Dependency: none. Standalone RCON/Lua correctness fix, unrelated to items 3, 6,
+and 7.

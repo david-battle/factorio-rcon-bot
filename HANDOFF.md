@@ -6,91 +6,72 @@
   worktree is clean after this session's commit; the changes are captured in
   the handoff commit (pending the user's manual push).
 - **Jimbo is RUNNING** (PID `5223`, `python -u jimbo.py`, gitignored
-  `jimbo.log`), restarted 2026-08-24 so he loads this session's prompt/routing
-  and Lua-reference changes. Leave it running unless the user says otherwise.
+  `jimbo.log`), restarted 2026-08-24 so he loads the 08-24 prompt/routing and
+  Lua-reference changes. Leave it running unless the user says otherwise.
 - `ai_profile_name = "deepseek"` (jimbo.py, top config block) — paid
-  `deepseek-v4-flash` via OpenCode Zen; `server_owner` / `ai_profiles` stayed
-  in that single block per the always-preserve rule.
+  `deepseek-v4-flash` via OpenCode Zen; `server_owner` / `ai_profiles` stay in
+  that single block per the always-preserve rule.
 - **Factorio `2.1.16`** (unchanged from last handoff). Server log at
   `/mnt/d/factorio-server/server-console.log`.
 
-## Completed Work (2026-08-24) — Jimbo reliability + tech-aware placement
+## Completed Work (2026-08-25) — Overnight interaction triage + two RCON/Lua fix items
 
-One commit. This session was triggered by live chat failures: Jimbo gave wrong
-lookup answers, errored on a recipe/chart-tag query, and placed a locked
-Electromagnetic Plant for Speed Module 2.
+This session was triage, not code. I reviewed the overnight chat
+(2026-08-24 21:00 → 2026-08-25 07:30) in the server console log plus
+`jimbo_says.log` / `jimbo_commands.log` for Jimbo interaction data, then turned
+the two real Lua bugs found into documented fix-plan items and durable notes.
+One commit; doc-only, no player-visible behavior change.
 
-- **Lua reference gotchas.** Added to `generate_lua_reference.py` `RULES`
-  (source of truth) and regenerated `lua_essentials.txt`: recipe is read via
-  the method `entity.get_recipe()` (no `recipe` field, which RAISES); chart
-  tags use `game.forces.player.add_chart_tag(...)`, not `create_chart_tag`.
-  This file is injected into both the lookup and classification prompts, so the
-  model no longer invents those member names.
-- **Lookup routing.** In `build_classification_prompt`, LOGISTICS is now
-  reserved for the player's actual logistic network; "in storage", "stash",
-  "where is X kept/stored", "in a chest/container/box" explicitly route to
-  LOOKUP. `build_lookup_prompt` now instructs the composed Lua to list matching
-  container positions as `[gps=x,y,surface]` when a question asks where.
-- **Tech-aware placement.** `place_production_cell`'s phase1 Lua now filters
-  compatible crafting machines to those the player has actually researched:
-  it builds the craftable-item set from `pairs(game.forces.player.recipes)`
-  where `r.enabled`, keeps machines whose `items_to_place_this[1]` is in that
-  set, and only falls back to the full list when none is researched (so
-  placement never hard-fails). A locked Electromagnetic Plant is no longer
-  chosen for Speed Module 2.
-- **Custom-cell worker.** `query_production_cell_candidates` (the probe shared
-  by both the standard path and the `layout=custom` worker's site survey) got
-  the same research filter, so `facts["machines"]` only lists researched
-  machines and the worker can only propose them. Defense in depth: the probe
-  filters, and phase1 filters again on placement.
-- **Announcement discipline.** `startup_change_summary` replaced and its exact
-  text appended to `STARTUP_ANNOUNCEMENTS.md` for the player-visible lookup
-  routing and tech-aware placement changes.
-- **Durable learning.** Added the research-gating idiom
-  (`LuaRecipe.enabled` + `items_to_place_this`) to `docs/RCON_NOTES.md`.
+- **FIX_PLAN items 7 and 8** appended (both standalone, no dependencies on
+  preceding items):
+  - **7 — `LuaInventory.get_item_count` rejects a quality argument.**
+    `get_item_count("solar-panel","rare")` failed live (2026-08-25 04:34,
+    Koopix's rare solar/accumulator scan across non-nauvis surfaces) with
+    "Expected 0 or 1 arguments but 2 were given". Fix: iterate
+    `get_contents()` and match on `name`/`quality`.
+  - **8 — Map-tag placement fails on surface spawn lookup.**
+    `game.surfaces["nauvis"].spawn_position` and `.spawn` both raise
+    "doesn't contain key" (darklich14's map-tag request, 2026-08-25 04:08-04:09).
+    Spawn coords live on map settings, not the surface object. Fix: read them
+    from map settings and update prompt guidance.
+- **docs/RCON_NOTES.md hints** added for both (get_item_count quality overload
+  extends the existing 2.1.14 name-arg note; LuaSurface has no spawn key).
 
 ## Validation Run
 
-- `python -m py_compile jimbo.py generate_lua_reference.py` OK.
-- `python -m pytest test_jimbo.py` — 208 passed, 51 subtests passed. New tests:
-  `test_place_cell_filters_machines_to_researched_unlocks` (phase1),
-  `test_probe_filters_machines_to_researched_unlocks` (probe), and updated
-  classifier-routing assertions for LOGISTICS vs LOOKUP.
 - `git diff --check` clean.
-- The archived live Ollama smoke test `test_ollama.py` was removed (Ollama is a
-  manually-selected alternative provider only, not a dynamic fallback); the
-  deterministic `test_ollama_adapter_uses_historical_host_and_timeout` unit test
-  stays and passes. No live RCON Lua was run (no authority to run commands
-  against the live server; the new Lua is read-only and mirrors an
-  already-working idiom).
+- No code changed this session, so no `py_compile`/`pytest` run. No live RCON
+  commands run (no authority to act on the live server); both findings are
+  already recorded live failures.
 
 ## Operational Caveats
 
 - `lua_essentials.txt` is a generated artifact; edit its source
   `generate_lua_reference.py` `RULES` block and regenerate — do not edit the
   `.txt` by hand. Never commit the source `doc-html/runtime-api.json`.
-- Version-stamped learnings in `docs/RCON_NOTES.md` / `docs/FUTURE_DIRECTIONS.md`
-  may predate 2.1.16; re-verify before relying on them (see RCON_NOTES header).
+- Version-stamped learnings in `docs/RCON_NOTES.md` /
+  `docs/FUTURE_DIRECTIONS.md` may predate 2.1.16; re-verify before relying on
+  them (see RCON_NOTES header).
 - Do not restart/stop Jimbo or Factorio as part of a handoff unless asked; the
   running process (PID 5223) should be left alone.
 - Only intentional files are staged. `rconpw`, `*.key`, `jimbo.log`,
   `jimbo.pid`, `jimbo_says.log`, `jimbo_commands.log`,
   `last_startup_summary.txt`, `backup_loop.*`, `known_players.txt`,
   `restart_server.py`, `new_game.py`, and `produce_jobs/` remain
-  ignored/untracked (machine-local operator data). Ollama stays as a
+  ignored/untracked (machine-local operator data). Ollama stays a
   manually-selected alternative provider (set `ai_profile_name = "ollama"`),
-  never a dynamic fallback; the live smoke test was removed.
+  never a dynamic fallback.
 - The old repo at
   `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints` is reference
   material only; never treat it as authoritative.
 
 ## Natural Next Action
 
-- Confirm the tech-aware placement fix live on the running server (e.g. ask
-  Jimbo for a Speed Module 2 cell before EM plants are researched) and check
-  `jimbo.log` / the console log for the placed machine. The unchanged runtime
-  API is 2.1.16.
-- FUTURE_DIRECTIONS item 14 quality work remains partially open: the custom
-  cell now picks a researched machine, but the "prefer longer through-connected
-  lanes" and "balanced inserter direction" ideas are still unimplemented.
+- Implement FIX_PLAN items 7 and 8: make quality-specific container counts
+  iterate `get_contents()` (item 7), and make default-location map tags read
+  spawn from map settings rather than `surface.spawn*` (item 8). Both are
+  standalone Lua-idiom fixes; fold the working idiom into `docs/RCON_NOTES.md`
+  in the same edit.
+- FIX_PLAN item 3 Step 3 (verified primitive library) remains the larger
+  next step; item 6 (tech-aware placement) stays deferred until item 3 lands.
 - Then push this handoff commit (user pushes manually).
