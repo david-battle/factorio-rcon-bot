@@ -57,9 +57,12 @@ Electromagnetic Plant for Speed Module 2.
   `test_probe_filters_machines_to_researched_unlocks` (probe), and updated
   classifier-routing assertions for LOGISTICS vs LOOKUP.
 - `git diff --check` clean.
-- Did NOT run live `test_ollama.py` (the headful Factorio client is using the
-  GPU) and did not run live RCON Lua (no authority to run commands against the
-  live server; the new Lua is read-only and mirrors an already-working idiom).
+- The archived live Ollama smoke test `test_ollama.py` was removed (Ollama is a
+  manually-selected alternative provider only, not a dynamic fallback); the
+  deterministic `test_ollama_adapter_uses_historical_host_and_timeout` unit test
+  stays and passes. No live RCON Lua was run (no authority to run commands
+  against the live server; the new Lua is read-only and mirrors an
+  already-working idiom).
 
 ## Operational Caveats
 
@@ -74,7 +77,9 @@ Electromagnetic Plant for Speed Module 2.
   `jimbo.pid`, `jimbo_says.log`, `jimbo_commands.log`,
   `last_startup_summary.txt`, `backup_loop.*`, `known_players.txt`,
   `restart_server.py`, `new_game.py`, and `produce_jobs/` remain
-  ignored/untracked (machine-local operator data).
+  ignored/untracked (machine-local operator data). Ollama stays as a
+  manually-selected alternative provider (set `ai_profile_name = "ollama"`),
+  never a dynamic fallback; the live smoke test was removed.
 - The old repo at
   `/mnt/d/ChatGPT-Factorio-Playground/factorio-blueprints` is reference
   material only; never treat it as authoritative.

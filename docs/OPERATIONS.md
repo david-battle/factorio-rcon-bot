@@ -205,8 +205,11 @@ and excluded reasoning from the response. Rate and account quotas were its main
 operational risk. If re-adding this profile, keep `groq-api-key.txt` gitignored
 and restore those settings.
 
-### Local Ollama Fallback
+### Local Ollama (manual alternative)
 
+Ollama is retained as a manually-selected alternative provider only; it is NOT a
+dynamic/automatic fallback. To use it, set `ai_profile_name = "ollama"` in
+`jimbo.py`'s top config block. There is no automatic provider fallback in code.
 The old local model can take 30-60 seconds to load after idle. Check it from the
 Windows side with:
 
